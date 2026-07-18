@@ -1,0 +1,54 @@
+name: CI
+
+"on":
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  dependency-sync:
+    runs-on: ubuntu-latest
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: nasiya_test
+          POSTGRES_USER: nasiya
+          POSTGRES_PASSWORD: dev_pass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nasiya -d nasiya_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync dependencies
+        run: uv sync --dev --frozen
+
+      - name: Run Alembic migrations
+        run: uv run alembic upgrade head
+
+      - name: Run Ruff
+        run: uv run ruff check .
+
+      - name: Run pytest
+        run: uv run pytest -ra
