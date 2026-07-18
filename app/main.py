@@ -5,13 +5,23 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from app.settings import Settings
+
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
-def create_app() -> FastAPI:
+def create_app(settings: Settings | None = None) -> FastAPI:
+    app_settings = settings or Settings(
+        _env_file=".env",
+        app_environment="development",
+        debug=False,
+        database_url="postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_dev",
+    )
+
     application = FastAPI(title="Nasiya")
+    application.state.settings = app_settings
     application.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @application.get("/", response_class=HTMLResponse)
