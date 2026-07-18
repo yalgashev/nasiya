@@ -27,3 +27,9 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+addopts = ["-ra"]
+markers = [
+  "integration: mark tests that require external PostgreSQL service",
+]
