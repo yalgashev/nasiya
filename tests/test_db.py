@@ -1,9 +1,14 @@
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-from app.db import Base, create_database_engine, create_database_session_factory
+from app.db import (
+    Base,
+    create_database_engine,
+    create_database_session_dependency,
+    create_database_session_factory,
+)
 from app.settings import Settings
 
 TEST_RATE_LIMIT_HMAC_KEY = "test-rate-limit-hmac-key-for-db-settings"
@@ -55,6 +60,65 @@ def test_database_session_factory_is_created_from_engine_without_connecting() ->
 
     connect_mock.assert_not_called()
     sessionmaker_mock.assert_called_once_with(bind=engine, class_=Session)
+
+
+def test_database_session_dependency_does_not_open_session_when_created() -> None:
+    session_factory = Mock()
+
+    create_database_session_dependency(session_factory)
+
+    session_factory.assert_not_called()
+
+
+def test_database_session_dependency_commits_and_closes_on_success() -> None:
+    session = Mock(spec=Session)
+    session_factory = Mock(return_value=session)
+    dependency = create_database_session_dependency(session_factory)
+
+    session_generator = dependency()
+    assert next(session_generator) is session
+
+    try:
+        next(session_generator)
+    except StopIteration:
+        pass
+
+    session_factory.assert_called_once_with()
+    session.commit.assert_called_once_with()
+    session.rollback.assert_not_called()
+    session.close.assert_called_once_with()
+
+
+def test_database_session_dependency_rolls_back_and_closes_on_error() -> None:
+    session = Mock(spec=Session)
+    session_factory = Mock(return_value=session)
+    dependency = create_database_session_dependency(session_factory)
+    error = RuntimeError("boom")
+
+    session_generator = dependency()
+    assert next(session_generator) is session
+
+    try:
+        session_generator.throw(error)
+    except RuntimeError as exc:
+        assert exc is error
+
+    session_factory.assert_called_once_with()
+    session.commit.assert_not_called()
+    session.rollback.assert_called_once_with()
+    session.close.assert_called_once_with()
+
+
+def test_database_session_dependency_uses_new_session_per_request() -> None:
+    sessions = [Mock(spec=Session), Mock(spec=Session)]
+    session_factory = Mock(side_effect=sessions)
+    dependency = create_database_session_dependency(session_factory)
+
+    first_generator = dependency()
+    second_generator = dependency()
+
+    assert next(first_generator) is sessions[0]
+    assert next(second_generator) is sessions[1]
 
 
 def test_declarative_base_metadata_is_initially_empty() -> None:

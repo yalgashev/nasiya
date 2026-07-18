@@ -5,6 +5,11 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from app.db import (
+    create_database_engine,
+    create_database_session_dependency,
+    create_database_session_factory,
+)
 from app.settings import Settings
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
@@ -24,6 +29,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     application = FastAPI(title="Nasiya")
     application.state.settings = app_settings
+    database_engine = create_database_engine(app_settings)
+    database_session_factory = create_database_session_factory(database_engine)
+    application.state.database_engine = database_engine
+    application.state.database_session_factory = database_session_factory
+    application.state.get_database_session = create_database_session_dependency(
+        database_session_factory
+    )
     application.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @application.get("/", response_class=HTMLResponse)
