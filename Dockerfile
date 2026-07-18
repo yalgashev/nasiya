@@ -5,9 +5,9 @@ WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_NO_CACHE=1 \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    VIRTUAL_ENV=/opt/venv \
     PATH="/opt/venv/bin:$PATH"
 
 RUN pip install --no-cache-dir uv

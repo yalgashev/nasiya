@@ -6,4 +6,4 @@ class Settings(BaseSettings):
     debug: bool = False
     database_url: str
 
-    model_config = SettingsConfigDict(env_prefix="")
+    model_config = SettingsConfigDict(env_prefix="", extra="ignore")

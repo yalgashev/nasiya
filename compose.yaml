@@ -20,14 +20,13 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
-      APP_ENVIRONMENT: development
-      DEBUG: "true"
+      APP_ENVIRONMENT: ${APP_ENVIRONMENT:-development}
+      DEBUG: "false"
       DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql+psycopg://${POSTGRES_USER:-nasiya}:${POSTGRES_PASSWORD:-dev_pass}@db:5432/${POSTGRES_DB:-nasiya}}
     depends_on:
       db:
         condition: service_healthy
     ports:
       - "8000:8000"
-
 volumes:
   db-data:
