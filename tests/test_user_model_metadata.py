@@ -1,12 +1,17 @@
-from sqlalchemy import Boolean, DateTime, String, Text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, String, Text
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 
+from app.auth.models import Session as AuthSession
 from app.auth.models import User
 from app.db import Base
 
 
 def test_users_table_is_registered_in_base_metadata() -> None:
     assert Base.metadata.tables["users"] is User.__table__
+
+
+def test_sessions_table_is_registered_in_base_metadata() -> None:
+    assert Base.metadata.tables["sessions"] is AuthSession.__table__
 
 
 def test_users_table_has_required_columns() -> None:
@@ -46,3 +51,85 @@ def test_users_phone_is_unique_and_indexed() -> None:
 
 def test_users_table_has_no_raw_password_column() -> None:
     assert "password" not in User.__table__.columns
+
+
+def test_sessions_table_has_required_columns() -> None:
+    columns = AuthSession.__table__.columns
+
+    assert set(columns.keys()) == {
+        "id",
+        "user_id",
+        "token_hash",
+        "csrf_secret",
+        "user_agent",
+        "created_at",
+        "last_seen_at",
+        "expires_at",
+        "revoked_at",
+    }
+    assert isinstance(columns["id"].type, PostgresUUID)
+    assert columns["id"].primary_key is True
+    assert columns["id"].nullable is False
+    assert isinstance(columns["user_id"].type, PostgresUUID)
+    assert columns["user_id"].nullable is True
+    assert isinstance(columns["token_hash"].type, String)
+    assert columns["token_hash"].type.length == 64
+    assert columns["token_hash"].nullable is False
+    assert isinstance(columns["csrf_secret"].type, String)
+    assert columns["csrf_secret"].type.length == 128
+    assert columns["csrf_secret"].nullable is False
+    assert isinstance(columns["user_agent"].type, String)
+    assert columns["user_agent"].type.length == 512
+    assert columns["user_agent"].nullable is True
+    for column_name in ("created_at", "last_seen_at", "expires_at", "revoked_at"):
+        assert isinstance(columns[column_name].type, DateTime)
+        assert columns[column_name].type.timezone is True
+    assert columns["created_at"].nullable is False
+    assert columns["last_seen_at"].nullable is False
+    assert columns["expires_at"].nullable is False
+    assert columns["revoked_at"].nullable is True
+
+
+def test_sessions_token_hash_is_unique_indexed_and_hex_shaped() -> None:
+    token_hash_column = AuthSession.__table__.columns["token_hash"]
+    check_constraints = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in AuthSession.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert token_hash_column.unique is True
+    assert token_hash_column.index is True
+    assert check_constraints["ck_sessions_token_hash_sha256_hex"] == (
+        "token_hash ~ '^[0-9a-f]{64}$'"
+    )
+
+
+def test_sessions_expiration_is_indexed() -> None:
+    assert AuthSession.__table__.columns["expires_at"].index is True
+
+
+def test_sessions_user_foreign_key_cascades_on_user_delete() -> None:
+    user_id_column = AuthSession.__table__.columns["user_id"]
+    foreign_key = next(iter(user_id_column.foreign_keys))
+
+    assert foreign_key.target_fullname == "users.id"
+    assert foreign_key.ondelete == "CASCADE"
+
+
+def test_sessions_table_has_no_raw_token_cookie_password_or_business_columns() -> None:
+    forbidden_columns = {
+        "session_token",
+        "raw_session_token",
+        "token",
+        "cookie",
+        "cookie_value",
+        "password",
+        "password_hash",
+        "role",
+        "mode",
+        "shop",
+        "customer",
+    }
+
+    assert forbidden_columns.isdisjoint(AuthSession.__table__.columns.keys())
