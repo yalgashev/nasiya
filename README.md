@@ -59,7 +59,7 @@ cd C:\path\to\nasiya
 uv sync --dev --frozen
 docker compose config
 uv run ruff check .
-$env:TEST_DATABASE_URL = "postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya"
+$env:TEST_DATABASE_URL = "postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test"
 uv run pytest -ra
 ```
 
@@ -70,7 +70,7 @@ cd /home/yalgashev/projects/nasiya
 uv sync --dev --frozen
 docker compose config
 uv run ruff check .
-TEST_DATABASE_URL='postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya' uv run pytest -ra
+TEST_DATABASE_URL='postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test' uv run pytest -ra
 ```
 
 ## To'xtatish (Windows PowerShell)

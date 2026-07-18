@@ -18,6 +18,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app_environment="development",
         debug=False,
         database_url="postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_dev",
+        session_cookie_secure=False,
+        rate_limit_hmac_key="development-only-rate-limit-hmac-key-change-me",
     )
 
     application = FastAPI(title="Nasiya")
