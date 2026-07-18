@@ -3,6 +3,7 @@ from unittest.mock import Mock, patch
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from app.auth.models import User
 from app.db import (
     Base,
     create_database_engine,
@@ -121,5 +122,5 @@ def test_database_session_dependency_uses_new_session_per_request() -> None:
     assert next(second_generator) is sessions[1]
 
 
-def test_declarative_base_metadata_is_initially_empty() -> None:
-    assert len(Base.metadata.tables) == 0
+def test_declarative_base_metadata_includes_user_model() -> None:
+    assert Base.metadata.tables["users"] is User.__table__
