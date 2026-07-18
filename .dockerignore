@@ -1,0 +1,36 @@
+# VCS / local metadata
+.git
+.gitignore
+.github
+
+# Virtual environments
+.venv
+.venv312
+venv
+env
+
+# Python bytecode / caches
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# Environment files
+.env
+.env.*
+
+# OS / editor and logs
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.log
+
+# Build and distribution artifacts
+dist
+build
+*.egg-info
+
