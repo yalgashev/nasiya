@@ -39,3 +39,9 @@ def normalize_uzbekistan_phone(raw_phone: str) -> str:
     if len(canonical_phone) != CANONICAL_PHONE_LENGTH:
         raise PhoneNormalizationError("Invalid phone number format")
     return canonical_phone
+
+
+def mask_phone_for_display(phone: str) -> str:
+    if len(phone) <= 6:
+        return "***"
+    return f"{phone[:4]}{'*' * (len(phone) - 6)}{phone[-2:]}"

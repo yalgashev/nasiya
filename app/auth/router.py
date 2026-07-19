@@ -23,7 +23,11 @@ from app.auth.deps import (
 )
 from app.auth.error_codes import ErrorCode
 from app.auth.login_rate_limit import LoginRateLimitPolicy, get_login_client_host
-from app.auth.phone import PhoneNormalizationError, normalize_uzbekistan_phone
+from app.auth.phone import (
+    PhoneNormalizationError,
+    mask_phone_for_display,
+    normalize_uzbekistan_phone,
+)
 from app.auth.service import authenticate
 from app.auth.sessions import (
     CreatedSession,
@@ -480,12 +484,6 @@ def _is_login_input_valid(phone: str, password: str) -> bool:
     except PhoneNormalizationError:
         return False
     return True
-
-
-def mask_phone_for_display(phone: str) -> str:
-    if len(phone) <= 6:
-        return "***"
-    return f"{phone[:4]}{'*' * (len(phone) - 6)}{phone[-2:]}"
 
 
 def _get_safe_redirect_target(next_url: str | None) -> str:
