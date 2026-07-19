@@ -25,6 +25,7 @@ jobs:
       LOGIN_RATE_LIMIT_PHONE_ATTEMPTS: "5"
       LOGIN_RATE_LIMIT_IP_ATTEMPTS: "20"
       RATE_LIMIT_HMAC_KEY: ci-test-only-rate-limit-hmac-key-at-least-32-chars
+      DATABASE_URL: postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test
       TEST_DATABASE_URL: postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test
 
     services:
