@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block title %}Sessiyalar - Nasiya{% endblock %}
+
+{% block content %}
+<main>
+    <h1>Sessiyalar</h1>
+    <p>Hisobingizga kirilgan qurilmalar ro'yxati.</p>
+
+    <section aria-labelledby="session-list-heading">
+        <h2 id="session-list-heading">Faol va avvalgi sessiyalar</h2>
+        {% for session in sessions %}
+        <article class="session-card">
+            <h3>{{ session.browser_label }} - {{ session.device_label }}</h3>
+            {% if session.is_current %}
+            <p class="badge">Joriy sessiya</p>
+            {% endif %}
+            <dl>
+                <dt>Holat belgisi</dt>
+                <dd>{{ session.status_label }}</dd>
+                <dt>Oxirgi faollik vaqti</dt>
+                <dd>{{ session.last_seen_at }}</dd>
+                <dt>Sessiya tugash vaqti</dt>
+                <dd>{{ session.expires_at }}</dd>
+                {% if session.user_agent %}
+                <dt>User-Agent</dt>
+                <dd>{{ session.user_agent }}</dd>
+                {% endif %}
+            </dl>
+            {% if session.can_revoke %}
+            <form method="post" action="/auth/sessions/{{ session.session_id }}/revoke">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button class="button-danger" type="submit">Ushbu sessiyani bekor qilish</button>
+            </form>
+            {% endif %}
+        </article>
+        {% endfor %}
+    </section>
+
+    {% if has_other_active_sessions %}
+    <form method="post" action="/auth/sessions/revoke-others">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button-danger" type="submit">Barcha boshqa sessiyalarni bekor qilish</button>
+    </form>
+    {% endif %}
+
+    <p><a href="/auth/account">Hisobga qaytish</a></p>
+</main>
+{% endblock %}

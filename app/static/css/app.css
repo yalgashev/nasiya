@@ -35,6 +35,10 @@ p {
     margin: 0;
 }
 
+article {
+    overflow-wrap: anywhere;
+}
+
 section,
 nav,
 form {
@@ -76,6 +80,10 @@ button {
     cursor: pointer;
 }
 
+.button-danger {
+    background: #b91c1c;
+}
+
 a {
     color: #0f5f59;
     font-weight: 650;
@@ -102,6 +110,45 @@ a:focus-visible {
 [role="alert"]:not(:empty)::before {
     content: "Xato: ";
     font-weight: 700;
+}
+
+.session-card {
+    margin-top: 16px;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    padding: 16px;
+    background: #ffffff;
+}
+
+.session-card h3 {
+    margin: 0;
+    font-size: 1.125rem;
+}
+
+.badge {
+    display: inline-block;
+    margin-top: 10px;
+    border: 1px solid #0f766e;
+    border-radius: 999px;
+    padding: 4px 10px;
+    color: #0f5f59;
+    background: #ecfdf5;
+    font-weight: 700;
+}
+
+dl {
+    display: grid;
+    gap: 6px;
+    margin: 16px 0 0;
+}
+
+dt {
+    font-weight: 700;
+}
+
+dd {
+    margin: 0 0 8px;
+    overflow-wrap: anywhere;
 }
 
 @media (max-width: 430px) {

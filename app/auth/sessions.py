@@ -254,6 +254,7 @@ def revoke_other_sessions(
         AuthSession.user_id == user_id,
         AuthSession.id != current_session_id,
         AuthSession.revoked_at.is_(None),
+        AuthSession.expires_at > _as_utc(now),
     )
     revoked_count = 0
     for session in db.scalars(statement):

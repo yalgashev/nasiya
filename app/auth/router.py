@@ -1,7 +1,8 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlsplit
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Form, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -27,8 +28,13 @@ from app.auth.service import authenticate
 from app.auth.sessions import (
     CreatedSession,
     RawSessionToken,
+    UserSessionStatus,
+    UserSessionSummary,
     create_anonymous_session,
+    list_user_sessions,
+    revoke_other_sessions,
     revoke_session,
+    revoke_user_session,
     rotate_session,
 )
 from app.auth.template_context import with_csrf_context
@@ -186,7 +192,7 @@ def account_page(
     try:
         user = require_user(context)
     except LoginRequired:
-        return _redirect_account_login(context, settings)
+        return _redirect_auth_login(context, settings)
 
     session = context.get_session_row()
     response = templates.TemplateResponse(
@@ -194,6 +200,44 @@ def account_page(
         "auth/account.html",
         with_csrf_context(
             {"masked_phone": mask_phone_for_display(user.phone)},
+            session,
+        ),
+    )
+    return mark_auth_response_no_store(response)
+
+
+@router.get("/sessions", response_class=HTMLResponse, response_model=None)
+def sessions_page(
+    request: Request,
+    db: Annotated[DatabaseSession, Depends(get_database_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    now: Annotated[datetime, Depends(get_current_time)],
+    context: Annotated[
+        CurrentSessionContext,
+        Depends(get_current_session_context),
+    ],
+) -> Response:
+    try:
+        user = require_user(context)
+    except LoginRequired:
+        return _redirect_auth_login(context, settings)
+
+    session = context.get_session_row()
+    session_summaries = list_user_sessions(db, user.id, now)
+    response = templates.TemplateResponse(
+        request,
+        "auth/sessions.html",
+        with_csrf_context(
+            {
+                "sessions": [
+                    _get_session_view_model(summary, context.session_id)
+                    for summary in session_summaries
+                ],
+                "has_other_active_sessions": any(
+                    _can_revoke_session(summary, context.session_id)
+                    for summary in session_summaries
+                ),
+            },
             session,
         ),
     )
@@ -215,7 +259,7 @@ def submit_logout(
     try:
         require_user(context)
     except LoginRequired:
-        return _redirect_account_login(context, settings)
+        return _redirect_auth_login(context, settings)
 
     session = context.get_session_row()
     if session is not None and session.revoked_at is None:
@@ -223,6 +267,67 @@ def submit_logout(
 
     response = RedirectResponse(LOGIN_PATH, status_code=status.HTTP_303_SEE_OTHER)
     delete_session_cookie(response, settings)
+    return mark_auth_response_no_store(response)
+
+
+@router.post("/sessions/{session_id}/revoke", response_model=None)
+def revoke_one_session(
+    session_id: UUID,
+    db: Annotated[DatabaseSession, Depends(get_database_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    now: Annotated[datetime, Depends(get_current_time)],
+    context: Annotated[
+        CurrentSessionContext,
+        Depends(get_current_session_context),
+    ],
+    _csrf: Annotated[None, Depends(validate_csrf)],
+) -> Response:
+    _ = _csrf
+    try:
+        user = require_user(context)
+    except LoginRequired:
+        return _redirect_auth_login(context, settings)
+
+    revoked = revoke_user_session(db, user.id, session_id, now)
+    if not revoked:
+        return _render_session_not_found()
+
+    if session_id == context.session_id:
+        response = RedirectResponse(LOGIN_PATH, status_code=status.HTTP_303_SEE_OTHER)
+        delete_session_cookie(response, settings)
+    else:
+        response = RedirectResponse(
+            "/auth/sessions",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    return mark_auth_response_no_store(response)
+
+
+@router.post("/sessions/revoke-others", response_model=None)
+def revoke_other_user_sessions(
+    db: Annotated[DatabaseSession, Depends(get_database_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    now: Annotated[datetime, Depends(get_current_time)],
+    context: Annotated[
+        CurrentSessionContext,
+        Depends(get_current_session_context),
+    ],
+    _csrf: Annotated[None, Depends(validate_csrf)],
+) -> Response:
+    _ = _csrf
+    try:
+        user = require_user(context)
+    except LoginRequired:
+        return _redirect_auth_login(context, settings)
+
+    if context.session_id is None:
+        return _redirect_auth_login(context, settings)
+
+    revoke_other_sessions(db, user.id, context.session_id, now)
+    response = RedirectResponse(
+        "/auth/sessions",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
     return mark_auth_response_no_store(response)
 
 
@@ -249,7 +354,7 @@ def _get_or_create_anonymous_session(
     )
 
 
-def _redirect_account_login(
+def _redirect_auth_login(
     context: CurrentSessionContext,
     settings: Settings,
 ) -> Response:
@@ -268,6 +373,65 @@ def _redirect_account_login(
         delete_session_cookie(response, settings)
 
     return mark_auth_response_no_store(response)
+
+
+def _render_session_not_found() -> Response:
+    response = HTMLResponse(
+        "<!doctype html>"
+        '<html lang="uz">'
+        "<head>"
+        '<meta charset="utf-8">'
+        "<title>Topilmadi</title>"
+        "</head>"
+        "<body>"
+        "<main>"
+        "<h1>Sessiya topilmadi</h1>"
+        "<p>Sessiya topilmadi yoki bekor qilish mumkin emas.</p>"
+        "</main>"
+        "</body>"
+        "</html>",
+        status_code=status.HTTP_404_NOT_FOUND,
+    )
+    return mark_auth_response_no_store(response)
+
+
+def _get_session_view_model(
+    summary: UserSessionSummary,
+    current_session_id: UUID | None,
+) -> dict[str, str | bool | None]:
+    return {
+        "session_id": str(summary.session_id),
+        "browser_label": summary.browser_label,
+        "device_label": summary.device_label,
+        "user_agent": summary.user_agent,
+        "last_seen_at": _format_utc_datetime(summary.last_seen_at),
+        "expires_at": _format_utc_datetime(summary.expires_at),
+        "status_label": _get_session_status_label(summary.status),
+        "is_current": summary.session_id == current_session_id,
+        "can_revoke": _can_revoke_session(summary, current_session_id),
+    }
+
+
+def _can_revoke_session(
+    summary: UserSessionSummary,
+    current_session_id: UUID | None,
+) -> bool:
+    return (
+        summary.status == UserSessionStatus.ACTIVE
+        and summary.session_id != current_session_id
+    )
+
+
+def _get_session_status_label(status_value: UserSessionStatus) -> str:
+    return {
+        UserSessionStatus.ACTIVE: "Faol",
+        UserSessionStatus.EXPIRED: "Muddati tugagan",
+        UserSessionStatus.REVOKED: "Bekor qilingan",
+    }[status_value]
+
+
+def _format_utc_datetime(value: datetime) -> str:
+    return value.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
 
 def _render_login_failure(
