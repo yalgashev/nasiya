@@ -111,7 +111,10 @@ def get_current_time() -> datetime:
 
 def get_current_session_context(
     request: Request,
-    db: Annotated[DatabaseSession, Depends(get_database_session)],
+    db: Annotated[
+        DatabaseSession,
+        Depends(get_database_session, scope="function"),
+    ],
     settings: Annotated[Settings, Depends(get_settings)],
     now: Annotated[datetime, Depends(get_current_time)],
 ) -> CurrentSessionContext:

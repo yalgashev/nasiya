@@ -52,7 +52,10 @@ router = APIRouter(prefix="/auth")
 @router.get("/login", response_class=HTMLResponse, response_model=None)
 def login_page(
     request: Request,
-    db: Annotated[DatabaseSession, Depends(get_database_session)],
+    db: Annotated[
+        DatabaseSession,
+        Depends(get_database_session, scope="function"),
+    ],
     settings: Annotated[Settings, Depends(get_settings)],
     now: Annotated[datetime, Depends(get_current_time)],
     context: Annotated[
@@ -87,7 +90,10 @@ def login_page(
 @router.post("/login", response_class=HTMLResponse, response_model=None)
 def submit_login(
     request: Request,
-    db: Annotated[DatabaseSession, Depends(get_database_session)],
+    db: Annotated[
+        DatabaseSession,
+        Depends(get_database_session, scope="function"),
+    ],
     settings: Annotated[Settings, Depends(get_settings)],
     now: Annotated[datetime, Depends(get_current_time)],
     context: Annotated[
@@ -209,7 +215,10 @@ def account_page(
 @router.get("/sessions", response_class=HTMLResponse, response_model=None)
 def sessions_page(
     request: Request,
-    db: Annotated[DatabaseSession, Depends(get_database_session)],
+    db: Annotated[
+        DatabaseSession,
+        Depends(get_database_session, scope="function"),
+    ],
     settings: Annotated[Settings, Depends(get_settings)],
     now: Annotated[datetime, Depends(get_current_time)],
     context: Annotated[
@@ -246,7 +255,10 @@ def sessions_page(
 
 @router.post("/logout", response_class=HTMLResponse, response_model=None)
 def submit_logout(
-    db: Annotated[DatabaseSession, Depends(get_database_session)],
+    db: Annotated[
+        DatabaseSession,
+        Depends(get_database_session, scope="function"),
+    ],
     settings: Annotated[Settings, Depends(get_settings)],
     now: Annotated[datetime, Depends(get_current_time)],
     context: Annotated[
@@ -273,7 +285,10 @@ def submit_logout(
 @router.post("/sessions/{session_id}/revoke", response_model=None)
 def revoke_one_session(
     session_id: UUID,
-    db: Annotated[DatabaseSession, Depends(get_database_session)],
+    db: Annotated[
+        DatabaseSession,
+        Depends(get_database_session, scope="function"),
+    ],
     settings: Annotated[Settings, Depends(get_settings)],
     now: Annotated[datetime, Depends(get_current_time)],
     context: Annotated[
@@ -305,7 +320,10 @@ def revoke_one_session(
 
 @router.post("/sessions/revoke-others", response_model=None)
 def revoke_other_user_sessions(
-    db: Annotated[DatabaseSession, Depends(get_database_session)],
+    db: Annotated[
+        DatabaseSession,
+        Depends(get_database_session, scope="function"),
+    ],
     settings: Annotated[Settings, Depends(get_settings)],
     now: Annotated[datetime, Depends(get_current_time)],
     context: Annotated[
