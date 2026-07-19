@@ -5,6 +5,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from app.auth.deps import CsrfFailed, csrf_failed_exception_handler
 from app.db import (
     create_database_engine,
     create_database_session_dependency,
@@ -28,6 +29,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     application = FastAPI(title="Nasiya")
+    application.add_exception_handler(CsrfFailed, csrf_failed_exception_handler)
     application.state.settings = app_settings
     database_engine = create_database_engine(app_settings)
     database_session_factory = create_database_session_factory(database_engine)

@@ -1,14 +1,23 @@
+import hmac
 from collections.abc import Generator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from html import escape
 from typing import Annotated, Final
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
+from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DatabaseSession
 
+from app.auth.csrf import verify_csrf_token
+from app.auth.error_codes import (
+    ErrorCode,
+    get_error_http_status,
+    get_public_error_body,
+)
 from app.auth.models import Session as AuthSession
 from app.auth.models import User
 from app.auth.sessions import (
@@ -20,6 +29,12 @@ from app.auth.sessions import (
 from app.settings import Settings
 
 LOGIN_PATH: Final = "/login"
+CSRF_FORM_FIELD_NAME: Final = "csrf_token"
+CSRF_HEADER_NAME: Final = "X-CSRF-Token"
+SAFE_METHODS: Final = frozenset({"GET", "HEAD", "OPTIONS"})
+FORM_CONTENT_TYPES: Final = frozenset(
+    {"application/x-www-form-urlencoded", "multipart/form-data"}
+)
 
 
 class CurrentSessionStatus(StrEnum):
@@ -64,6 +79,18 @@ class LoginRequired(HTTPException):
             status_code=status.HTTP_303_SEE_OTHER,
             detail="Login required",
             headers={"Location": LOGIN_PATH},
+        )
+
+
+class CsrfFailed(HTTPException):
+    def __init__(self) -> None:
+        super().__init__(
+            status_code=get_error_http_status(ErrorCode.CSRF_FAILED),
+            detail=get_public_error_body(
+                ErrorCode.CSRF_FAILED,
+                internal_detail="csrf validation failed",
+            ),
+            headers={"X-Error-Code": ErrorCode.CSRF_FAILED.value},
         )
 
 
@@ -129,6 +156,26 @@ def require_user(
     return user
 
 
+async def validate_csrf(
+    request: Request,
+    context: Annotated[
+        CurrentSessionContext,
+        Depends(get_current_session_context),
+    ],
+    now: Annotated[datetime, Depends(get_current_time)],
+) -> None:
+    if request.method in SAFE_METHODS:
+        return
+
+    session = context.get_session_row()
+    if session is None:
+        raise_csrf_failed()
+
+    submitted_token = await _get_submitted_csrf_token(request)
+    if not verify_csrf_token(session, submitted_token, now):
+        raise_csrf_failed()
+
+
 def _get_unresolved_session_context(
     db: DatabaseSession,
     raw_token: RawSessionToken,
@@ -149,6 +196,99 @@ def _get_unresolved_session_context(
         if user is None or not user.is_active:
             return _failed_context(CurrentSessionStatus.INACTIVE_USER, session)
     return CurrentSessionContext(status=CurrentSessionStatus.INVALID)
+
+
+def raise_csrf_failed() -> None:
+    raise CsrfFailed()
+
+
+async def csrf_failed_exception_handler(
+    request: Request,
+    exc: CsrfFailed,
+) -> HTMLResponse | JSONResponse:
+    public_body = get_public_error_body(
+        ErrorCode.CSRF_FAILED,
+        internal_detail=str(exc.detail),
+    )
+    headers = {"X-Error-Code": ErrorCode.CSRF_FAILED.value}
+    if _is_htmx_request(request):
+        return HTMLResponse(
+            content=_render_csrf_fragment(public_body),
+            status_code=exc.status_code,
+            headers=headers,
+        )
+    if _accepts_html(request):
+        return HTMLResponse(
+            content=_render_csrf_page(public_body),
+            status_code=exc.status_code,
+            headers=headers,
+        )
+    return JSONResponse(
+        content={"detail": public_body},
+        status_code=exc.status_code,
+        headers=headers,
+    )
+
+
+async def _get_submitted_csrf_token(request: Request) -> str | None:
+    header_token = request.headers.get(CSRF_HEADER_NAME)
+    form_token = await _get_form_csrf_token(request)
+
+    if header_token is not None and form_token is not None:
+        if not hmac.compare_digest(header_token, form_token):
+            return None
+        return header_token
+    return header_token if header_token is not None else form_token
+
+
+async def _get_form_csrf_token(request: Request) -> str | None:
+    content_type = _get_request_content_type(request)
+    if content_type not in FORM_CONTENT_TYPES:
+        return None
+
+    await request.body()
+    form = await request.form()
+    token = form.get(CSRF_FORM_FIELD_NAME)
+    return token if isinstance(token, str) else None
+
+
+def _get_request_content_type(request: Request) -> str:
+    content_type = request.headers.get("content-type", "")
+    return content_type.split(";", 1)[0].strip().casefold()
+
+
+def _is_htmx_request(request: Request) -> bool:
+    return request.headers.get("HX-Request", "").casefold() == "true"
+
+
+def _accepts_html(request: Request) -> bool:
+    return "text/html" in request.headers.get("accept", "").casefold()
+
+
+def _render_csrf_fragment(public_body: dict[str, str]) -> str:
+    code = escape(public_body["code"])
+    message = escape(public_body["message"])
+    return f'<div role="alert" data-error-code="{code}">{message}</div>'
+
+
+def _render_csrf_page(public_body: dict[str, str]) -> str:
+    code = escape(public_body["code"])
+    message = escape(public_body["message"])
+    return (
+        "<!doctype html>"
+        '<html lang="uz">'
+        "<head>"
+        '<meta charset="utf-8">'
+        "<title>Xatolik</title>"
+        "</head>"
+        "<body>"
+        f'<main role="alert" data-error-code="{code}">'
+        "<h1>So'rov bajarilmadi</h1>"
+        f"<p>{message}</p>"
+        "</main>"
+        "</body>"
+        "</html>"
+    )
 
 
 def _failed_context(
