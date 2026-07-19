@@ -3,97 +3,205 @@
 Nasiya is a mobile-first web application for managing nasiya workflows.
 It is designed as a single browser-based product for shop and customer use.
 
-## Windows prerequisites
+## Prerequisites
 
-Windowsda ishlash uchun quyidagilar kerak:
+Windows uchun:
 
-- Git o'rnatilgan va `PATH`da mavjud bo'lishi kerak.
-- uv o'rnatilgan bo'lishi kerak; loyiha Python versiyasini `.python-version`
-  orqali `3.12`ga mahkamlaydi, shuning uchun Pythonni alohida qo'lda
-  o'rnatish shart emas, uv uni boshqarishi mumkin.
+- Git `PATH`da mavjud bo'lishi kerak.
 - Docker Desktop o'rnatilgan va ishga tushgan bo'lishi kerak.
-- PowerShell orqali loyiha buyruqlari repository ildizidan bajariladi.
+- uv o'rnatilgan bo'lishi kerak. Loyiha Python versiyasini
+  `.python-version` orqali `3.12`ga mahkamlaydi.
+- Buyruqlar Windows PowerShell orqali repository ildizidan bajariladi.
 
-## Birinchi ishga tushirish (Windows PowerShell)
+Xubuntu uchun:
 
-```powershell
-cd C:\path\to\nasiya
-Copy-Item .env.example .env
-docker compose config
-docker compose build web
-docker compose up -d
-docker compose exec web alembic upgrade head
-Start-Process http://localhost:8000/
-Start-Process http://localhost:8000/health
+- Git, Docker va uv mavjud bo'lishi kerak.
+- Foydalanuvchi Docker buyruqlarini bajarish huquqiga ega bo'lishi kerak.
+- Buyruqlar Terminal orqali repository ildizidan bajariladi.
+
+## Environment
+
+Local sozlash uchun `.env.example`dan boshlang:
+
+```bash
+cp .env.example .env
 ```
 
-## Birinchi ishga tushirish (Xubuntu Terminal)
+PowerShell:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Muhim maydonlar:
+
+- `DATABASE_URL` - local development database, odatda `nasiya`.
+- `TEST_DATABASE_URL` - alohida local test database, `nasiya_test`.
+- `SESSION_COOKIE_NAME` - default `nasiya_session`.
+- `SESSION_COOKIE_SECURE` - local HTTP development uchun `false`.
+- `SESSION_TTL_DAYS`, `ANONYMOUS_SESSION_TTL_MINUTES`,
+  `SESSION_TOUCH_INTERVAL_MINUTES` - server-side session muddatlari.
+- `PASSWORD_MIN_LENGTH`, `PASSWORD_MAX_LENGTH` - parol siyosati.
+- `LOGIN_RATE_LIMIT_WINDOW_SECONDS`, `LOGIN_RATE_LIMIT_PHONE_ATTEMPTS`,
+  `LOGIN_RATE_LIMIT_IP_ATTEMPTS` - auth rate-limit sozlamalari.
+- `RATE_LIMIT_HMAC_KEY` - raw phone/IP ni DBga yozmaslik uchun HMAC secret.
+
+`RATE_LIMIT_HMAC_KEY`ning real qiymatini README, CI log, commit yoki chatda
+chiqarmang. `.env.example` faqat development namunasi; productionda alohida,
+kamida 32 belgili maxfiy qiymat bering.
+
+Production HTTPS muhitida `SESSION_COOKIE_SECURE=true` bo'lishi shart.
+
+## Databases
+
+Development va test bazalari alohida bo'lishi kerak:
+
+- development database: `nasiya`
+- local test database: `nasiya_test`
+- CI test database: `nasiya_test`
+
+Test database nomi `_test` bilan tugashi shart. Testlar SQLite URLni va
+development databasega qaragan `TEST_DATABASE_URL`ni rad etadi.
+
+## First Run (Xubuntu Terminal)
 
 ```bash
 cd /home/yalgashev/projects/nasiya
 cp .env.example .env
-docker compose config
+docker compose config --quiet
 docker compose build web
 docker compose up -d
 docker compose exec web alembic upgrade head
 xdg-open http://localhost:8000/
-xdg-open http://localhost:8000/health
+xdg-open http://localhost:8000/auth/login
 ```
 
-Loglarni ko'rish:
+Local test DB URLni alohida bering:
 
 ```bash
-docker compose logs -f web
+export TEST_DATABASE_URL='postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test'
 ```
 
-Servislar holatini ko'rish:
-
-```bash
-docker compose ps
-```
-
-## Tekshiruvlar (Windows PowerShell)
+## First Run (Windows PowerShell)
 
 ```powershell
 cd C:\path\to\nasiya
-uv sync --dev --frozen
-docker compose config
-uv run ruff check .
-$env:TEST_DATABASE_URL = "postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test"
-uv run pytest -ra
+Copy-Item .env.example .env
+docker compose config --quiet
+docker compose build web
+docker compose up -d
+docker compose exec web alembic upgrade head
+Start-Process http://localhost:8000/
+Start-Process http://localhost:8000/auth/login
 ```
 
-## Tekshiruvlar (Xubuntu Terminal)
+Local test DB URLni alohida bering:
+
+```powershell
+$env:TEST_DATABASE_URL = "postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test"
+```
+
+## Migrations
+
+Container ichida development database uchun:
+
+```bash
+docker compose exec web alembic upgrade head
+docker compose exec web alembic current
+```
+
+Hostdan test database uchun:
+
+```bash
+TEST_DATABASE_URL='postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test' \
+  uv run alembic upgrade head
+```
+
+PowerShell:
+
+```powershell
+$env:TEST_DATABASE_URL = "postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test"
+uv run alembic upgrade head
+uv run alembic current
+```
+
+## Local User
+
+Local/dev muhitda parol bilan kirish uchun user yarating:
+
+```bash
+docker compose exec web python -m app.cli create-local-user --phone +998901234567
+```
+
+PowerShell:
+
+```powershell
+docker compose exec web python -m app.cli create-local-user --phone +998901234567
+```
+
+Parol terminalda ikki marta hidden prompt orqali so'raladi. Raw passwordni
+command-line argument, README, log yoki chatga yozmang. Production muhitida bu
+CLI fail-closed ishlaydi.
+
+## Auth URLs
+
+Local web server:
+
+- `http://localhost:8000/auth/login`
+- `http://localhost:8000/auth/account`
+- `http://localhost:8000/auth/sessions`
+
+`/auth/account` va `/auth/sessions` authenticated session talab qiladi.
+
+## Validation (Xubuntu Terminal)
 
 ```bash
 cd /home/yalgashev/projects/nasiya
 uv sync --dev --frozen
-docker compose config
+docker compose config --quiet
+TEST_DATABASE_URL='postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test' \
+  uv run alembic upgrade head
 uv run ruff check .
-TEST_DATABASE_URL='postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test' uv run pytest -ra
+TEST_DATABASE_URL='postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test' \
+  uv run pytest -ra
+git diff --check
 ```
 
-## To'xtatish (Windows PowerShell)
+Docker smoke:
 
-Containerlarni to'xtatish uchun:
+```bash
+docker compose build web
+docker compose up -d
+docker compose ps
+docker compose logs -f web
+```
+
+## Validation (Windows PowerShell)
 
 ```powershell
-docker compose down
+cd C:\path\to\nasiya
+uv sync --dev --frozen
+docker compose config --quiet
+$env:TEST_DATABASE_URL = "postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test"
+uv run alembic upgrade head
+uv run ruff check .
+uv run pytest -ra
+git diff --check
 ```
 
-Bu buyruq container va networkni to'xtatadi, lekin PostgreSQL ma'lumotlari
-named volume ichida saqlanib qoladi.
-
-XAVFLI: containerlar bilan birga PostgreSQL ma'lumotlarini ham o'chirish:
+Docker smoke:
 
 ```powershell
-docker compose down -v
+docker compose build web
+docker compose up -d
+docker compose ps
+docker compose logs -f web
 ```
 
-`-v` varianti named volume'ni ham o'chiradi. Bu database ichidagi lokal
-ma'lumotlarni yo'q qiladi.
+`pytest -ra` skip/failure sabablarini ko'rsatadi. CI yoki local validationda
+skipped testlarni yashiradigan flag ishlatilmaydi.
 
-## To'xtatish (Xubuntu Terminal)
+## Stop Services
 
 Containerlarni to'xtatish uchun:
 
@@ -101,8 +209,14 @@ Containerlarni to'xtatish uchun:
 docker compose down
 ```
 
-Bu buyruq container va networkni to'xtatadi, lekin PostgreSQL ma'lumotlari
-named volume ichida saqlanib qoladi.
+PowerShellda ham shu buyruq ishlatiladi:
+
+```powershell
+docker compose down
+```
+
+Bu container va networkni to'xtatadi, lekin PostgreSQL ma'lumotlari named
+volume ichida saqlanib qoladi.
 
 XAVFLI: containerlar bilan birga PostgreSQL ma'lumotlarini ham o'chirish:
 
@@ -110,10 +224,12 @@ XAVFLI: containerlar bilan birga PostgreSQL ma'lumotlarini ham o'chirish:
 docker compose down -v
 ```
 
-`-v` varianti named volume'ni ham o'chiradi. Bu database ichidagi lokal
-ma'lumotlarni yo'q qiladi.
+`-v` named volume'ni ham o'chiradi. Bu local development va test database
+ichidagi ma'lumotlarni yo'q qiladi. Shuningdek `dropdb`, `DROP DATABASE`,
+`TRUNCATE` yoki test cleanup buyruqlarini development database `nasiya`ga
+yubormang.
 
-## PostgreSQL dump importi
+## PostgreSQL Dump Import
 
 Oddiy UTF-8 SQL dump uchun:
 
