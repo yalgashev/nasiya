@@ -11,6 +11,7 @@ from app.db import (
     create_database_session_dependency,
     create_database_session_factory,
 )
+from app.security_headers import install_security_headers_middleware
 from app.settings import Settings
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
@@ -30,6 +31,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     application = FastAPI(title="Nasiya")
     application.add_exception_handler(CsrfFailed, csrf_failed_exception_handler)
+    install_security_headers_middleware(application, app_settings)
     application.state.settings = app_settings
     database_engine = create_database_engine(app_settings)
     database_session_factory = create_database_session_factory(database_engine)

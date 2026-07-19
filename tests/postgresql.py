@@ -6,14 +6,9 @@ from sqlalchemy import inspect
 from sqlalchemy.engine import URL, Engine, make_url
 
 M2_CLEANUP_TABLE_NAMES = (
-    "csrf_tokens",
-    "csrf_token",
+    "auth_rate_limits",
     "sessions",
-    "session",
-    "login_rate_limits",
-    "login_rate_limit",
     "users",
-    "user",
 )
 
 

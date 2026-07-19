@@ -1,8 +1,8 @@
-from sqlalchemy import Boolean, CheckConstraint, DateTime, String, Text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 
+from app.auth.models import AuthRateLimit, User
 from app.auth.models import Session as AuthSession
-from app.auth.models import User
 from app.db import Base
 
 
@@ -12,6 +12,10 @@ def test_users_table_is_registered_in_base_metadata() -> None:
 
 def test_sessions_table_is_registered_in_base_metadata() -> None:
     assert Base.metadata.tables["sessions"] is AuthSession.__table__
+
+
+def test_auth_rate_limits_table_is_registered_in_base_metadata() -> None:
+    assert Base.metadata.tables["auth_rate_limits"] is AuthRateLimit.__table__
 
 
 def test_users_table_has_required_columns() -> None:
@@ -133,3 +137,69 @@ def test_sessions_table_has_no_raw_token_cookie_password_or_business_columns() -
     }
 
     assert forbidden_columns.isdisjoint(AuthSession.__table__.columns.keys())
+
+
+def test_auth_rate_limits_table_has_required_columns() -> None:
+    columns = AuthRateLimit.__table__.columns
+
+    assert set(columns.keys()) == {
+        "scope",
+        "key_hash",
+        "window_started_at",
+        "attempt_count",
+        "updated_at",
+    }
+    assert isinstance(columns["scope"].type, String)
+    assert columns["scope"].type.length == 64
+    assert columns["scope"].primary_key is True
+    assert columns["scope"].nullable is False
+    assert isinstance(columns["key_hash"].type, String)
+    assert columns["key_hash"].type.length == 64
+    assert columns["key_hash"].primary_key is True
+    assert columns["key_hash"].nullable is False
+    assert isinstance(columns["window_started_at"].type, DateTime)
+    assert columns["window_started_at"].type.timezone is True
+    assert columns["window_started_at"].nullable is False
+    assert isinstance(columns["attempt_count"].type, Integer)
+    assert columns["attempt_count"].nullable is False
+    assert isinstance(columns["updated_at"].type, DateTime)
+    assert columns["updated_at"].type.timezone is True
+    assert columns["updated_at"].nullable is False
+
+
+def test_auth_rate_limits_key_hash_and_attempt_count_are_constrained() -> None:
+    primary_key_columns = {
+        column.name for column in AuthRateLimit.__table__.primary_key.columns
+    }
+    check_constraints = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in AuthRateLimit.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert primary_key_columns == {"scope", "key_hash"}
+    assert check_constraints["ck_auth_rate_limits_key_hash_hmac_sha256_hex"] == (
+        "key_hash ~ '^[0-9a-f]{64}$'"
+    )
+    assert (
+        check_constraints["ck_auth_rate_limits_attempt_count_positive"]
+        == "attempt_count > 0"
+    )
+
+
+def test_auth_rate_limits_table_has_no_raw_identifier_or_secret_columns() -> None:
+    forbidden_columns = {
+        "phone",
+        "raw_phone",
+        "ip",
+        "raw_ip",
+        "ip_address",
+        "password",
+        "password_hash",
+        "session_token",
+        "raw_session_token",
+        "token",
+        "cookie",
+    }
+
+    assert forbidden_columns.isdisjoint(AuthRateLimit.__table__.columns.keys())

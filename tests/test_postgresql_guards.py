@@ -48,10 +48,19 @@ def test_alembic_head_exists() -> None:
 
 def test_m2_cleanup_tables_use_allowlist(monkeypatch) -> None:
     inspector = Mock()
-    inspector.get_table_names.return_value = ["debt", "sessions", "users"]
+    inspector.get_table_names.return_value = [
+        "debt",
+        "auth_rate_limits",
+        "sessions",
+        "users",
+    ]
     monkeypatch.setattr(postgresql, "inspect", lambda _: inspector)
 
-    assert get_m2_cleanup_tables(Mock()) == ["sessions", "users"]
+    assert get_m2_cleanup_tables(Mock()) == [
+        "auth_rate_limits",
+        "sessions",
+        "users",
+    ]
 
 
 def test_cleanup_is_noop_when_no_m2_tables_are_present(monkeypatch) -> None:
