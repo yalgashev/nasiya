@@ -34,3 +34,83 @@ h1 {
 p {
     margin: 0;
 }
+
+section,
+nav,
+form {
+    margin-top: 24px;
+}
+
+form {
+    display: grid;
+    gap: 16px;
+}
+
+label {
+    display: block;
+    margin-bottom: 6px;
+    font-weight: 650;
+}
+
+input,
+button {
+    width: 100%;
+    min-height: 44px;
+    border-radius: 8px;
+    font: inherit;
+}
+
+input {
+    border: 1px solid #94a3b8;
+    padding: 10px 12px;
+    color: #111827;
+    background: #ffffff;
+}
+
+button {
+    border: 0;
+    padding: 10px 16px;
+    color: #ffffff;
+    background: #0f766e;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+a {
+    color: #0f5f59;
+    font-weight: 650;
+}
+
+input:focus-visible,
+button:focus-visible,
+a:focus-visible {
+    outline: 3px solid #f59e0b;
+    outline-offset: 3px;
+}
+
+[role="alert"] {
+    min-height: 24px;
+}
+
+[role="alert"]:not(:empty) {
+    border-left: 4px solid #b91c1c;
+    padding: 10px 12px;
+    background: #fff1f2;
+    color: #7f1d1d;
+}
+
+[role="alert"]:not(:empty)::before {
+    content: "Xato: ";
+    font-weight: 700;
+}
+
+@media (max-width: 430px) {
+    main {
+        width: min(100% - 24px, 640px);
+        padding: 24px 0;
+    }
+
+    h1 {
+        font-size: 1.75rem;
+    }
+}

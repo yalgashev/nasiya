@@ -156,7 +156,7 @@ def test_require_user_redirects_missing_cookie_to_fixed_login_path(
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/login"
+    assert response.headers["location"] == "/auth/login"
 
 
 def test_current_session_context_resolves_valid_cookie_and_touches_session(

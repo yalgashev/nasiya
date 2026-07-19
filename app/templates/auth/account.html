@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block title %}Hisob - Nasiya{% endblock %}
+
+{% block content %}
+<main>
+    <h1>Hisob</h1>
+    <section aria-labelledby="account-phone-heading">
+        <h2 id="account-phone-heading">Telefon</h2>
+        <p>{{ masked_phone }}</p>
+    </section>
+    <nav aria-label="Hisob amallari">
+        <a href="/auth/sessions">Sessiyalar</a>
+    </nav>
+    <form method="post" action="/auth/logout">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit">Chiqish</button>
+    </form>
+</main>
+{% endblock %}

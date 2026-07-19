@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from html import escape
 from typing import Annotated, Final
+from urllib.parse import parse_qs
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
@@ -28,7 +29,7 @@ from app.auth.sessions import (
 )
 from app.settings import Settings
 
-LOGIN_PATH: Final = "/login"
+LOGIN_PATH: Final = "/auth/login"
 CSRF_FORM_FIELD_NAME: Final = "csrf_token"
 CSRF_HEADER_NAME: Final = "X-CSRF-Token"
 SAFE_METHODS: Final = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -246,10 +247,32 @@ async def _get_form_csrf_token(request: Request) -> str | None:
     if content_type not in FORM_CONTENT_TYPES:
         return None
 
-    await request.body()
+    cached_form = getattr(request, "_form", None)
+    if cached_form is not None:
+        token = cached_form.get(CSRF_FORM_FIELD_NAME)
+        return token if isinstance(token, str) else None
+
+    if content_type == "application/x-www-form-urlencoded":
+        return await _get_urlencoded_form_csrf_token(request)
+
     form = await request.form()
     token = form.get(CSRF_FORM_FIELD_NAME)
     return token if isinstance(token, str) else None
+
+
+async def _get_urlencoded_form_csrf_token(request: Request) -> str | None:
+    body = await request.body()
+    try:
+        decoded_body = body.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    submitted_tokens = parse_qs(
+        decoded_body,
+        keep_blank_values=True,
+    ).get(CSRF_FORM_FIELD_NAME)
+    if not submitted_tokens:
+        return None
+    return submitted_tokens[0]
 
 
 def _get_request_content_type(request: Request) -> str:

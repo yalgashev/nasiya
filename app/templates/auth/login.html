@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Kirish - Nasiya{% endblock %}
+
+{% block content %}
+<main>
+    <h1>Nasiya hisobiga kirish</h1>
+    <form method="post" action="/auth/login" novalidate>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+        <div>
+            <label for="phone">Telefon raqam</label>
+            <input
+                id="phone"
+                name="phone"
+                type="tel"
+                autocomplete="tel"
+                inputmode="tel"
+                required
+            >
+        </div>
+
+        <div>
+            <label for="password">Parol</label>
+            <input
+                id="password"
+                name="password"
+                type="password"
+                autocomplete="current-password"
+                required
+            >
+        </div>
+
+        <div id="login-error" role="alert" aria-live="polite">
+            {% if error_message %}{{ error_message }}{% endif %}
+        </div>
+
+        <button type="submit">Kirish</button>
+    </form>
+</main>
+{% endblock %}

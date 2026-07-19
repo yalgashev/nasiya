@@ -26,10 +26,25 @@ def make_application() -> FastAPI:
 
 
 def iter_unsafe_routes(application: FastAPI) -> Iterator[APIRoute]:
-    for route in application.routes:
-        if not isinstance(route, APIRoute):
-            continue
+    for route in iter_application_api_routes(application):
         if (route.methods or set()) & UNSAFE_METHODS:
+            yield route
+
+
+def iter_application_api_routes(application: FastAPI) -> Iterator[APIRoute]:
+    yield from iter_api_routes(application.routes)
+
+
+def iter_api_routes(routes: list[object]) -> Iterator[APIRoute]:
+    for route in routes:
+        if not isinstance(route, APIRoute):
+            included_router = getattr(route, "original_router", None)
+            if included_router is not None:
+                yield from iter_api_routes(included_router.routes)
+            nested_routes = getattr(route, "routes", None)
+            if nested_routes:
+                yield from iter_api_routes(nested_routes)
+        else:
             yield route
 
 
@@ -73,4 +88,6 @@ def test_safe_and_test_only_routes_are_not_in_unsafe_inventory() -> None:
 
     assert "/" not in audited_route_paths
     assert "/health" not in audited_route_paths
+    assert "/auth/login" in audited_route_paths
+    assert "/auth/logout" in audited_route_paths
     assert not any(path.startswith("/_test/") for path in audited_route_paths)
