@@ -115,6 +115,8 @@ Hostdan test database uchun:
 ```bash
 TEST_DATABASE_URL='postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test' \
   uv run alembic upgrade head
+TEST_DATABASE_URL='postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test' \
+  uv run alembic current
 ```
 
 PowerShell:
@@ -124,6 +126,10 @@ $env:TEST_DATABASE_URL = "postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/na
 uv run alembic upgrade head
 uv run alembic current
 ```
+
+M3 checkpointida `alembic current` natijasi `b1f3a7c9d2e4 (head)` bo'lishi
+kerak. Migrationni development databasega container ichidan, test databasega
+esa faqat `_test` bilan tugaydigan alohida `TEST_DATABASE_URL` orqali qo'llang.
 
 ## Local User
 
@@ -153,6 +159,24 @@ Local web server:
 
 `/auth/account` va `/auth/sessions` authenticated session talab qiladi.
 
+## Customer Draft Foundation (M3)
+
+M3 faqat authenticated customer onboarding qoralamasi uchun foundation
+yaratadi. Bu public ro'yxatdan o'tish emas; customer faqat draft holatida
+qoladi.
+
+Customer jadvali PII saqlamaydi. Telefon auth userda qoladi va customer
+profilida faqat maskalangan ko'rinishda chiqadi.
+
+Local web server:
+
+- `http://localhost:8000/customer/onboarding`
+- `http://localhost:8000/customer/profile`
+
+Local user yaratib `/auth/login` orqali kiring, so'ng `/auth/account`dagi
+customer draft onboarding linkini oching. Bu URLlar faqat authenticated draft
+sahifalaridir.
+
 ## Validation (Xubuntu Terminal)
 
 ```bash
@@ -161,6 +185,8 @@ uv sync --dev --frozen
 docker compose config --quiet
 TEST_DATABASE_URL='postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test' \
   uv run alembic upgrade head
+TEST_DATABASE_URL='postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test' \
+  uv run alembic current
 uv run ruff check .
 TEST_DATABASE_URL='postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test' \
   uv run pytest -ra
@@ -184,6 +210,7 @@ uv sync --dev --frozen
 docker compose config --quiet
 $env:TEST_DATABASE_URL = "postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test"
 uv run alembic upgrade head
+uv run alembic current
 uv run ruff check .
 uv run pytest -ra
 git diff --check
@@ -199,7 +226,9 @@ docker compose logs -f web
 ```
 
 `pytest -ra` skip/failure sabablarini ko'rsatadi. CI yoki local validationda
-skipped testlarni yashiradigan flag ishlatilmaydi.
+skipped testlarni yashiradigan flag ishlatilmaydi. Generic full suite real
+PostgreSQL test database orqali customer migration testlarini ham avtomatik
+bajaradi.
 
 ## Stop Services
 
@@ -225,9 +254,9 @@ docker compose down -v
 ```
 
 `-v` named volume'ni ham o'chiradi. Bu local development va test database
-ichidagi ma'lumotlarni yo'q qiladi. Shuningdek `dropdb`, `DROP DATABASE`,
-`TRUNCATE` yoki test cleanup buyruqlarini development database `nasiya`ga
-yubormang.
+ichidagi ma'lumotlarni, jumladan local user va M3 customer draftlarni yo'q
+qiladi. Shuningdek `dropdb`, `DROP DATABASE`, `TRUNCATE` yoki test cleanup
+buyruqlarini development database `nasiya`ga yubormang.
 
 ## PostgreSQL Dump Import
 
