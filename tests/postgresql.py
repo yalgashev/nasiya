@@ -6,6 +6,9 @@ from sqlalchemy import inspect
 from sqlalchemy.engine import URL, Engine, make_url
 
 M2_CLEANUP_TABLE_NAMES = (
+    "telegram_link_events",
+    "telegram_link_tokens",
+    "telegram_links",
     "customers",
     "auth_rate_limits",
     "sessions",

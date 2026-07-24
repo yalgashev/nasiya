@@ -9,6 +9,7 @@ from app.auth import models as _auth_models  # noqa: F401
 from app.customer import models as _customer_models  # noqa: F401
 from app.db import Base
 from app.settings import Settings
+from app.telegram import models as _telegram_models  # noqa: F401
 
 # This is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

@@ -46,17 +46,27 @@ def test_alembic_head_exists() -> None:
     assert get_alembic_head()
 
 
-def test_m2_cleanup_tables_use_allowlist(monkeypatch) -> None:
+def test_m2_cleanup_tables_use_allowlist_with_m4_child_first_order(
+    monkeypatch,
+) -> None:
     inspector = Mock()
     inspector.get_table_names.return_value = [
         "debt",
+        "telegram_links",
+        "telegram_link_tokens",
+        "telegram_link_events",
         "auth_rate_limits",
         "sessions",
         "users",
+        "customers",
     ]
     monkeypatch.setattr(postgresql, "inspect", lambda _: inspector)
 
     assert get_m2_cleanup_tables(Mock()) == [
+        "telegram_link_events",
+        "telegram_link_tokens",
+        "telegram_links",
+        "customers",
         "auth_rate_limits",
         "sessions",
         "users",
