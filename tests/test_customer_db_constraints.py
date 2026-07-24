@@ -2,7 +2,7 @@ from collections.abc import Generator
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -39,6 +39,15 @@ def add_customer(session: Session, user: User, status: str) -> Customer:
 
 def count_customers(session: Session) -> int:
     return session.scalar(select(func.count()).select_from(Customer)) or 0
+
+
+def count_users_by_id(session: Session, user: User) -> int:
+    return (
+        session.scalar(
+            select(func.count()).select_from(User).where(User.id == user.id),
+        )
+        or 0
+    )
 
 
 @pytest.mark.integration
@@ -122,3 +131,44 @@ def test_customer_restricts_parent_user_delete_until_customer_deleted(
 
     assert db_session.get(Customer, customer.id) is None
     assert db_session.get(User, user.id) is None
+
+
+@pytest.mark.integration
+def test_customer_restricts_direct_parent_user_delete_and_recovers_transaction(
+    db_session: Session,
+) -> None:
+    user = add_user(db_session, "+998900000005")
+    customer = add_customer(db_session, user, CUSTOMER_ONBOARDING_STATUS_DRAFT)
+    customer_id = customer.id
+
+    with pytest.raises(IntegrityError):
+        with db_session.begin_nested():
+            db_session.execute(delete(User).where(User.id == user.id))
+            db_session.flush()
+
+    assert count_users_by_id(db_session, user) == 1
+    assert count_customers(db_session) == 1
+
+    stored_customer = db_session.get(Customer, customer_id)
+    assert stored_customer is not None
+    assert stored_customer.user_id == user.id
+
+    assert db_session.scalar(select(User.id).where(User.id == user.id)) == user.id
+
+    db_session.delete(stored_customer)
+    db_session.flush()
+    db_session.execute(delete(User).where(User.id == user.id))
+    db_session.flush()
+
+    assert db_session.get(Customer, customer_id) is None
+    assert count_users_by_id(db_session, user) == 0
+
+
+def test_customer_user_relationships_do_not_delete_cascade() -> None:
+    for mapper in (User.__mapper__, Customer.__mapper__):
+        for relationship in mapper.relationships:
+            if relationship.mapper.class_ not in {User, Customer}:
+                continue
+
+            assert "delete" not in relationship.cascade
+            assert "delete-orphan" not in relationship.cascade

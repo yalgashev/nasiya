@@ -6,9 +6,17 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from sqlalchemy.engine import Engine
 
+from app.auth.deps import validate_csrf
 from app.auth.router import router as auth_router
 from app.customer.router import router as customer_router
 from app.main import create_app
+
+UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+EXPECTED_CUSTOMER_ROUTES = {
+    "/customer/onboarding": {"GET"},
+    "/customer/onboarding/start": {"POST"},
+    "/customer/profile": {"GET"},
+}
 
 
 def iter_api_routes(application: FastAPI) -> Iterator[APIRoute]:
@@ -37,11 +45,7 @@ def test_customer_router_has_customer_prefix_and_expected_onboarding_routes() ->
         for route in customer_router.routes
         if isinstance(route, APIRoute)
     }
-    assert customer_routes == {
-        "/customer/onboarding": {"GET"},
-        "/customer/onboarding/start": {"POST"},
-        "/customer/profile": {"GET"},
-    }
+    assert customer_routes == EXPECTED_CUSTOMER_ROUTES
 
 
 def test_create_app_wires_customer_router_without_connecting_to_database() -> None:
@@ -74,13 +78,61 @@ def test_customer_router_adds_only_onboarding_routes() -> None:
         if route.path_format.startswith("/customer")
     ]
 
-    assert {
-        route.path_format: route.methods for route in customer_routes
-    } == {
-        "/customer/onboarding": {"GET"},
-        "/customer/onboarding/start": {"POST"},
-        "/customer/profile": {"GET"},
+    assert {route.path_format: route.methods for route in customer_routes} == (
+        EXPECTED_CUSTOMER_ROUTES
+    )
+
+
+def test_customer_routes_forbid_external_ids_and_scope_drift() -> None:
+    application = create_app()
+    customer_routes = [
+        route
+        for route in iter_api_routes(application)
+        if route.path_format.startswith("/customer")
+    ]
+
+    assert {route.path_format: route.methods for route in customer_routes} == (
+        EXPECTED_CUSTOMER_ROUTES
+    )
+    for route in customer_routes:
+        assert route.dependant.path_params == []
+        assert "{" not in route.path_format
+        assert [
+            query_param.name
+            for query_param in route.dependant.query_params
+            if query_param.name in {"customer_id", "user_id"}
+        ] == []
+        assert [
+            body_param.name
+            for body_param in route.dependant.body_params
+            if body_param.name in {"customer_id", "user_id"}
+        ] == []
+
+    all_route_paths = {route.path_format for route in iter_api_routes(application)}
+    assert "/register" not in all_route_paths
+    assert "/auth/register" not in all_route_paths
+    assert not any("activation" in path for path in all_route_paths)
+
+    get_customer_routes = {
+        route.path_format
+        for route in customer_routes
+        if route.methods == {"GET"}
     }
+    assert get_customer_routes == {"/customer/onboarding", "/customer/profile"}
+    assert "/customer/onboarding/start" not in get_customer_routes
+
+    customer_unsafe_routes = [
+        route
+        for route in customer_routes
+        if (route.methods or set()) & UNSAFE_METHODS
+    ]
+    assert [route.path_format for route in customer_unsafe_routes] == [
+        "/customer/onboarding/start"
+    ]
+    assert any(
+        dependency.call is validate_csrf
+        for dependency in customer_unsafe_routes[0].dependant.dependencies
+    )
 
 
 def test_m1_routes_still_respond_and_auth_route_inventory_is_unchanged() -> None:

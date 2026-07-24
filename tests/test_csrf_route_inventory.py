@@ -90,4 +90,5 @@ def test_safe_and_test_only_routes_are_not_in_unsafe_inventory() -> None:
     assert "/health" not in audited_route_paths
     assert "/auth/login" in audited_route_paths
     assert "/auth/logout" in audited_route_paths
+    assert "/customer/onboarding/start" in audited_route_paths
     assert not any(path.startswith("/_test/") for path in audited_route_paths)

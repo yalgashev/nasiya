@@ -72,18 +72,26 @@ def test_customers_timestamps_are_timezone_aware() -> None:
 
 
 def test_customers_table_has_no_pii_activation_or_shop_columns() -> None:
-    forbidden_columns = {
+    forbidden_column_markers = {
         "phone",
-        "full_name",
-        "first_name",
-        "last_name",
+        "name",
+        "fio",
+        "fish",
         "jshshir",
+        "pinfl",
         "passport",
         "document",
         "telegram",
         "offer",
-        "shop_id",
+        "shop",
         "is_active",
     }
+    customer_columns = {
+        column_name.casefold() for column_name in Customer.__table__.columns.keys()
+    }
 
-    assert forbidden_columns.isdisjoint(Customer.__table__.columns.keys())
+    assert all(
+        marker not in column_name
+        for column_name in customer_columns
+        for marker in forbidden_column_markers
+    )
