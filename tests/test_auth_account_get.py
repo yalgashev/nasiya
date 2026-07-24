@@ -2,15 +2,17 @@ import re
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 from html import unescape
+from pathlib import Path
 
 import pytest
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from app.auth.csrf import get_csrf_token
-from app.auth.deps import get_current_time
+from app.auth.deps import get_current_time, get_database_session
 from app.auth.error_codes import ErrorCode
 from app.auth.models import Session as AuthSession
 from app.auth.models import User
@@ -29,6 +31,13 @@ from app.security_headers import AUTH_NO_STORE_CACHE_CONTROL, CONTENT_SECURITY_P
 from app.settings import Settings
 
 TEST_RATE_LIMIT_HMAC_KEY = "test-rate-limit-hmac-key-for-auth-account-get"
+FORBIDDEN_ACCOUNT_NAVIGATION_SCOPE_TEXT = (
+    "shop",
+    "debt",
+    "qarz",
+    "dashboard",
+    "bottom-nav",
+)
 
 
 @pytest.fixture
@@ -150,6 +159,21 @@ def assert_delete_cookie(response, settings: Settings) -> None:
     assert "SameSite=lax" in set_cookie
 
 
+def iter_api_routes(routes: list[object]):
+    for route in routes:
+        if isinstance(route, APIRoute):
+            yield route
+            continue
+
+        included_router = getattr(route, "original_router", None)
+        if included_router is not None:
+            yield from iter_api_routes(included_router.routes)
+
+        nested_routes = getattr(route, "routes", None)
+        if nested_routes:
+            yield from iter_api_routes(nested_routes)
+
+
 def test_get_account_renders_masked_phone_logout_csrf_and_sessions_link(
     m2_test_database: Engine,
     db_session: Session,
@@ -177,15 +201,15 @@ def test_get_account_renders_masked_phone_logout_csrf_and_sessions_link(
         get_csrf_token(created.session).as_form_value()
     )
     assert 'href="/auth/sessions"' in response.text
+    assert 'href="/customer/onboarding"' in response.text
+    assert "Customer draft onboarding" in visible_html
     assert raw_cookie not in response.text
     assert created.session.token_hash not in response.text
     assert csrf_secret not in response.text
     assert password_hash not in response.text
     assert "password_hash" not in response.text
     assert "Password123" not in response.text
-    assert "shop" not in response.text.casefold()
-    assert "customer" not in response.text.casefold()
-    assert "dashboard" not in response.text.casefold()
+    assert_forbidden_account_navigation_scope_absent(response.text)
     assert "<script" not in response.text.casefold()
     assert "<style" not in response.text.casefold()
     assert "style=" not in response.text.casefold()
@@ -264,3 +288,48 @@ def test_get_account_clears_invalid_or_revoked_cookie(
     assert_delete_cookie(response, settings)
     assert raw_cookie not in response.text
     assert_auth_security_headers(response)
+
+
+def test_account_template_links_to_customer_draft_onboarding() -> None:
+    template = Path("app/templates/auth/account.html").read_text(encoding="utf-8")
+
+    assert 'href="/customer/onboarding"' in template
+    assert "Customer draft onboarding" in template
+    assert 'href="/auth/sessions"' in template
+    assert 'action="/auth/logout"' in template
+    assert_forbidden_account_navigation_scope_absent(template)
+    assert "<script" not in template.casefold()
+    assert "<style" not in template.casefold()
+    assert "style=" not in template.casefold()
+
+
+def test_account_route_does_not_query_customer_state_or_own_db_session() -> None:
+    application = create_app()
+    account_routes = [
+        route
+        for route in iter_api_routes(application.routes)
+        if route.path_format == "/auth/account"
+    ]
+
+    assert len(account_routes) == 1
+    route = account_routes[0]
+    assert route.methods == {"GET"}
+    assert all(
+        dependency.call is not get_database_session
+        for dependency in route.dependant.dependencies
+    )
+
+    router_source = Path("app/auth/router.py").read_text(encoding="utf-8")
+    account_source = router_source.split("@router.get(\"/account\"", 1)[1].split(
+        "@router.get(\"/sessions\"",
+        1,
+    )[0]
+    assert "get_current_customer_draft_state" not in account_source
+    assert "Customer" not in account_source
+    assert "select(" not in account_source
+
+
+def assert_forbidden_account_navigation_scope_absent(html: str) -> None:
+    normalized_html = unescape(html).casefold()
+    for forbidden_text in FORBIDDEN_ACCOUNT_NAVIGATION_SCOPE_TEXT:
+        assert forbidden_text.casefold() not in normalized_html

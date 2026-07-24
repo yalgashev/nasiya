@@ -8,6 +8,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.auth.deps import CsrfFailed, csrf_failed_exception_handler
 from app.auth.router import router as auth_router
+from app.customer.router import router as customer_router
 from app.db import (
     create_database_engine,
     create_database_session_dependency,
@@ -44,6 +45,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         database_session_factory
     )
     application.include_router(auth_router)
+    application.include_router(customer_router)
     application.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @application.get("/", response_class=HTMLResponse)

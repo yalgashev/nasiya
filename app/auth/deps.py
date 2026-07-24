@@ -27,6 +27,7 @@ from app.auth.sessions import (
     resolve_by_raw_token,
     touch_session,
 )
+from app.security_headers import mark_auth_response_no_store
 from app.settings import Settings
 
 LOGIN_PATH: Final = "/auth/login"
@@ -216,22 +217,25 @@ async def csrf_failed_exception_handler(
     )
     headers = {"X-Error-Code": ErrorCode.CSRF_FAILED.value}
     if _is_htmx_request(request):
-        return HTMLResponse(
+        response = HTMLResponse(
             content=_render_csrf_fragment(public_body),
             status_code=exc.status_code,
             headers=headers,
         )
+        return mark_auth_response_no_store(response)
     if _accepts_html(request):
-        return HTMLResponse(
+        response = HTMLResponse(
             content=_render_csrf_page(public_body),
             status_code=exc.status_code,
             headers=headers,
         )
-    return JSONResponse(
+        return mark_auth_response_no_store(response)
+    response = JSONResponse(
         content={"detail": public_body},
         status_code=exc.status_code,
         headers=headers,
     )
+    return mark_auth_response_no_store(response)
 
 
 async def _get_submitted_csrf_token(request: Request) -> str | None:

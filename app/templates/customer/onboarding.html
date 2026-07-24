@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}Onboarding - Nasiya{% endblock %}
+
+{% block content %}
+<main class="customer-page">
+    <h1>Customer onboarding qoralamasi</h1>
+    <section aria-labelledby="customer-onboarding-heading">
+        {% if customer_state %}
+        <h2 id="customer-onboarding-heading">Draft mavjud</h2>
+        <p class="customer-status">Status: Qoralama</p>
+        <a href="/customer/profile">Profilga o'tish</a>
+        {% else %}
+        <h2 id="customer-onboarding-heading">Draft hali boshlanmagan</h2>
+        <p>Bu sahifa faqat onboarding qoralamasini boshlash uchun.</p>
+        <form method="post" action="/customer/onboarding/start">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit">Boshlash</button>
+        </form>
+        <nav class="customer-actions" aria-label="Onboarding navigatsiyasi">
+            <a href="/auth/account">Hisobga qaytish</a>
+        </nav>
+        {% endif %}
+    </section>
+</main>
+{% endblock %}

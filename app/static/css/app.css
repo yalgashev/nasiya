@@ -151,6 +151,46 @@ dd {
     overflow-wrap: anywhere;
 }
 
+.customer-page {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+
+.customer-page h1,
+.customer-page h2,
+.customer-page p,
+.customer-page a,
+.customer-page button {
+    overflow-wrap: anywhere;
+}
+
+.customer-status {
+    border-left: 4px solid #0f766e;
+    padding: 10px 12px;
+    background: #ecfdf5;
+}
+
+.customer-status strong {
+    font-weight: 700;
+}
+
+.customer-actions {
+    display: grid;
+    gap: 12px;
+}
+
+.customer-actions a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+}
+
+.customer-page a:focus-visible,
+.customer-page button:focus-visible {
+    outline: 3px solid #f59e0b;
+    outline-offset: 3px;
+}
+
 @media (max-width: 430px) {
     main {
         width: min(100% - 24px, 640px);
@@ -159,5 +199,13 @@ dd {
 
     h1 {
         font-size: 1.75rem;
+    }
+
+    .customer-page {
+        width: min(100% - 24px, 640px);
+    }
+
+    .customer-actions a {
+        width: 100%;
     }
 }
