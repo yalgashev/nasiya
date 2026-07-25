@@ -13,6 +13,8 @@ class ErrorCode(StrEnum):
     RATE_LIMITED = "RATE_LIMITED"
     VALIDATION_ERROR = "VALIDATION_ERROR"
     TELEGRAM_ALREADY_LINKED = "TELEGRAM_ALREADY_LINKED"
+    TELEGRAM_NOT_LINKED = "TELEGRAM_NOT_LINKED"
+    TELEGRAM_CHAT_ALREADY_LINKED = "TELEGRAM_CHAT_ALREADY_LINKED"
     LINK_TOKEN_INVALID = "LINK_TOKEN_INVALID"
 
 
@@ -53,6 +55,16 @@ ERROR_CATALOG: Final[Mapping[ErrorCode, ErrorDefinition]] = MappingProxyType(
         ErrorCode.TELEGRAM_ALREADY_LINKED: ErrorDefinition(
             code=ErrorCode.TELEGRAM_ALREADY_LINKED,
             user_message="Telegram akkauntingiz allaqachon bog'langan.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.TELEGRAM_NOT_LINKED: ErrorDefinition(
+            code=ErrorCode.TELEGRAM_NOT_LINKED,
+            user_message="Telegram akkauntingiz bog'lanmagan.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.TELEGRAM_CHAT_ALREADY_LINKED: ErrorDefinition(
+            code=ErrorCode.TELEGRAM_CHAT_ALREADY_LINKED,
+            user_message="Bu Telegram chat allaqachon bog'langan.",
             http_status=HTTPStatus.CONFLICT,
         ),
         ErrorCode.LINK_TOKEN_INVALID: ErrorDefinition(

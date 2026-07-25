@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.auth.models import User
+from app.telegram.inbound import VerifiedPrivateTelegramChatIdentity
 from app.telegram.models import TelegramLink, TelegramLinkToken
 
 _TOKEN_HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -44,6 +45,126 @@ def has_active_telegram_link(session: Session, current_user: User) -> bool:
     return session.scalar(statement) is not None
 
 
+def get_telegram_link_by_user(
+    session: Session,
+    current_user: User,
+) -> TelegramLink | None:
+    statement = select(TelegramLink).where(TelegramLink.user_id == current_user.id)
+    return session.scalar(statement)
+
+
+def get_telegram_link_by_user_for_update(
+    session: Session,
+    current_user: User,
+) -> TelegramLink | None:
+    statement = (
+        select(TelegramLink)
+        .where(TelegramLink.user_id == current_user.id)
+        .with_for_update()
+    )
+    return session.scalar(statement)
+
+
+def get_other_active_telegram_link_by_chat_identity_for_update(
+    session: Session,
+    current_user: User,
+    chat_identity: VerifiedPrivateTelegramChatIdentity,
+) -> TelegramLink | None:
+    statement = (
+        select(TelegramLink)
+        .where(
+            TelegramLink.telegram_chat_id == chat_identity.as_bigint(),
+            TelegramLink.unlinked_at.is_(None),
+            TelegramLink.user_id != current_user.id,
+        )
+        .with_for_update()
+    )
+    return session.scalar(statement)
+
+
+def link_verified_private_chat(
+    session: Session,
+    current_user: User,
+    chat_identity: VerifiedPrivateTelegramChatIdentity,
+    now: datetime,
+) -> TelegramLink | None:
+    current_time = _as_utc(now)
+    existing_link = get_telegram_link_by_user_for_update(session, current_user)
+    if existing_link is None:
+        link = TelegramLink(
+            user_id=current_user.id,
+            telegram_chat_id=chat_identity.as_bigint(),
+            linked_at=current_time,
+            updated_at=current_time,
+        )
+        session.add(link)
+        session.flush()
+        return link
+
+    if existing_link.telegram_chat_id is not None and existing_link.unlinked_at is None:
+        return None
+
+    existing_link.telegram_chat_id = chat_identity.as_bigint()
+    existing_link.linked_at = current_time
+    existing_link.unlinked_at = None
+    existing_link.updated_at = current_time
+    session.add(existing_link)
+    session.flush()
+    return existing_link
+
+
+def relink_verified_private_chat(
+    session: Session,
+    current_user: User,
+    chat_identity: VerifiedPrivateTelegramChatIdentity,
+    now: datetime,
+) -> TelegramLink | None:
+    current_time = _as_utc(now)
+    existing_link = get_telegram_link_by_user_for_update(session, current_user)
+    if (
+        existing_link is None
+        or existing_link.telegram_chat_id is None
+        or existing_link.unlinked_at is not None
+    ):
+        return None
+
+    existing_link.telegram_chat_id = chat_identity.as_bigint()
+    existing_link.linked_at = current_time
+    existing_link.updated_at = current_time
+    session.add(existing_link)
+    session.flush()
+    return existing_link
+
+
+def unlink_verified_private_chat(
+    session: Session,
+    current_user: User,
+    now: datetime,
+) -> TelegramLink | None:
+    current_time = _as_utc(now)
+    existing_link = get_telegram_link_by_user_for_update(session, current_user)
+    if (
+        existing_link is None
+        or existing_link.telegram_chat_id is None
+        or existing_link.unlinked_at is not None
+    ):
+        return None
+
+    existing_link.telegram_chat_id = None
+    existing_link.unlinked_at = current_time
+    existing_link.updated_at = current_time
+    session.add(existing_link)
+    session.flush()
+    return existing_link
+
+
+def get_telegram_link_status(
+    session: Session,
+    current_user: User,
+) -> TelegramLink | None:
+    return get_telegram_link_by_user(session, current_user)
+
+
 def get_outstanding_telegram_link_token_for_update(
     session: Session,
     current_user: User,
@@ -71,6 +192,23 @@ def get_telegram_link_token_by_hash_for_update(
         .with_for_update()
     )
     return session.scalar(statement)
+
+
+def get_valid_telegram_link_token_for_consume_by_hash_for_update(
+    session: Session,
+    token_hash: str,
+    now: datetime,
+) -> TelegramLinkToken | None:
+    current_time = _as_utc(now)
+    token = get_telegram_link_token_by_hash_for_update(session, token_hash)
+    if (
+        token is None
+        or token.consumed_at is not None
+        or token.invalidated_at is not None
+        or token.expires_at <= current_time
+    ):
+        return None
+    return token
 
 
 def invalidate_outstanding_telegram_link_tokens(

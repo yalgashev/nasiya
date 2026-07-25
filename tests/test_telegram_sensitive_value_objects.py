@@ -6,9 +6,11 @@ import pytest
 
 import app.telegram.bot as bot_module
 import app.telegram.client_ip as client_ip_module
+import app.telegram.inbound as inbound_module
 import app.telegram.token as token_module
 from app.telegram.bot import TelegramBotUsername
 from app.telegram.client_ip import ResolvedClientIp
+from app.telegram.inbound import VerifiedPrivateTelegramChatIdentity
 from app.telegram.token import (
     RawTelegramLinkToken,
     TelegramBotUsernameNotConfigured,
@@ -17,6 +19,7 @@ from app.telegram.token import (
 
 RAW_TOKEN = "deterministic_token-123"
 RAW_IP = "203.0.113.10"
+RAW_CHAT_ID = 123_456_789
 CANONICAL_BOT_USERNAME = "nasiya_linkbot"
 FULL_START_LINK = f"https://t.me/{CANONICAL_BOT_USERNAME}?start={RAW_TOKEN}"
 
@@ -33,6 +36,10 @@ FULL_START_LINK = f"https://t.me/{CANONICAL_BOT_USERNAME}?start={RAW_TOKEN}"
             FULL_START_LINK,
         ),
         (ResolvedClientIp(RAW_IP), RAW_IP),
+        (
+            VerifiedPrivateTelegramChatIdentity(RAW_CHAT_ID),
+            str(RAW_CHAT_ID),
+        ),
     ],
 )
 def test_sensitive_value_objects_repr_and_str_are_redacted(
@@ -73,17 +80,22 @@ def test_telegram_start_link_repr_and_str_do_not_reveal_raw_token() -> None:
             "203.0.113.10, 198.51.100.20",
             "Resolved client IP",
         ),
+        (
+            VerifiedPrivateTelegramChatIdentity,
+            -100_123_456_789,
+            "Verified private Telegram chat identity",
+        ),
     ],
 )
 def test_validation_exceptions_do_not_echo_sensitive_input(
     constructor,
-    raw_sensitive_input: str,
+    raw_sensitive_input: object,
     expected_message: str,
 ) -> None:
     with pytest.raises(ValueError) as exc_info:
         constructor(raw_sensitive_input)
 
-    assert raw_sensitive_input not in str(exc_info.value)
+    assert str(raw_sensitive_input) not in str(exc_info.value)
     assert expected_message in str(exc_info.value)
 
 
@@ -107,6 +119,10 @@ def test_start_link_not_configured_exception_does_not_reveal_raw_token() -> None
             FULL_START_LINK,
         ),
         (ResolvedClientIp(RAW_IP), RAW_IP),
+        (
+            VerifiedPrivateTelegramChatIdentity(RAW_CHAT_ID),
+            str(RAW_CHAT_ID),
+        ),
     ],
 )
 def test_logging_objects_does_not_reveal_sensitive_values(
@@ -148,6 +164,7 @@ def test_logging_start_link_object_does_not_reveal_raw_token(caplog) -> None:
             RawTelegramLinkToken(RAW_TOKEN),
         ),
         ResolvedClientIp(RAW_IP),
+        VerifiedPrivateTelegramChatIdentity(RAW_CHAT_ID),
         TelegramBotUsername("Nasiya_LinkBot"),
     ],
 )
@@ -168,14 +185,22 @@ def test_explicit_reveal_methods_are_narrowly_named() -> None:
         raw_token,
     )
     resolved_ip = ResolvedClientIp(RAW_IP)
+    verified_chat_identity = VerifiedPrivateTelegramChatIdentity(RAW_CHAT_ID)
     bot_username = TelegramBotUsername("Nasiya_LinkBot")
 
     assert raw_token.as_internal_value() == RAW_TOKEN
     assert start_link.as_delivery_url() == FULL_START_LINK
     assert resolved_ip.as_hmac_input() == RAW_IP
+    assert verified_chat_identity.as_bigint() == RAW_CHAT_ID
     assert bot_username.as_username() == CANONICAL_BOT_USERNAME
 
-    for value_object in (raw_token, start_link, resolved_ip, bot_username):
+    for value_object in (
+        raw_token,
+        start_link,
+        resolved_ip,
+        verified_chat_identity,
+        bot_username,
+    ):
         assert not hasattr(value_object, "value")
         assert not hasattr(value_object, "secret")
         assert not hasattr(value_object, "raw")
@@ -187,6 +212,7 @@ def test_explicit_reveal_methods_are_not_logged_in_telegram_modules() -> None:
         Path(token_module.__file__).read_text(encoding="utf-8"),
         Path(client_ip_module.__file__).read_text(encoding="utf-8"),
         Path(bot_module.__file__).read_text(encoding="utf-8"),
+        Path(inbound_module.__file__).read_text(encoding="utf-8"),
     )
 
     for source in module_sources:
@@ -207,9 +233,11 @@ def test_sensitive_wrappers_are_not_used_in_templates() -> None:
         "RawTelegramLinkToken",
         "TelegramStartLink",
         "ResolvedClientIp",
+        "VerifiedPrivateTelegramChatIdentity",
         "as_internal_value",
         "as_delivery_url",
         "as_hmac_input",
+        "as_bigint",
     }
 
     for forbidden_template_term in forbidden_template_terms:

@@ -256,10 +256,11 @@ def test_issue_link_token_public_api_has_no_caller_supplied_phone_or_user_id() -
     assert "user_id" not in parameters
     assert "raw_token" not in parameters
 
-    source = getsource(telegram_service)
-    assert "build_telegram_start_link" not in source
-    assert "TelegramLinkEvent" not in source
-    assert "Customer" not in source
+    issue_source = getsource(issue_link_token)
+    assert "build_telegram_start_link" not in issue_source
+    assert "append_telegram_link_event" not in issue_source
+    assert "TelegramLinkEvent" not in issue_source
+    assert "Customer" not in issue_source
 
 
 @pytest.mark.integration

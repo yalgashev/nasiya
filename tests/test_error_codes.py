@@ -19,9 +19,11 @@ def test_error_catalog_contains_only_stable_codes() -> None:
         ErrorCode.RATE_LIMITED,
         ErrorCode.VALIDATION_ERROR,
         ErrorCode.TELEGRAM_ALREADY_LINKED,
+        ErrorCode.TELEGRAM_NOT_LINKED,
+        ErrorCode.TELEGRAM_CHAT_ALREADY_LINKED,
         ErrorCode.LINK_TOKEN_INVALID,
     }
-    assert len(ERROR_CATALOG) == 7
+    assert len(ERROR_CATALOG) == 9
 
 
 def test_error_code_values_are_stable() -> None:
@@ -32,6 +34,8 @@ def test_error_code_values_are_stable() -> None:
         "RATE_LIMITED",
         "VALIDATION_ERROR",
         "TELEGRAM_ALREADY_LINKED",
+        "TELEGRAM_NOT_LINKED",
+        "TELEGRAM_CHAT_ALREADY_LINKED",
         "LINK_TOKEN_INVALID",
     ]
 
@@ -45,6 +49,8 @@ def test_error_code_values_are_stable() -> None:
         (ErrorCode.RATE_LIMITED, 429),
         (ErrorCode.VALIDATION_ERROR, 422),
         (ErrorCode.TELEGRAM_ALREADY_LINKED, 409),
+        (ErrorCode.TELEGRAM_NOT_LINKED, 409),
+        (ErrorCode.TELEGRAM_CHAT_ALREADY_LINKED, 409),
         (ErrorCode.LINK_TOKEN_INVALID, 422),
     ],
 )
@@ -73,6 +79,14 @@ def test_error_http_status_mapping_is_stable(
         (
             ErrorCode.TELEGRAM_ALREADY_LINKED,
             "Telegram akkauntingiz allaqachon bog'langan.",
+        ),
+        (
+            ErrorCode.TELEGRAM_NOT_LINKED,
+            "Telegram akkauntingiz bog'lanmagan.",
+        ),
+        (
+            ErrorCode.TELEGRAM_CHAT_ALREADY_LINKED,
+            "Bu Telegram chat allaqachon bog'langan.",
         ),
         (
             ErrorCode.LINK_TOKEN_INVALID,
