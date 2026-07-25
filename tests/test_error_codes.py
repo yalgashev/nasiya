@@ -11,15 +11,17 @@ from app.auth.error_codes import (
 )
 
 
-def test_m2_error_catalog_contains_only_stable_m2_codes() -> None:
+def test_error_catalog_contains_only_stable_codes() -> None:
     assert set(ERROR_CATALOG.keys()) == {
         ErrorCode.UNAUTHORIZED,
         ErrorCode.SESSION_EXPIRED,
         ErrorCode.CSRF_FAILED,
         ErrorCode.RATE_LIMITED,
         ErrorCode.VALIDATION_ERROR,
+        ErrorCode.TELEGRAM_ALREADY_LINKED,
+        ErrorCode.LINK_TOKEN_INVALID,
     }
-    assert len(ERROR_CATALOG) == 5
+    assert len(ERROR_CATALOG) == 7
 
 
 def test_error_code_values_are_stable() -> None:
@@ -29,6 +31,8 @@ def test_error_code_values_are_stable() -> None:
         "CSRF_FAILED",
         "RATE_LIMITED",
         "VALIDATION_ERROR",
+        "TELEGRAM_ALREADY_LINKED",
+        "LINK_TOKEN_INVALID",
     ]
 
 
@@ -40,6 +44,8 @@ def test_error_code_values_are_stable() -> None:
         (ErrorCode.CSRF_FAILED, 403),
         (ErrorCode.RATE_LIMITED, 429),
         (ErrorCode.VALIDATION_ERROR, 422),
+        (ErrorCode.TELEGRAM_ALREADY_LINKED, 409),
+        (ErrorCode.LINK_TOKEN_INVALID, 422),
     ],
 )
 def test_error_http_status_mapping_is_stable(
@@ -64,6 +70,14 @@ def test_error_http_status_mapping_is_stable(
             "Juda ko'p urinish. Keyinroq qayta urinib ko'ring.",
         ),
         (ErrorCode.VALIDATION_ERROR, "Kiritilgan ma'lumotlarni tekshiring."),
+        (
+            ErrorCode.TELEGRAM_ALREADY_LINKED,
+            "Telegram akkauntingiz allaqachon bog'langan.",
+        ),
+        (
+            ErrorCode.LINK_TOKEN_INVALID,
+            "Telegram bog'lash tokeni yaroqsiz yoki muddati tugagan.",
+        ),
     ],
 )
 def test_error_user_messages_are_safe_and_stable(

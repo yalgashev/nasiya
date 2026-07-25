@@ -3,6 +3,8 @@ from typing import Self
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.telegram.bot import TelegramBotUsername
+
 MIN_RATE_LIMIT_HMAC_KEY_LENGTH = 32
 
 
@@ -20,9 +22,19 @@ class Settings(BaseSettings):
     login_rate_limit_window_seconds: int = Field(default=900, gt=0)
     login_rate_limit_phone_attempts: int = Field(default=5, gt=0)
     login_rate_limit_ip_attempts: int = Field(default=20, gt=0)
+    telegram_link_rate_limit_window_seconds: int = Field(default=900, gt=0)
+    telegram_link_rate_limit_user_attempts: int = Field(default=3, gt=0)
+    telegram_link_rate_limit_phone_attempts: int = Field(default=3, gt=0)
+    telegram_link_rate_limit_ip_attempts: int = Field(default=20, gt=0)
     rate_limit_hmac_key: SecretStr
+    telegram_bot_username: TelegramBotUsername | None = None
 
-    model_config = SettingsConfigDict(env_prefix="", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="",
+        extra="ignore",
+        arbitrary_types_allowed=True,
+        hide_input_in_errors=True,
+    )
 
     @field_validator("session_cookie_name")
     @classmethod
@@ -42,6 +54,22 @@ class Settings(BaseSettings):
                 f"{MIN_RATE_LIMIT_HMAC_KEY_LENGTH} characters"
             )
         return value
+
+    @field_validator("telegram_bot_username", mode="before")
+    @classmethod
+    def validate_telegram_bot_username(
+        cls,
+        value: object,
+    ) -> TelegramBotUsername | None:
+        if value is None:
+            return None
+        if isinstance(value, TelegramBotUsername):
+            return value
+        if isinstance(value, str):
+            if value == "":
+                return None
+            return TelegramBotUsername(value)
+        raise ValueError("telegram_bot_username must be a string")
 
     @model_validator(mode="after")
     def validate_settings(self) -> Self:

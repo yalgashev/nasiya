@@ -12,6 +12,8 @@ class ErrorCode(StrEnum):
     CSRF_FAILED = "CSRF_FAILED"
     RATE_LIMITED = "RATE_LIMITED"
     VALIDATION_ERROR = "VALIDATION_ERROR"
+    TELEGRAM_ALREADY_LINKED = "TELEGRAM_ALREADY_LINKED"
+    LINK_TOKEN_INVALID = "LINK_TOKEN_INVALID"
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,16 @@ ERROR_CATALOG: Final[Mapping[ErrorCode, ErrorDefinition]] = MappingProxyType(
         ErrorCode.VALIDATION_ERROR: ErrorDefinition(
             code=ErrorCode.VALIDATION_ERROR,
             user_message="Kiritilgan ma'lumotlarni tekshiring.",
+            http_status=HTTPStatus.UNPROCESSABLE_ENTITY,
+        ),
+        ErrorCode.TELEGRAM_ALREADY_LINKED: ErrorDefinition(
+            code=ErrorCode.TELEGRAM_ALREADY_LINKED,
+            user_message="Telegram akkauntingiz allaqachon bog'langan.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.LINK_TOKEN_INVALID: ErrorDefinition(
+            code=ErrorCode.LINK_TOKEN_INVALID,
+            user_message="Telegram bog'lash tokeni yaroqsiz yoki muddati tugagan.",
             http_status=HTTPStatus.UNPROCESSABLE_ENTITY,
         ),
     }

@@ -1,0 +1,207 @@
+import re
+from dataclasses import dataclass
+from datetime import UTC, datetime
+
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.auth.models import User
+from app.telegram.models import TelegramLink, TelegramLinkToken
+
+_TOKEN_HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_EXPECTED_TOKEN_INSERT_CONSTRAINTS = frozenset(
+    {
+        "uq_telegram_link_tokens_token_hash",
+        "uq_telegram_link_tokens_one_outstanding_per_user",
+    }
+)
+
+
+class TelegramLinkTokenInsertConflict(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class TelegramLinkTokenStatus:
+    total_count: int
+    outstanding_count: int
+    consumed_count: int
+    invalidated_count: int
+    expired_outstanding_count: int
+
+
+def has_active_telegram_link(session: Session, current_user: User) -> bool:
+    statement = (
+        select(TelegramLink.id)
+        .where(
+            TelegramLink.user_id == current_user.id,
+            TelegramLink.telegram_chat_id.is_not(None),
+            TelegramLink.unlinked_at.is_(None),
+        )
+        .limit(1)
+    )
+    return session.scalar(statement) is not None
+
+
+def get_outstanding_telegram_link_token_for_update(
+    session: Session,
+    current_user: User,
+) -> TelegramLinkToken | None:
+    statement = (
+        select(TelegramLinkToken)
+        .where(
+            TelegramLinkToken.user_id == current_user.id,
+            TelegramLinkToken.consumed_at.is_(None),
+            TelegramLinkToken.invalidated_at.is_(None),
+        )
+        .with_for_update()
+    )
+    return session.scalar(statement)
+
+
+def get_telegram_link_token_by_hash_for_update(
+    session: Session,
+    token_hash: str,
+) -> TelegramLinkToken | None:
+    normalized_hash = _validate_token_hash(token_hash)
+    statement = (
+        select(TelegramLinkToken)
+        .where(TelegramLinkToken.token_hash == normalized_hash)
+        .with_for_update()
+    )
+    return session.scalar(statement)
+
+
+def invalidate_outstanding_telegram_link_tokens(
+    session: Session,
+    current_user: User,
+    now: datetime,
+) -> int:
+    current_time = _as_utc(now)
+    statement = (
+        update(TelegramLinkToken)
+        .where(
+            TelegramLinkToken.user_id == current_user.id,
+            TelegramLinkToken.consumed_at.is_(None),
+            TelegramLinkToken.invalidated_at.is_(None),
+        )
+        .values(invalidated_at=current_time)
+    )
+    result = session.execute(statement)
+    return result.rowcount or 0
+
+
+def insert_telegram_link_token(
+    session: Session,
+    current_user: User,
+    token_hash: str,
+    created_at: datetime,
+    expires_at: datetime,
+) -> TelegramLinkToken:
+    token = TelegramLinkToken(
+        user_id=current_user.id,
+        token_hash=_validate_token_hash(token_hash),
+        created_at=_as_utc(created_at),
+        expires_at=_as_utc(expires_at),
+    )
+    session.add(token)
+    session.flush()
+    return token
+
+
+def invalidate_and_insert_telegram_link_token(
+    session: Session,
+    current_user: User,
+    token_hash: str,
+    now: datetime,
+    expires_at: datetime,
+) -> TelegramLinkToken:
+    current_time = _as_utc(now)
+    expires_time = _as_utc(expires_at)
+    normalized_hash = _validate_token_hash(token_hash)
+    existing_token = get_outstanding_telegram_link_token_for_update(
+        session,
+        current_user,
+    )
+
+    try:
+        with session.begin_nested():
+            if existing_token is not None:
+                existing_token.invalidated_at = current_time
+                session.add(existing_token)
+                session.flush()
+
+            token = TelegramLinkToken(
+                user_id=current_user.id,
+                token_hash=normalized_hash,
+                created_at=current_time,
+                expires_at=expires_time,
+            )
+            session.add(token)
+            session.flush()
+    except IntegrityError as exc:
+        if _is_expected_token_insert_conflict(exc):
+            raise TelegramLinkTokenInsertConflict(
+                "Telegram link token insert conflict"
+            ) from None
+        raise
+    return token
+
+
+def get_telegram_link_token_status(
+    session: Session,
+    current_user: User,
+    now: datetime,
+) -> TelegramLinkTokenStatus:
+    current_time = _as_utc(now)
+    statement = select(
+        func.count(TelegramLinkToken.id).label("total_count"),
+        func.count(TelegramLinkToken.id)
+        .filter(
+            TelegramLinkToken.consumed_at.is_(None),
+            TelegramLinkToken.invalidated_at.is_(None),
+        )
+        .label("outstanding_count"),
+        func.count(TelegramLinkToken.id)
+        .filter(TelegramLinkToken.consumed_at.is_not(None))
+        .label("consumed_count"),
+        func.count(TelegramLinkToken.id)
+        .filter(TelegramLinkToken.invalidated_at.is_not(None))
+        .label("invalidated_count"),
+        func.count(TelegramLinkToken.id)
+        .filter(
+            TelegramLinkToken.consumed_at.is_(None),
+            TelegramLinkToken.invalidated_at.is_(None),
+            TelegramLinkToken.expires_at <= current_time,
+        )
+        .label("expired_outstanding_count"),
+    ).where(TelegramLinkToken.user_id == current_user.id)
+    row = session.execute(statement).one()
+    return TelegramLinkTokenStatus(
+        total_count=row.total_count,
+        outstanding_count=row.outstanding_count,
+        consumed_count=row.consumed_count,
+        invalidated_count=row.invalidated_count,
+        expired_outstanding_count=row.expired_outstanding_count,
+    )
+
+
+def _validate_token_hash(token_hash: str) -> str:
+    if (
+        not isinstance(token_hash, str)
+        or _TOKEN_HASH_PATTERN.fullmatch(token_hash) is None
+    ):
+        raise ValueError("Telegram link token hash must be lowercase SHA-256 hex")
+    return token_hash
+
+
+def _is_expected_token_insert_conflict(exc: IntegrityError) -> bool:
+    constraint_name = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+    return constraint_name in _EXPECTED_TOKEN_INSERT_CONSTRAINTS
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("Telegram link token timestamps must be timezone-aware")
+    return value.astimezone(UTC)

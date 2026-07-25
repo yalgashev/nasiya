@@ -3,6 +3,7 @@ from pydantic import ValidationError
 
 from app.main import create_app
 from app.settings import Settings
+from app.telegram.bot import TelegramBotUsername
 
 TEST_RATE_LIMIT_HMAC_KEY = "test-rate-limit-hmac-key-for-settings-only"
 TEST_DATABASE_URL = "postgresql+psycopg://nasiya:pass@127.0.0.1:5432/nasiya"
@@ -20,7 +21,12 @@ SETTINGS_ENV_KEYS = (
     "LOGIN_RATE_LIMIT_WINDOW_SECONDS",
     "LOGIN_RATE_LIMIT_PHONE_ATTEMPTS",
     "LOGIN_RATE_LIMIT_IP_ATTEMPTS",
+    "TELEGRAM_LINK_RATE_LIMIT_WINDOW_SECONDS",
+    "TELEGRAM_LINK_RATE_LIMIT_USER_ATTEMPTS",
+    "TELEGRAM_LINK_RATE_LIMIT_PHONE_ATTEMPTS",
+    "TELEGRAM_LINK_RATE_LIMIT_IP_ATTEMPTS",
     "RATE_LIMIT_HMAC_KEY",
+    "TELEGRAM_BOT_USERNAME",
 )
 
 
@@ -28,6 +34,22 @@ SETTINGS_ENV_KEYS = (
 def clean_settings_environment(monkeypatch) -> None:
     for key in SETTINGS_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
+
+
+def make_settings(**overrides) -> Settings:
+    values = {
+        "database_url": TEST_DATABASE_URL,
+        "session_cookie_secure": False,
+        "rate_limit_hmac_key": TEST_RATE_LIMIT_HMAC_KEY,
+    }
+    values.update(overrides)
+    return Settings(_env_file=None, **values)
+
+
+def set_required_settings_env(monkeypatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", TEST_DATABASE_URL)
+    monkeypatch.setenv("SESSION_COOKIE_SECURE", "false")
+    monkeypatch.setenv("RATE_LIMIT_HMAC_KEY", TEST_RATE_LIMIT_HMAC_KEY)
 
 
 def test_settings_created_with_required_values() -> None:
@@ -53,6 +75,11 @@ def test_settings_created_with_required_values() -> None:
     assert settings.login_rate_limit_window_seconds == 900
     assert settings.login_rate_limit_phone_attempts == 5
     assert settings.login_rate_limit_ip_attempts == 20
+    assert settings.telegram_link_rate_limit_window_seconds == 900
+    assert settings.telegram_link_rate_limit_user_attempts == 3
+    assert settings.telegram_link_rate_limit_phone_attempts == 3
+    assert settings.telegram_link_rate_limit_ip_attempts == 20
+    assert settings.telegram_bot_username is None
 
 
 def test_settings_requires_database_url() -> None:
@@ -94,6 +121,14 @@ def test_settings_requires_rate_limit_hmac_key() -> None:
         ("login_rate_limit_phone_attempts", -1),
         ("login_rate_limit_ip_attempts", 0),
         ("login_rate_limit_ip_attempts", -1),
+        ("telegram_link_rate_limit_window_seconds", 0),
+        ("telegram_link_rate_limit_window_seconds", -1),
+        ("telegram_link_rate_limit_user_attempts", 0),
+        ("telegram_link_rate_limit_user_attempts", -1),
+        ("telegram_link_rate_limit_phone_attempts", 0),
+        ("telegram_link_rate_limit_phone_attempts", -1),
+        ("telegram_link_rate_limit_ip_attempts", 0),
+        ("telegram_link_rate_limit_ip_attempts", -1),
     ],
 )
 def test_settings_requires_positive_ttl_and_limit_values(
@@ -177,6 +212,84 @@ def test_settings_uses_default_session_cookie_name() -> None:
     assert settings.session_cookie_name == "nasiya_session"
 
 
+def test_telegram_link_rate_limit_settings_use_approved_defaults() -> None:
+    settings = make_settings(
+        app_environment="production",
+        session_cookie_secure=True,
+    )
+
+    assert settings.telegram_link_rate_limit_window_seconds == 900
+    assert settings.telegram_link_rate_limit_user_attempts == 3
+    assert settings.telegram_link_rate_limit_phone_attempts == 3
+    assert settings.telegram_link_rate_limit_ip_attempts == 20
+    assert settings.rate_limit_hmac_key.get_secret_value() == TEST_RATE_LIMIT_HMAC_KEY
+
+
+def test_telegram_link_rate_limit_settings_can_be_overridden_from_env(
+    monkeypatch,
+) -> None:
+    set_required_settings_env(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_LINK_RATE_LIMIT_WINDOW_SECONDS", "120")
+    monkeypatch.setenv("TELEGRAM_LINK_RATE_LIMIT_USER_ATTEMPTS", "4")
+    monkeypatch.setenv("TELEGRAM_LINK_RATE_LIMIT_PHONE_ATTEMPTS", "5")
+    monkeypatch.setenv("TELEGRAM_LINK_RATE_LIMIT_IP_ATTEMPTS", "30")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.telegram_link_rate_limit_window_seconds == 120
+    assert settings.telegram_link_rate_limit_user_attempts == 4
+    assert settings.telegram_link_rate_limit_phone_attempts == 5
+    assert settings.telegram_link_rate_limit_ip_attempts == 30
+
+
+@pytest.mark.parametrize(
+    ("env_key", "bad_value"),
+    [
+        ("TELEGRAM_LINK_RATE_LIMIT_WINDOW_SECONDS", ""),
+        ("TELEGRAM_LINK_RATE_LIMIT_WINDOW_SECONDS", "0"),
+        ("TELEGRAM_LINK_RATE_LIMIT_WINDOW_SECONDS", "-1"),
+        ("TELEGRAM_LINK_RATE_LIMIT_WINDOW_SECONDS", "not-an-int"),
+        ("TELEGRAM_LINK_RATE_LIMIT_USER_ATTEMPTS", ""),
+        ("TELEGRAM_LINK_RATE_LIMIT_USER_ATTEMPTS", "0"),
+        ("TELEGRAM_LINK_RATE_LIMIT_USER_ATTEMPTS", "-1"),
+        ("TELEGRAM_LINK_RATE_LIMIT_USER_ATTEMPTS", "not-an-int"),
+        ("TELEGRAM_LINK_RATE_LIMIT_PHONE_ATTEMPTS", ""),
+        ("TELEGRAM_LINK_RATE_LIMIT_PHONE_ATTEMPTS", "0"),
+        ("TELEGRAM_LINK_RATE_LIMIT_PHONE_ATTEMPTS", "-1"),
+        ("TELEGRAM_LINK_RATE_LIMIT_PHONE_ATTEMPTS", "not-an-int"),
+        ("TELEGRAM_LINK_RATE_LIMIT_IP_ATTEMPTS", ""),
+        ("TELEGRAM_LINK_RATE_LIMIT_IP_ATTEMPTS", "0"),
+        ("TELEGRAM_LINK_RATE_LIMIT_IP_ATTEMPTS", "-1"),
+        ("TELEGRAM_LINK_RATE_LIMIT_IP_ATTEMPTS", "not-an-int"),
+    ],
+)
+def test_invalid_telegram_link_rate_limit_env_values_fail_fast(
+    monkeypatch,
+    env_key: str,
+    bad_value: str,
+) -> None:
+    set_required_settings_env(monkeypatch)
+    monkeypatch.setenv(env_key, bad_value)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_telegram_link_rate_limit_settings_do_not_add_out_of_scope_secrets() -> None:
+    forbidden_fields = {
+        "telegram_bot_token",
+        "telegram_link_rate_limit_hmac_key",
+        "telegram_link_token_ttl_seconds",
+        "telegram_link_token_retention_days",
+        "telegram_link_token_retention_seconds",
+        "client_ip_mode",
+        "trusted_proxy_cidrs",
+    }
+
+    assert "rate_limit_hmac_key" in Settings.model_fields
+    assert forbidden_fields.isdisjoint(Settings.model_fields)
+
+
 def test_create_app_accepts_explicit_settings() -> None:
     settings = Settings(
         app_environment="testing",
@@ -188,3 +301,95 @@ def test_create_app_accepts_explicit_settings() -> None:
     app = create_app(settings=settings)
 
     assert app.state.settings is settings
+
+
+def test_telegram_bot_username_canonicalizes_to_lowercase_username() -> None:
+    username = TelegramBotUsername("Nasiya_LinkBOT")
+
+    assert username.as_username() == "nasiya_linkbot"
+    assert str(username) == "nasiya_linkbot"
+    assert repr(username) == "TelegramBotUsername('nasiya_linkbot')"
+
+
+@pytest.mark.parametrize(
+    "raw_username",
+    [
+        "",
+        "@nasiya_bot",
+        "https://t.me/nasiya_bot",
+        "nasiya bot",
+        " nasiya_bot",
+        "nasiya_bot ",
+        "nasi",
+        "nasiya-bot",
+        "насия_bot",
+        "nasiya",
+        "nasiya_bot_extra_name_that_is_too_long",
+    ],
+)
+def test_telegram_bot_username_rejects_invalid_values(raw_username: str) -> None:
+    with pytest.raises(ValueError):
+        TelegramBotUsername(raw_username)
+
+
+@pytest.mark.parametrize("raw_username", [None, ""])
+def test_settings_treats_unset_or_empty_telegram_bot_username_as_none(
+    raw_username: str | None,
+) -> None:
+    settings = (
+        make_settings()
+        if raw_username is None
+        else make_settings(telegram_bot_username=raw_username)
+    )
+
+    assert settings.telegram_bot_username is None
+
+
+def test_settings_accepts_telegram_bot_username_from_value_object() -> None:
+    username = TelegramBotUsername("Nasiya_LinkBot")
+    settings = make_settings(telegram_bot_username=username)
+
+    assert settings.telegram_bot_username is username
+
+
+def test_settings_reads_telegram_bot_username_from_environment(monkeypatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", TEST_DATABASE_URL)
+    monkeypatch.setenv("SESSION_COOKIE_SECURE", "false")
+    monkeypatch.setenv("RATE_LIMIT_HMAC_KEY", TEST_RATE_LIMIT_HMAC_KEY)
+    monkeypatch.setenv("TELEGRAM_BOT_USERNAME", "Nasiya_LinkBot")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.telegram_bot_username is not None
+    assert settings.telegram_bot_username.as_username() == "nasiya_linkbot"
+
+
+def test_settings_treats_empty_telegram_bot_username_env_as_none(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", TEST_DATABASE_URL)
+    monkeypatch.setenv("SESSION_COOKIE_SECURE", "false")
+    monkeypatch.setenv("RATE_LIMIT_HMAC_KEY", TEST_RATE_LIMIT_HMAC_KEY)
+    monkeypatch.setenv("TELEGRAM_BOT_USERNAME", "")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.telegram_bot_username is None
+
+
+def test_settings_rejects_invalid_bot_username_without_echoing_raw_value() -> None:
+    raw_username = "https://t.me/SensitivePlaceholderBot"
+
+    with pytest.raises(ValidationError) as exc_info:
+        make_settings(telegram_bot_username=raw_username)
+
+    error_text = str(exc_info.value)
+    assert raw_username not in error_text
+    assert "Telegram bot username" in error_text
+
+
+def test_settings_has_no_default_or_token_for_telegram_bot() -> None:
+    settings = make_settings(app_environment="production", session_cookie_secure=True)
+
+    assert settings.telegram_bot_username is None
+    assert "telegram_bot_token" not in Settings.model_fields
