@@ -24,6 +24,10 @@ jobs:
       LOGIN_RATE_LIMIT_WINDOW_SECONDS: "900"
       LOGIN_RATE_LIMIT_PHONE_ATTEMPTS: "5"
       LOGIN_RATE_LIMIT_IP_ATTEMPTS: "20"
+      TELEGRAM_LINK_RATE_LIMIT_WINDOW_SECONDS: "900"
+      TELEGRAM_LINK_RATE_LIMIT_USER_ATTEMPTS: "3"
+      TELEGRAM_LINK_RATE_LIMIT_PHONE_ATTEMPTS: "3"
+      TELEGRAM_LINK_RATE_LIMIT_IP_ATTEMPTS: "20"
       RATE_LIMIT_HMAC_KEY: ci-test-only-rate-limit-hmac-key-at-least-32-chars
       DATABASE_URL: postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test
       TEST_DATABASE_URL: postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test
@@ -63,6 +67,11 @@ jobs:
 
       - name: Show Alembic current revision
         run: uv run alembic current
+
+      - name: Verify Alembic M4 head
+        run: |
+          current_revision="$(uv run alembic current | awk '{print $1}')"
+          test "$current_revision" = "4f9c2d7a1b03"
 
       - name: Run Ruff
         run: uv run ruff check .

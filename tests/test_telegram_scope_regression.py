@@ -338,19 +338,36 @@ def test_customer_schema_remains_draft_only_and_m4_has_exactly_three_tables() ->
     )
 
 
-def test_readme_does_not_claim_unsupported_m4_end_to_end_features() -> None:
+def test_readme_documents_m4_as_domain_foundation_only() -> None:
     readme_text = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8").casefold()
 
-    for unsupported_claim in (
-        "telegram",
-        "bot api",
+    assert "secure telegram linking domain foundation (m4)" in readme_text
+    assert "end-to-end telegram integratsiya emas" in readme_text
+    for explicit_absence in (
+        "real bot api",
+        "production route/ui",
         "webhook",
-        "getupdates",
-        "otp",
-        "qr",
-        "activation",
-        "notification",
         "worker",
-        "scheduler",
+        "qr",
+        "otp",
+        "customer activation",
+        "hali yo'q",
+        "telegram_bot_token",
+        "mavjud emas",
+        "talab qilinmaydi",
+        "real telegram credential yoki network talab qilinmaydi",
     ):
-        assert unsupported_claim not in readme_text
+        assert explicit_absence in readme_text
+
+    for unsupported_route_or_claim in (
+        "/auth/telegram",
+        "telegram webhook url",
+        "telegram bot token required",
+        "telegram bot token is required",
+        "telegram sdk required",
+        "qr code available",
+        "otp enabled",
+        "customer activation enabled",
+        "notification worker",
+    ):
+        assert unsupported_route_or_claim not in readme_text

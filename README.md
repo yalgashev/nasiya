@@ -44,7 +44,19 @@ Muhim maydonlar:
 - `PASSWORD_MIN_LENGTH`, `PASSWORD_MAX_LENGTH` - parol siyosati.
 - `LOGIN_RATE_LIMIT_WINDOW_SECONDS`, `LOGIN_RATE_LIMIT_PHONE_ATTEMPTS`,
   `LOGIN_RATE_LIMIT_IP_ATTEMPTS` - auth rate-limit sozlamalari.
+- `TELEGRAM_LINK_RATE_LIMIT_WINDOW_SECONDS`,
+  `TELEGRAM_LINK_RATE_LIMIT_USER_ATTEMPTS`,
+  `TELEGRAM_LINK_RATE_LIMIT_PHONE_ATTEMPTS`,
+  `TELEGRAM_LINK_RATE_LIMIT_IP_ATTEMPTS` - M4 Telegram link token issuance
+  rate-limit sozlamalari; default policy 900 soniyada 3 user, 3 phone va
+  20 IP attempt.
 - `RATE_LIMIT_HMAC_KEY` - raw phone/IP ni DBga yozmaslik uchun HMAC secret.
+- `TELEGRAM_BOT_USERNAME` - optional. App startup uchun shart emas; faqat
+  pure deep-link builder ishlatilganda kerak bo'ladi. Qiymat `@`siz, URLsiz,
+  `bot` suffixli username bo'lishi kerak.
+
+M4da `TELEGRAM_BOT_TOKEN` mavjud emas va talab qilinmaydi. Real Telegram Bot
+API credentialini `.env`, README, CI yoki testlarga qo'shmang.
 
 `RATE_LIMIT_HMAC_KEY`ning real qiymatini README, CI log, commit yoki chatda
 chiqarmang. `.env.example` faqat development namunasi; productionda alohida,
@@ -127,7 +139,7 @@ uv run alembic upgrade head
 uv run alembic current
 ```
 
-M3 checkpointida `alembic current` natijasi `b1f3a7c9d2e4 (head)` bo'lishi
+M4 checkpointida `alembic current` natijasi `4f9c2d7a1b03 (head)` bo'lishi
 kerak. Migrationni development databasega container ichidan, test databasega
 esa faqat `_test` bilan tugaydigan alohida `TEST_DATABASE_URL` orqali qo'llang.
 
@@ -176,6 +188,34 @@ Local web server:
 Local user yaratib `/auth/login` orqali kiring, so'ng `/auth/account`dagi
 customer draft onboarding linkini oching. Bu URLlar faqat authenticated draft
 sahifalaridir.
+
+## Secure Telegram Linking Domain Foundation (M4)
+
+M4 faqat Telegram linking domenining server-side foundation qatlami. Bu
+end-to-end Telegram integratsiya emas: real Bot API, production route/UI,
+webhook, worker, QR, OTP va customer activation hali yo'q.
+
+M4 Alembic migrationi `4f9c2d7a1b03` uchta jadval yaratadi:
+
+- `telegram_links` - user va active yoki unlinked Telegram chat state.
+- `telegram_link_tokens` - one-time link/relink token lifecycle; raw token
+  saqlanmaydi, faqat lowercase SHA-256 hash saqlanadi.
+- `telegram_link_events` - faqat `linked`, `unlinked`, `relinked` lifecycle
+  eventlari; chat ID, token, phone, IP yoki update payload saqlanmaydi.
+
+Token TTL qat'iy 600 soniya. Issuance rate-limit existing PostgreSQL/HMAC
+limiter orqali 900 soniyada 3 user, 3 phone va 20 IP attempt siyosatini
+qo'llaydi. Consume oqimi faqat typed verified-private chat identityni qabul
+qiladi; M4 testlarida zero-network fake inbound boundary ishlatiladi.
+
+`TELEGRAM_BOT_USERNAME` unset bo'lsa app startup va token domain service
+ishlaydi. Username faqat pure Telegram start deep-link builder uchun kerak.
+`TELEGRAM_BOT_TOKEN`, Telegram SDK, HTTP Bot API chaqiruvi, webhook route yoki
+polling worker M4 scope'ida yo'q.
+
+PostgreSQL test suite M4 migration, metadata, constraint, replay,
+concurrency, retention purge va leakage boundary testlarini real `_test`
+database orqali bajaradi.
 
 ## Validation (Xubuntu Terminal)
 
@@ -227,8 +267,9 @@ docker compose logs -f web
 
 `pytest -ra` skip/failure sabablarini ko'rsatadi. CI yoki local validationda
 skipped testlarni yashiradigan flag ishlatilmaydi. Generic full suite real
-PostgreSQL test database orqali customer migration testlarini ham avtomatik
-bajaradi.
+PostgreSQL test database orqali customer migration testlari bilan birga M4
+Telegram migration/replay/concurrency/retention testlarini ham avtomatik
+bajaradi. Real Telegram credential yoki network talab qilinmaydi.
 
 ## Stop Services
 
@@ -254,9 +295,10 @@ docker compose down -v
 ```
 
 `-v` named volume'ni ham o'chiradi. Bu local development va test database
-ichidagi ma'lumotlarni, jumladan local user va M3 customer draftlarni yo'q
-qiladi. Shuningdek `dropdb`, `DROP DATABASE`, `TRUNCATE` yoki test cleanup
-buyruqlarini development database `nasiya`ga yubormang.
+ichidagi ma'lumotlarni, jumladan local user, M3 customer draftlar va M4
+Telegram linking test/local state'ni yo'q qiladi. Shuningdek `dropdb`,
+`DROP DATABASE`, `TRUNCATE` yoki test cleanup buyruqlarini development
+database `nasiya`ga yubormang.
 
 ## PostgreSQL Dump Import
 
