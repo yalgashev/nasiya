@@ -19,6 +19,7 @@ from app.telegram.models import TelegramLink, TelegramLinkEvent, TelegramLinkTok
 from app.telegram.rate_limit import record_telegram_link_issuance_attempt
 from app.telegram.repository import (
     TelegramLinkTokenInsertConflict,
+    delete_telegram_link_tokens_eligible_for_purge,
     get_other_active_telegram_link_by_chat_identity_for_update,
     get_telegram_link_by_user_for_update,
     get_valid_telegram_link_token_for_consume_by_hash_for_update,
@@ -36,8 +37,13 @@ from app.telegram.token import (
 )
 
 TELEGRAM_LINK_TOKEN_TTL_SECONDS: Final = 600
-_EXPECTED_CHAT_COLLISION_CONSTRAINTS: Final = frozenset(
+TELEGRAM_LINK_TOKEN_PURGE_DEFAULT_BATCH_SIZE: Final = 500
+TELEGRAM_LINK_TOKEN_PURGE_MAX_BATCH_SIZE: Final = 5000
+_EXPECTED_ACTIVE_CHAT_COLLISION_CONSTRAINTS: Final = frozenset(
     {"uq_telegram_links_active_chat_id"}
+)
+_EXPECTED_USER_LINK_COLLISION_CONSTRAINTS: Final = frozenset(
+    {"uq_telegram_links_user_id"}
 )
 
 
@@ -117,6 +123,10 @@ class TelegramLinkTokenIssueError(RuntimeError):
 
 
 class TelegramLinkTokenIssueInternalError(RuntimeError):
+    pass
+
+
+class TelegramLinkLifecycleInternalError(RuntimeError):
     pass
 
 
@@ -267,60 +277,67 @@ def consume_start_token(
     chat_identity: VerifiedPrivateTelegramChatIdentity,
     now: datetime,
 ) -> ConsumedTelegramStartToken:
-    current_time = _as_utc(now)
-    token = get_valid_link_token_for_consume(session, raw_token, current_time)
-    token_user = _get_token_user(session, token)
-    existing_link = get_telegram_link_by_user_for_update(session, token_user)
+    try:
+        current_time = _as_utc(now)
+        token = get_valid_link_token_for_consume(session, raw_token, current_time)
+        token_user = _get_token_user(session, token)
+        existing_link = get_telegram_link_by_user_for_update(session, token_user)
 
-    if (
-        get_other_active_telegram_link_by_chat_identity_for_update(
-            session,
-            token_user,
-            chat_identity,
-        )
-        is not None
-    ):
-        raise TelegramChatAlreadyLinkedError()
+        if (
+            get_other_active_telegram_link_by_chat_identity_for_update(
+                session,
+                token_user,
+                chat_identity,
+            )
+            is not None
+        ):
+            raise TelegramChatAlreadyLinkedError()
 
-    if _is_active_link(existing_link):
-        if existing_link.telegram_chat_id == chat_identity.as_bigint():
-            link = existing_link
-            event_action = None
-            outcome = TelegramLinkOutcome.ALREADY_LINKED_TO_THIS_CHAT
+        if _is_active_link(existing_link):
+            if existing_link.telegram_chat_id == chat_identity.as_bigint():
+                link = existing_link
+                event_action = None
+                outcome = TelegramLinkOutcome.ALREADY_LINKED_TO_THIS_CHAT
+            else:
+                link = _mutate_link_with_collision_recovery(
+                    session,
+                    relink_verified_private_chat,
+                    current_user=token_user,
+                    chat_identity=chat_identity,
+                    now=current_time,
+                )
+                event_action = "relinked"
+                outcome = TelegramLinkOutcome.RELINKED
         else:
             link = _mutate_link_with_collision_recovery(
                 session,
-                relink_verified_private_chat,
+                link_verified_private_chat,
                 current_user=token_user,
                 chat_identity=chat_identity,
                 now=current_time,
             )
-            event_action = "relinked"
-            outcome = TelegramLinkOutcome.RELINKED
-    else:
-        link = _mutate_link_with_collision_recovery(
-            session,
-            link_verified_private_chat,
-            current_user=token_user,
-            chat_identity=chat_identity,
-            now=current_time,
-        )
-        event_action = "linked"
-        outcome = TelegramLinkOutcome.LINKED
-    if link is None:
-        raise TelegramLinkTokenConsumeError()
+            event_action = "linked"
+            outcome = TelegramLinkOutcome.LINKED
+        if link is None:
+            raise TelegramLinkTokenConsumeError()
 
-    token.consumed_at = current_time
-    session.add(token)
-    session.flush()
-    event = None
-    if event_action is not None:
-        event = append_telegram_link_event(
-            session,
-            token.user_id,
-            event_action,
-            current_time,
-        )
+        token.consumed_at = current_time
+        session.add(token)
+        session.flush()
+        event = None
+        if event_action is not None:
+            event = append_telegram_link_event(
+                session,
+                token.user_id,
+                event_action,
+                current_time,
+            )
+    except (TelegramLinkTokenConsumeError, TelegramChatAlreadyLinkedError):
+        raise
+    except SQLAlchemyError:
+        raise TelegramLinkLifecycleInternalError(
+            "Telegram link lifecycle transition failed"
+        ) from None
     return ConsumedTelegramStartToken(
         token=token,
         link=link,
@@ -344,28 +361,54 @@ def unlink(
     current_user: User,
     now: datetime,
 ) -> UnlinkedTelegramLink:
-    current_time = _as_utc(now)
-    canonical_user = _get_canonical_current_user(session, current_user)
-    link = unlink_verified_private_chat(session, canonical_user, current_time)
-    if link is None:
-        raise TelegramLinkTokenIssueError(ErrorCode.TELEGRAM_NOT_LINKED)
+    try:
+        current_time = _as_utc(now)
+        canonical_user = _get_canonical_current_user(session, current_user)
+        link = unlink_verified_private_chat(session, canonical_user, current_time)
+        if link is None:
+            raise TelegramLinkTokenIssueError(ErrorCode.TELEGRAM_NOT_LINKED)
 
-    invalidated_token_count = invalidate_outstanding_telegram_link_tokens(
-        session,
-        canonical_user,
-        current_time,
-    )
-    event = append_telegram_link_event(
-        session,
-        canonical_user.id,
-        "unlinked",
-        current_time,
-    )
+        invalidated_token_count = invalidate_outstanding_telegram_link_tokens(
+            session,
+            canonical_user,
+            current_time,
+        )
+        event = append_telegram_link_event(
+            session,
+            canonical_user.id,
+            "unlinked",
+            current_time,
+        )
+    except TelegramLinkTokenIssueError:
+        raise
+    except SQLAlchemyError:
+        raise TelegramLinkLifecycleInternalError(
+            "Telegram link lifecycle transition failed"
+        ) from None
     return UnlinkedTelegramLink(
         link=link,
         event=event,
         invalidated_token_count=invalidated_token_count,
     )
+
+
+def purge_terminal_link_tokens(
+    session: DatabaseSession,
+    now: datetime,
+    batch_size: int = TELEGRAM_LINK_TOKEN_PURGE_DEFAULT_BATCH_SIZE,
+) -> int:
+    current_time = _as_utc(now)
+    _validate_purge_batch_size(batch_size)
+    try:
+        return delete_telegram_link_tokens_eligible_for_purge(
+            session,
+            current_time,
+            limit=batch_size,
+        )
+    except SQLAlchemyError:
+        raise TelegramLinkLifecycleInternalError(
+            "Telegram link token purge failed"
+        ) from None
 
 
 def _get_canonical_current_user(
@@ -413,12 +456,29 @@ def _mutate_link_with_collision_recovery(
     except IntegrityError as exc:
         if _is_expected_chat_collision_integrity_error(exc):
             raise TelegramChatAlreadyLinkedError() from None
+        if _is_expected_user_link_collision_integrity_error(exc):
+            raise TelegramLinkTokenConsumeError() from None
         raise
 
 
 def _is_expected_chat_collision_integrity_error(exc: IntegrityError) -> bool:
     constraint_name = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
-    return constraint_name in _EXPECTED_CHAT_COLLISION_CONSTRAINTS
+    return constraint_name in _EXPECTED_ACTIVE_CHAT_COLLISION_CONSTRAINTS
+
+
+def _is_expected_user_link_collision_integrity_error(exc: IntegrityError) -> bool:
+    constraint_name = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+    return constraint_name in _EXPECTED_USER_LINK_COLLISION_CONSTRAINTS
+
+
+def _validate_purge_batch_size(batch_size: int) -> None:
+    if (
+        not isinstance(batch_size, int)
+        or isinstance(batch_size, bool)
+        or batch_size < 1
+        or batch_size > TELEGRAM_LINK_TOKEN_PURGE_MAX_BATCH_SIZE
+    ):
+        raise ValueError("Telegram link token purge batch size must be 1..5000")
 
 
 def _coerce_raw_link_token(

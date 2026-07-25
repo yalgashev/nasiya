@@ -23,9 +23,11 @@ from app.settings import Settings
 from app.telegram.client_ip import ResolvedClientIp
 from app.telegram.models import TelegramLink, TelegramLinkEvent, TelegramLinkToken
 from app.telegram.rate_limit import (
+    TELEGRAM_LINK_RATE_LIMIT_IP_KEY_PREFIX,
     TELEGRAM_LINK_RATE_LIMIT_IP_SCOPE,
     TELEGRAM_LINK_RATE_LIMIT_PHONE_KEY_PREFIX,
     TELEGRAM_LINK_RATE_LIMIT_PHONE_SCOPE,
+    TELEGRAM_LINK_RATE_LIMIT_USER_KEY_PREFIX,
     TELEGRAM_LINK_RATE_LIMIT_USER_SCOPE,
     TelegramLinkIssuanceRateLimitResult,
 )
@@ -63,7 +65,8 @@ class ParallelIssueOutcome:
             "ParallelIssueOutcome("
             f"label={self.label!r}, kind={self.kind!r}, "
             f"error_code={self.error_code}, generated_count={self.generated_count}, "
-            f"session_usable={self.session_usable}"
+            f"session_usable={self.session_usable}, "
+            f"exception_class={self.exception_class!r}"
             ")"
         )
 
@@ -233,6 +236,23 @@ def stored_issue_domain_text(session: Session) -> str:
             values.append(table_name)
             values.extend(str(value) for value in row)
     return "|".join(values)
+
+
+def get_rate_limit_record(
+    session: Session,
+    settings: Settings,
+    *,
+    scope: str,
+    raw_key: str,
+) -> AuthRateLimit:
+    record = session.scalar(
+        select(AuthRateLimit).where(
+            AuthRateLimit.scope == scope,
+            AuthRateLimit.key_hash == hash_rate_limit_key(settings, raw_key),
+        )
+    )
+    assert record is not None
+    return record
 
 
 def assert_sensitive_value_absent(value: str, text_value: str) -> None:
@@ -923,6 +943,7 @@ def test_issue_link_token_parallel_issue_keeps_one_outstanding_without_500(
         session = session_factory()
         generator_calls: list[int] = []
         try:
+            start_barrier.wait(timeout=5)
             session.execute(text("SET LOCAL lock_timeout = '5000ms'"))
             session.execute(text("SET LOCAL statement_timeout = '10000ms'"))
             current_user = session.get(User, user_id)
@@ -932,7 +953,6 @@ def test_issue_link_token_parallel_issue_keeps_one_outstanding_without_500(
                     kind="unexpected",
                     exception_class="MissingUser",
                 )
-            start_barrier.wait(timeout=5)
 
             def token_generator(byte_count: int) -> str:
                 generator_calls.append(byte_count)
@@ -1066,6 +1086,461 @@ def test_issue_link_token_parallel_issue_keeps_one_outstanding_without_500(
         assert_sensitive_value_absent(raw_token, stored_text)
         assert_sensitive_value_absent(raw_token, outcome_text)
         assert_sensitive_value_absent(raw_token, caplog.text)
+
+
+@pytest.mark.integration
+def test_issue_link_token_parallel_four_same_user_keeps_rate_limit_ceiling(
+    caplog,
+    m2_test_database: Engine,
+) -> None:
+    session_factory = create_database_session_factory(m2_test_database)
+    phone = "+998900007701"
+    setup_session = session_factory()
+    try:
+        user = add_user(setup_session, phone)
+        user_id = user.id
+        setup_session.commit()
+    finally:
+        setup_session.close()
+
+    settings = make_settings(m2_test_database)
+    now = datetime(2026, 7, 24, 16, 31, tzinfo=UTC)
+    client_ip = ResolvedClientIp("203.0.113.171")
+    raw_by_label = {
+        f"attempt_{index}": f"parallel_rate_limited_issue_token_{index}"
+        for index in range(4)
+    }
+    start_barrier = Barrier(len(raw_by_label))
+    logger = logging.getLogger("tests.telegram_parallel_issue_rate_ceiling")
+
+    user_raw_key = f"{TELEGRAM_LINK_RATE_LIMIT_USER_KEY_PREFIX}{user_id}"
+    phone_raw_key = f"{TELEGRAM_LINK_RATE_LIMIT_PHONE_KEY_PREFIX}{phone}"
+    ip_raw_key = (
+        f"{TELEGRAM_LINK_RATE_LIMIT_IP_KEY_PREFIX}{client_ip.as_hmac_input()}"
+    )
+    sensitive_values = (
+        *raw_by_label.values(),
+        phone,
+        str(user_id),
+        client_ip.as_hmac_input(),
+        user_raw_key,
+        phone_raw_key,
+        ip_raw_key,
+    )
+
+    def worker(label: str) -> ParallelIssueOutcome:
+        session = session_factory()
+        generator_calls: list[int] = []
+        try:
+            session.execute(text("SET LOCAL lock_timeout = '5000ms'"))
+            session.execute(text("SET LOCAL statement_timeout = '10000ms'"))
+            current_user = session.get(User, user_id)
+            if current_user is None:
+                return ParallelIssueOutcome(
+                    label=label,
+                    kind="unexpected",
+                    exception_class="MissingUser",
+                )
+            start_barrier.wait(timeout=5)
+
+            def token_generator(byte_count: int) -> str:
+                generator_calls.append(byte_count)
+                return raw_by_label[label]
+
+            try:
+                issued = issue_link_token(
+                    session,
+                    settings,
+                    current_user,
+                    client_ip,
+                    now,
+                    token_generator=token_generator,
+                )
+            except TelegramLinkTokenIssueError as exc:
+                error_text = f"{exc!r} {exc} {exc.public_error}"
+                for value in sensitive_values:
+                    assert_sensitive_value_absent(value, error_text)
+                session_usable = (
+                    session.scalar(select(func.count()).select_from(User)) or 0
+                ) >= 1
+                session.commit()
+                return ParallelIssueOutcome(
+                    label=label,
+                    kind="domain_error",
+                    error_code=exc.error_code,
+                    generated_count=len(generator_calls),
+                    session_usable=session_usable,
+                )
+
+            token_hash = hash_telegram_link_token(issued.raw_token)
+            session_usable = (
+                session.scalar(select(func.count()).select_from(User)) or 0
+            ) >= 1
+            session.commit()
+            return ParallelIssueOutcome(
+                label=label,
+                kind="issued",
+                token_hash=token_hash,
+                generated_count=len(generator_calls),
+                session_usable=session_usable,
+            )
+        except BrokenBarrierError:
+            session.rollback()
+            return ParallelIssueOutcome(
+                label=label,
+                kind="unexpected",
+                exception_class="BrokenBarrierError",
+                generated_count=len(generator_calls),
+            )
+        except Exception as exc:
+            session.rollback()
+            return ParallelIssueOutcome(
+                label=label,
+                kind="unexpected",
+                exception_class=type(exc).__name__,
+                generated_count=len(generator_calls),
+            )
+        finally:
+            session.close()
+
+    executor = ThreadPoolExecutor(max_workers=len(raw_by_label))
+    try:
+        with caplog.at_level(logging.INFO):
+            futures = [
+                executor.submit(worker, label) for label in raw_by_label
+            ]
+            done, not_done = wait(futures, timeout=15)
+            if not_done:
+                start_barrier.abort()
+                for future in not_done:
+                    future.cancel()
+                pytest.fail("parallel issue rate ceiling timed out", pytrace=False)
+            outcomes = [future.result(timeout=0) for future in futures]
+            logger.info("parallel issue rate ceiling outcomes %s", outcomes)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    captured_log = caplog.text
+    caplog.clear()
+    unexpected_outcomes = [
+        outcome for outcome in outcomes if outcome.kind == "unexpected"
+    ]
+    issued_outcomes = [outcome for outcome in outcomes if outcome.kind == "issued"]
+    domain_outcomes = [
+        outcome for outcome in outcomes if outcome.kind == "domain_error"
+    ]
+    outcome_text = " ".join(repr(outcome) for outcome in outcomes)
+
+    final_session = session_factory()
+    try:
+        token_rows = final_session.scalars(
+            select(TelegramLinkToken).where(TelegramLinkToken.user_id == user_id)
+        ).all()
+        outstanding_rows = [
+            token
+            for token in token_rows
+            if token.consumed_at is None and token.invalidated_at is None
+        ]
+        user_record = get_rate_limit_record(
+            final_session,
+            settings,
+            scope=TELEGRAM_LINK_RATE_LIMIT_USER_SCOPE,
+            raw_key=user_raw_key,
+        )
+        phone_record = get_rate_limit_record(
+            final_session,
+            settings,
+            scope=TELEGRAM_LINK_RATE_LIMIT_PHONE_SCOPE,
+            raw_key=phone_raw_key,
+        )
+        ip_record = get_rate_limit_record(
+            final_session,
+            settings,
+            scope=TELEGRAM_LINK_RATE_LIMIT_IP_SCOPE,
+            raw_key=ip_raw_key,
+        )
+        stored_text = stored_issue_domain_text(final_session)
+        link_count = count_table(final_session, TelegramLink)
+        event_count = count_table(final_session, TelegramLinkEvent)
+        customer_count = count_table(final_session, Customer)
+        final_session_usable = (
+            final_session.scalar(select(func.count()).select_from(User)) or 0
+        ) >= 1
+        final_outstanding_id = outstanding_rows[0].id if outstanding_rows else None
+        final_outstanding_hash = (
+            outstanding_rows[0].token_hash if outstanding_rows else None
+        )
+    finally:
+        final_session.close()
+
+    assert unexpected_outcomes == []
+    assert len(issued_outcomes) >= 1
+    assert len(issued_outcomes) <= 3
+    assert len(issued_outcomes) + len(domain_outcomes) == 4
+    assert all(
+        outcome.error_code is ErrorCode.RATE_LIMITED
+        for outcome in domain_outcomes
+    )
+    assert all(outcome.session_usable for outcome in outcomes)
+    assert sum(outcome.generated_count for outcome in outcomes) <= 3
+    assert len(token_rows) <= 3
+    assert len(outstanding_rows) == 1
+    assert outstanding_rows[0].consumed_at is None
+    assert outstanding_rows[0].invalidated_at is None
+    assert user_record.attempt_count == 4
+    assert phone_record.attempt_count == 4
+    assert ip_record.attempt_count == 4
+    assert link_count == 0
+    assert event_count == 0
+    assert customer_count == 0
+    assert final_session_usable is True
+    assert "IntegrityError" not in outcome_text
+    assert "IntegrityError" not in captured_log
+    for value in sensitive_values:
+        assert_sensitive_value_absent(value, stored_text)
+        assert_sensitive_value_absent(value, outcome_text)
+        assert_sensitive_value_absent(value, captured_log)
+
+    rejection_raw = "parallel_rate_limit_rejection_token"
+    rejection_session = session_factory()
+    try:
+        current_user = rejection_session.get(User, user_id)
+        assert current_user is not None
+        with pytest.raises(TelegramLinkTokenIssueError) as exc_info:
+            issue_link_token(
+                rejection_session,
+                settings,
+                current_user,
+                client_ip,
+                now + timedelta(seconds=2),
+                token_generator=make_generator([rejection_raw])[0],
+            )
+        rejection_error_text = (
+            f"{exc_info.value!r} {exc_info.value} {exc_info.value.public_error}"
+        )
+        rejection_session_usable = (
+            rejection_session.scalar(select(func.count()).select_from(User)) or 0
+        ) >= 1
+        rejection_session.commit()
+    finally:
+        rejection_session.close()
+
+    verify_session = session_factory()
+    try:
+        current_outstanding = verify_session.get(
+            TelegramLinkToken,
+            final_outstanding_id,
+        )
+        user_record_after_rejection = get_rate_limit_record(
+            verify_session,
+            settings,
+            scope=TELEGRAM_LINK_RATE_LIMIT_USER_SCOPE,
+            raw_key=user_raw_key,
+        )
+    finally:
+        verify_session.close()
+
+    assert exc_info.value.error_code is ErrorCode.RATE_LIMITED
+    assert rejection_session_usable is True
+    assert current_outstanding is not None
+    assert current_outstanding.token_hash == final_outstanding_hash
+    assert current_outstanding.consumed_at is None
+    assert current_outstanding.invalidated_at is None
+    assert user_record_after_rejection.attempt_count == 4
+    for value in (*sensitive_values, rejection_raw):
+        assert_sensitive_value_absent(value, rejection_error_text)
+
+
+@pytest.mark.integration
+def test_issue_link_token_parallel_shared_ip_respects_twenty_ceiling(
+    caplog,
+    m2_test_database: Engine,
+) -> None:
+    session_factory = create_database_session_factory(m2_test_database)
+    labels = [f"worker_{index:02d}" for index in range(21)]
+    phone_by_label = {
+        label: f"+9989000078{index:02d}" for index, label in enumerate(labels)
+    }
+    raw_by_label = {
+        label: f"parallel_shared_ip_issue_token_{index:02d}"
+        for index, label in enumerate(labels)
+    }
+    setup_session = session_factory()
+    try:
+        user_id_by_label = {}
+        for label in labels:
+            user = add_user(setup_session, phone_by_label[label])
+            user_id_by_label[label] = user.id
+        setup_session.commit()
+    finally:
+        setup_session.close()
+
+    settings = make_settings(
+        m2_test_database,
+        user_attempts=25,
+        phone_attempts=25,
+        ip_attempts=20,
+    )
+    now = datetime(2026, 7, 24, 16, 32, tzinfo=UTC)
+    client_ip = ResolvedClientIp("203.0.113.172")
+    ip_raw_key = (
+        f"{TELEGRAM_LINK_RATE_LIMIT_IP_KEY_PREFIX}{client_ip.as_hmac_input()}"
+    )
+    start_barrier = Barrier(len(labels))
+    logger = logging.getLogger("tests.telegram_parallel_shared_ip")
+    sensitive_values = (
+        *raw_by_label.values(),
+        *phone_by_label.values(),
+        *(str(user_id) for user_id in user_id_by_label.values()),
+        client_ip.as_hmac_input(),
+        ip_raw_key,
+    )
+
+    def worker(label: str) -> ParallelIssueOutcome:
+        session = session_factory()
+        generator_calls: list[int] = []
+        try:
+            start_barrier.wait(timeout=5)
+            session.execute(text("SET LOCAL lock_timeout = '5000ms'"))
+            session.execute(text("SET LOCAL statement_timeout = '10000ms'"))
+            current_user = session.get(User, user_id_by_label[label])
+            if current_user is None:
+                return ParallelIssueOutcome(
+                    label=label,
+                    kind="unexpected",
+                    exception_class="MissingUser",
+                )
+
+            def token_generator(byte_count: int) -> str:
+                generator_calls.append(byte_count)
+                return raw_by_label[label]
+
+            try:
+                issued = issue_link_token(
+                    session,
+                    settings,
+                    current_user,
+                    client_ip,
+                    now,
+                    token_generator=token_generator,
+                )
+            except TelegramLinkTokenIssueError as exc:
+                error_text = f"{exc!r} {exc} {exc.public_error}"
+                for value in sensitive_values:
+                    assert_sensitive_value_absent(value, error_text)
+                session_usable = (
+                    session.scalar(select(func.count()).select_from(User)) or 0
+                ) >= 1
+                session.commit()
+                return ParallelIssueOutcome(
+                    label=label,
+                    kind="domain_error",
+                    error_code=exc.error_code,
+                    generated_count=len(generator_calls),
+                    session_usable=session_usable,
+                )
+
+            token_hash = hash_telegram_link_token(issued.raw_token)
+            session_usable = (
+                session.scalar(select(func.count()).select_from(User)) or 0
+            ) >= 1
+            session.commit()
+            return ParallelIssueOutcome(
+                label=label,
+                kind="issued",
+                token_hash=token_hash,
+                generated_count=len(generator_calls),
+                session_usable=session_usable,
+            )
+        except BrokenBarrierError:
+            session.rollback()
+            return ParallelIssueOutcome(
+                label=label,
+                kind="unexpected",
+                exception_class="BrokenBarrierError",
+                generated_count=len(generator_calls),
+            )
+        except Exception as exc:
+            session.rollback()
+            return ParallelIssueOutcome(
+                label=label,
+                kind="unexpected",
+                exception_class=type(exc).__name__,
+                generated_count=len(generator_calls),
+            )
+        finally:
+            session.close()
+
+    executor = ThreadPoolExecutor(max_workers=len(labels))
+    try:
+        with caplog.at_level(logging.INFO):
+            futures = [executor.submit(worker, label) for label in labels]
+            done, not_done = wait(futures, timeout=20)
+            if not_done:
+                start_barrier.abort()
+                for future in not_done:
+                    future.cancel()
+                pytest.fail("parallel shared-IP issue timed out", pytrace=False)
+            outcomes = [future.result(timeout=0) for future in futures]
+            logger.info("parallel shared-IP issue outcomes %s", outcomes)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    captured_log = caplog.text
+    caplog.clear()
+    unexpected_outcomes = [
+        outcome for outcome in outcomes if outcome.kind == "unexpected"
+    ]
+    issued_outcomes = [outcome for outcome in outcomes if outcome.kind == "issued"]
+    domain_outcomes = [
+        outcome for outcome in outcomes if outcome.kind == "domain_error"
+    ]
+    outcome_text = " ".join(repr(outcome) for outcome in outcomes)
+
+    final_session = session_factory()
+    try:
+        token_rows = final_session.scalars(select(TelegramLinkToken)).all()
+        outstanding_rows = [
+            token
+            for token in token_rows
+            if token.consumed_at is None and token.invalidated_at is None
+        ]
+        ip_record = get_rate_limit_record(
+            final_session,
+            settings,
+            scope=TELEGRAM_LINK_RATE_LIMIT_IP_SCOPE,
+            raw_key=ip_raw_key,
+        )
+        stored_text = stored_issue_domain_text(final_session)
+        link_count = count_table(final_session, TelegramLink)
+        event_count = count_table(final_session, TelegramLinkEvent)
+        customer_count = count_table(final_session, Customer)
+        final_session_usable = (
+            final_session.scalar(select(func.count()).select_from(User)) or 0
+        ) >= len(labels)
+    finally:
+        final_session.close()
+
+    assert unexpected_outcomes == []
+    assert len(issued_outcomes) == 20
+    assert len(domain_outcomes) == 1
+    assert domain_outcomes[0].error_code is ErrorCode.RATE_LIMITED
+    assert all(outcome.session_usable for outcome in outcomes)
+    assert all(outcome.generated_count == 1 for outcome in issued_outcomes)
+    assert all(outcome.generated_count == 0 for outcome in domain_outcomes)
+    assert len(token_rows) == 20
+    assert len(outstanding_rows) == 20
+    assert ip_record.attempt_count == 21
+    assert link_count == 0
+    assert event_count == 0
+    assert customer_count == 0
+    assert final_session_usable is True
+    assert "IntegrityError" not in outcome_text
+    assert "IntegrityError" not in captured_log
+    for value in sensitive_values:
+        assert_sensitive_value_absent(value, stored_text)
+        assert_sensitive_value_absent(value, outcome_text)
+        assert_sensitive_value_absent(value, captured_log)
 
 
 @pytest.mark.integration

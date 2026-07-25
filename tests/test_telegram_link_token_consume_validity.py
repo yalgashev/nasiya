@@ -12,9 +12,11 @@ from sqlalchemy.orm import Session
 from app.auth.error_codes import ErrorCode
 from app.auth.models import User
 from app.db import create_database_session_factory
+from app.telegram.inbound import VerifiedPrivateTelegramChatIdentity
 from app.telegram.models import TelegramLink, TelegramLinkEvent, TelegramLinkToken
 from app.telegram.service import (
     TelegramLinkTokenConsumeError,
+    consume_start_token,
     get_valid_link_token_for_consume,
 )
 from app.telegram.token import RawTelegramLinkToken, hash_telegram_link_token
@@ -100,6 +102,39 @@ def count_table(session: Session, model) -> int:
     return session.scalar(select(func.count()).select_from(model)) or 0
 
 
+def domain_snapshot(session: Session) -> tuple[tuple[object, ...], ...]:
+    token_rows = session.execute(
+        select(
+            TelegramLinkToken.id,
+            TelegramLinkToken.user_id,
+            TelegramLinkToken.token_hash,
+            TelegramLinkToken.created_at,
+            TelegramLinkToken.expires_at,
+            TelegramLinkToken.consumed_at,
+            TelegramLinkToken.invalidated_at,
+        ).order_by(TelegramLinkToken.id)
+    ).all()
+    link_rows = session.execute(
+        select(
+            TelegramLink.id,
+            TelegramLink.user_id,
+            TelegramLink.telegram_chat_id,
+            TelegramLink.linked_at,
+            TelegramLink.unlinked_at,
+            TelegramLink.updated_at,
+        ).order_by(TelegramLink.id)
+    ).all()
+    event_rows = session.execute(
+        select(
+            TelegramLinkEvent.id,
+            TelegramLinkEvent.user_id,
+            TelegramLinkEvent.action,
+            TelegramLinkEvent.occurred_at,
+        ).order_by(TelegramLinkEvent.id)
+    ).all()
+    return tuple(token_rows + link_rows + event_rows)
+
+
 def seed_committed_token(
     engine: Engine,
     *,
@@ -158,7 +193,10 @@ def assert_uniform_invalid_error(
     assert "expired" not in error_text.casefold()
     assert "unknown" not in error_text.casefold()
     assert "telegram_link_tokens" not in error_text
+    assert "telegram_links" not in error_text
     assert "token_hash" not in error_text
+    assert "constraint" not in error_text.casefold()
+    assert "integrityerror" not in error_text.casefold()
 
 
 @pytest.mark.integration
@@ -341,6 +379,228 @@ def test_malformed_raw_consume_input_maps_to_uniform_invalid_semantics(
     assert count_table(db_session, TelegramLinkToken) == 0
     assert count_table(db_session, TelegramLink) == 0
     assert count_table(db_session, TelegramLinkEvent) == 0
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("label", "seconds_from_expiry", "is_valid"),
+    [
+        ("before-expiry", -1, True),
+        ("at-expiry", 0, False),
+        ("after-expiry", 1, False),
+    ],
+    ids=["now-before-expires", "now-equals-expires", "now-after-expires"],
+)
+def test_token_ttl_boundary_uses_injected_timezone_aware_now(
+    db_session: Session,
+    caplog,
+    label: str,
+    seconds_from_expiry: int,
+    is_valid: bool,
+) -> None:
+    expires_at = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
+    now = expires_at + timedelta(seconds=seconds_from_expiry)
+    raw_token = f"ttl_boundary_{label}_token"
+    token_hash = hash_telegram_link_token(RawTelegramLinkToken(raw_token))
+    user = add_user(db_session, f"+9989000101{abs(seconds_from_expiry):02d}")
+    token = add_token(
+        db_session,
+        user,
+        raw_token=raw_token,
+        created_at=expires_at - timedelta(minutes=10),
+        expires_at=expires_at,
+    )
+    before_snapshot = domain_snapshot(db_session)
+
+    assert now.tzinfo is UTC
+    with caplog.at_level(logging.INFO):
+        if is_valid:
+            found = get_valid_link_token_for_consume(
+                db_session,
+                RawTelegramLinkToken(raw_token),
+                now,
+            )
+
+            assert found is token
+            assert found.expires_at == expires_at
+            assert domain_snapshot(db_session) == before_snapshot
+        else:
+            with pytest.raises(TelegramLinkTokenConsumeError) as exc_info:
+                get_valid_link_token_for_consume(
+                    db_session,
+                    RawTelegramLinkToken(raw_token),
+                    now,
+                )
+
+            assert_uniform_invalid_error(
+                exc_info.value,
+                raw_token=raw_token,
+                token_hash=token_hash,
+                log_text=caplog.text,
+            )
+            assert domain_snapshot(db_session) == before_snapshot
+
+    assert raw_token not in caplog.text
+    assert token_hash not in caplog.text
+    assert count_table(db_session, TelegramLink) == 0
+    assert count_table(db_session, TelegramLinkEvent) == 0
+
+
+@pytest.mark.integration
+def test_invalid_token_matrix_is_uniform_and_state_preserving(
+    db_session: Session,
+    caplog,
+) -> None:
+    now = datetime(2026, 7, 25, 12, 30, tzinfo=UTC)
+    invalid_shapes: list[tuple[str, ErrorCode, tuple[tuple[str, str], ...], str]] = []
+
+    def capture_invalid_case(
+        *,
+        raw_token: str,
+        token_hash: str,
+        operation,
+    ) -> None:
+        before_snapshot = domain_snapshot(db_session)
+        caplog.clear()
+
+        with pytest.raises(TelegramLinkTokenConsumeError) as exc_info:
+            with caplog.at_level(logging.INFO):
+                operation()
+
+        assert domain_snapshot(db_session) == before_snapshot
+        assert_uniform_invalid_error(
+            exc_info.value,
+            raw_token=raw_token,
+            token_hash=token_hash,
+            log_text=caplog.text,
+        )
+        invalid_shapes.append(
+            (
+                type(exc_info.value).__name__,
+                exc_info.value.error_code,
+                tuple(sorted(exc_info.value.public_error.items())),
+                str(exc_info.value),
+            )
+        )
+
+    unknown_raw = "matrix_unknown_token"
+    unknown_hash = hash_telegram_link_token(RawTelegramLinkToken(unknown_raw))
+    capture_invalid_case(
+        raw_token=unknown_raw,
+        token_hash=unknown_hash,
+        operation=lambda: get_valid_link_token_for_consume(
+            db_session,
+            RawTelegramLinkToken(unknown_raw),
+            now,
+        ),
+    )
+
+    malformed_raw = "matrix malformed token"
+    capture_invalid_case(
+        raw_token=malformed_raw,
+        token_hash="0" * 64,
+        operation=lambda: get_valid_link_token_for_consume(
+            db_session,
+            malformed_raw,
+            now,
+        ),
+    )
+
+    consumed_raw = "matrix_consumed_token"
+    consumed_user = add_user(db_session, "+998900010120")
+    consumed_token = add_token(
+        db_session,
+        consumed_user,
+        raw_token=consumed_raw,
+        created_at=now - timedelta(minutes=5),
+        expires_at=now + timedelta(minutes=5),
+        consumed_at=now - timedelta(minutes=1),
+    )
+    capture_invalid_case(
+        raw_token=consumed_raw,
+        token_hash=consumed_token.token_hash,
+        operation=lambda: get_valid_link_token_for_consume(
+            db_session,
+            RawTelegramLinkToken(consumed_raw),
+            now,
+        ),
+    )
+
+    invalidated_raw = "matrix_invalidated_token"
+    invalidated_user = add_user(db_session, "+998900010121")
+    invalidated_token = add_token(
+        db_session,
+        invalidated_user,
+        raw_token=invalidated_raw,
+        created_at=now - timedelta(minutes=5),
+        expires_at=now + timedelta(minutes=5),
+        invalidated_at=now - timedelta(minutes=1),
+    )
+    capture_invalid_case(
+        raw_token=invalidated_raw,
+        token_hash=invalidated_token.token_hash,
+        operation=lambda: get_valid_link_token_for_consume(
+            db_session,
+            RawTelegramLinkToken(invalidated_raw),
+            now,
+        ),
+    )
+
+    purged_raw = "matrix_purged_token"
+    purged_user = add_user(db_session, "+998900010122")
+    purged_token = add_token(
+        db_session,
+        purged_user,
+        raw_token=purged_raw,
+        created_at=now - timedelta(minutes=5),
+        expires_at=now + timedelta(minutes=5),
+    )
+    purged_hash = purged_token.token_hash
+    db_session.delete(purged_token)
+    db_session.flush()
+    capture_invalid_case(
+        raw_token=purged_raw,
+        token_hash=purged_hash,
+        operation=lambda: get_valid_link_token_for_consume(
+            db_session,
+            RawTelegramLinkToken(purged_raw),
+            now,
+        ),
+    )
+
+    replay_raw = "matrix_replay_token"
+    replay_user = add_user(db_session, "+998900010123")
+    replay_token = add_token(
+        db_session,
+        replay_user,
+        raw_token=replay_raw,
+        created_at=now - timedelta(minutes=5),
+        expires_at=now + timedelta(minutes=5),
+    )
+    first_consume_at = now + timedelta(seconds=1)
+    first_result = consume_start_token(
+        db_session,
+        RawTelegramLinkToken(replay_raw),
+        VerifiedPrivateTelegramChatIdentity(10_123),
+        first_consume_at,
+    )
+    assert first_result.token is replay_token
+    assert replay_token.consumed_at == first_consume_at
+    capture_invalid_case(
+        raw_token=replay_raw,
+        token_hash=replay_token.token_hash,
+        operation=lambda: consume_start_token(
+            db_session,
+            RawTelegramLinkToken(replay_raw),
+            VerifiedPrivateTelegramChatIdentity(10_123),
+            first_consume_at + timedelta(seconds=1),
+        ),
+    )
+
+    assert len(invalid_shapes) == 6
+    assert len(set(invalid_shapes)) == 1
+    assert count_table(db_session, TelegramLink) == 1
+    assert count_table(db_session, TelegramLinkEvent) == 1
 
 
 @pytest.mark.integration

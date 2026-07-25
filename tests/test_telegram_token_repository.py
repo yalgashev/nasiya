@@ -14,10 +14,12 @@ from app.auth.models import User
 from app.db import create_database_session_factory
 from app.telegram.models import TelegramLink, TelegramLinkToken
 from app.telegram.repository import (
+    TELEGRAM_LINK_TOKEN_TERMINAL_RETENTION_DAYS,
     TelegramLinkTokenInsertConflict,
     get_outstanding_telegram_link_token_for_update,
     get_telegram_link_token_by_hash_for_update,
     get_telegram_link_token_status,
+    get_telegram_link_tokens_eligible_for_purge,
     get_valid_telegram_link_token_for_consume_by_hash_for_update,
     has_active_telegram_link,
     insert_telegram_link_token,
@@ -170,6 +172,7 @@ def test_repository_public_api_is_current_user_and_hash_only() -> None:
         insert_telegram_link_token,
         invalidate_and_insert_telegram_link_token,
         get_telegram_link_token_status,
+        get_telegram_link_tokens_eligible_for_purge,
     ):
         parameters = signature(callable_object).parameters
         assert "raw_token" not in parameters
@@ -180,6 +183,9 @@ def test_repository_public_api_is_current_user_and_hash_only() -> None:
     source = getsource(telegram_repository)
     assert "RawTelegramLinkToken" not in source
     assert "TelegramLinkEvent" not in source
+    assert "TELEGRAM_LINK_TOKEN_TERMINAL_RETENTION_DAYS" in source
+    assert "os.getenv" not in source
+    assert "telegram_link_token_retention" not in source
 
 
 @pytest.mark.integration
@@ -409,6 +415,180 @@ def test_user_token_status_is_production_repository_query(
     assert empty_status.expired_outstanding_count == 0
     assert empty_status.consumed_count == 0
     assert empty_status.invalidated_count == 0
+
+
+def test_token_terminal_retention_constant_is_exactly_thirty_days() -> None:
+    assert TELEGRAM_LINK_TOKEN_TERMINAL_RETENTION_DAYS == 30
+
+
+@pytest.mark.integration
+def test_purge_eligibility_selects_exact_thirty_day_terminal_tokens_only(
+    caplog,
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 7, 25, 14, 30, tzinfo=UTC)
+    cutoff = now - timedelta(days=TELEGRAM_LINK_TOKEN_TERMINAL_RETENTION_DAYS)
+    user = add_user(db_session, "+998900006101")
+    other_expired_user = add_user(db_session, "+998900006103")
+    valid_outstanding_user = add_user(db_session, "+998900006104")
+    linked_at = now - timedelta(days=60)
+    link = add_link(
+        db_session,
+        user,
+        telegram_chat_id=71_101,
+        linked_at=linked_at,
+    )
+    eligible_consumed_old = add_token(
+        db_session,
+        user,
+        token_hash_value=token_hash(101),
+        created_at=cutoff - timedelta(days=2),
+        consumed_at=cutoff - timedelta(microseconds=1),
+    )
+    eligible_consumed_boundary = add_token(
+        db_session,
+        user,
+        token_hash_value=token_hash(102),
+        created_at=cutoff - timedelta(days=1),
+        consumed_at=cutoff,
+    )
+    ineligible_consumed_new = add_token(
+        db_session,
+        user,
+        token_hash_value=token_hash(103),
+        created_at=cutoff,
+        consumed_at=cutoff + timedelta(microseconds=1),
+    )
+    eligible_invalidated_old = add_token(
+        db_session,
+        user,
+        token_hash_value=token_hash(104),
+        created_at=cutoff + timedelta(seconds=1),
+        invalidated_at=cutoff - timedelta(seconds=1),
+    )
+    eligible_invalidated_boundary = add_token(
+        db_session,
+        user,
+        token_hash_value=token_hash(105),
+        created_at=cutoff + timedelta(seconds=2),
+        invalidated_at=cutoff,
+    )
+    ineligible_invalidated_new = add_token(
+        db_session,
+        user,
+        token_hash_value=token_hash(106),
+        created_at=cutoff + timedelta(seconds=3),
+        invalidated_at=cutoff + timedelta(seconds=1),
+    )
+    eligible_expired_unused = add_token(
+        db_session,
+        user,
+        token_hash_value=token_hash(107),
+        created_at=cutoff - timedelta(minutes=10),
+        expires_at=cutoff,
+    )
+    ineligible_expired_unused_new = add_token(
+        db_session,
+        other_expired_user,
+        token_hash_value=token_hash(108),
+        created_at=cutoff - timedelta(minutes=9),
+        expires_at=cutoff + timedelta(microseconds=1),
+    )
+    valid_outstanding = add_token(
+        db_session,
+        valid_outstanding_user,
+        token_hash_value=token_hash(109),
+        created_at=now - timedelta(minutes=1),
+        expires_at=now + timedelta(minutes=9),
+    )
+
+    with caplog.at_level("DEBUG"):
+        eligible = get_telegram_link_tokens_eligible_for_purge(
+            db_session,
+            now,
+            limit=20,
+        )
+    eligible_ids = [token.id for token in eligible]
+
+    assert eligible_ids == [
+        eligible_consumed_old.id,
+        eligible_consumed_boundary.id,
+        eligible_expired_unused.id,
+        eligible_invalidated_old.id,
+        eligible_invalidated_boundary.id,
+    ]
+    assert ineligible_consumed_new.id not in eligible_ids
+    assert ineligible_invalidated_new.id not in eligible_ids
+    assert ineligible_expired_unused_new.id not in eligible_ids
+    assert valid_outstanding.id not in eligible_ids
+    assert count_tokens(db_session) == 9
+    assert db_session.get(TelegramLink, link.id) is link
+    assert link.telegram_chat_id == 71_101
+    assert caplog.text == ""
+    for token in eligible:
+        assert token.token_hash not in caplog.text
+        assert str(token.user_id) not in caplog.text
+    assert str(link.telegram_chat_id) not in caplog.text
+
+
+@pytest.mark.integration
+def test_purge_eligibility_ordering_and_limit_are_deterministic(
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 7, 25, 14, 40, tzinfo=UTC)
+    cutoff = now - timedelta(days=TELEGRAM_LINK_TOKEN_TERMINAL_RETENTION_DAYS)
+    user = add_user(db_session, "+998900006102")
+    first = add_token(
+        db_session,
+        user,
+        token_hash_value=token_hash(201),
+        created_at=cutoff - timedelta(days=3),
+        consumed_at=cutoff,
+    )
+    second = add_token(
+        db_session,
+        user,
+        token_hash_value=token_hash(202),
+        created_at=cutoff - timedelta(days=2),
+        invalidated_at=cutoff,
+    )
+    third = add_token(
+        db_session,
+        user,
+        token_hash_value=token_hash(203),
+        created_at=cutoff - timedelta(days=1),
+        expires_at=cutoff,
+    )
+
+    eligible = get_telegram_link_tokens_eligible_for_purge(
+        db_session,
+        now,
+        limit=2,
+    )
+
+    assert [token.id for token in eligible] == [first.id, second.id]
+    assert third.id not in [token.id for token in eligible]
+
+
+@pytest.mark.integration
+def test_purge_eligibility_rejects_naive_now_and_invalid_limit(
+    db_session: Session,
+) -> None:
+    with pytest.raises(ValueError) as naive_error:
+        get_telegram_link_tokens_eligible_for_purge(
+            db_session,
+            datetime(2026, 7, 25, 14, 50),
+            limit=10,
+        )
+    with pytest.raises(ValueError) as limit_error:
+        get_telegram_link_tokens_eligible_for_purge(
+            db_session,
+            datetime(2026, 7, 25, 14, 50, tzinfo=UTC),
+            limit=0,
+        )
+
+    assert "timezone-aware" in str(naive_error.value)
+    assert "limit" in str(limit_error.value)
 
 
 @pytest.mark.integration

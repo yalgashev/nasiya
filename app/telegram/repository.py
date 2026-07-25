@@ -1,8 +1,9 @@
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import Final
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -17,6 +18,7 @@ _EXPECTED_TOKEN_INSERT_CONSTRAINTS = frozenset(
         "uq_telegram_link_tokens_one_outstanding_per_user",
     }
 )
+TELEGRAM_LINK_TOKEN_TERMINAL_RETENTION_DAYS: Final = 30
 
 
 class TelegramLinkTokenInsertConflict(RuntimeError):
@@ -325,6 +327,47 @@ def get_telegram_link_token_status(
     )
 
 
+def get_telegram_link_tokens_eligible_for_purge(
+    session: Session,
+    now: datetime,
+    *,
+    limit: int,
+) -> list[TelegramLinkToken]:
+    current_time = _as_utc(now)
+    if limit < 1:
+        raise ValueError("Telegram link token purge batch limit must be positive")
+    cutoff = current_time - timedelta(days=TELEGRAM_LINK_TOKEN_TERMINAL_RETENTION_DAYS)
+    statement = (
+        select(TelegramLinkToken)
+        .where(_terminal_link_token_purge_filter(cutoff))
+        .order_by(TelegramLinkToken.created_at.asc(), TelegramLinkToken.id.asc())
+        .limit(limit)
+    )
+    return list(session.scalars(statement).all())
+
+
+def delete_telegram_link_tokens_eligible_for_purge(
+    session: Session,
+    now: datetime,
+    *,
+    limit: int,
+) -> int:
+    current_time = _as_utc(now)
+    if limit < 1:
+        raise ValueError("Telegram link token purge batch limit must be positive")
+    cutoff = current_time - timedelta(days=TELEGRAM_LINK_TOKEN_TERMINAL_RETENTION_DAYS)
+    eligible_ids = (
+        select(TelegramLinkToken.id)
+        .where(_terminal_link_token_purge_filter(cutoff))
+        .order_by(TelegramLinkToken.created_at.asc(), TelegramLinkToken.id.asc())
+        .limit(limit)
+        .with_for_update(skip_locked=True)
+    )
+    statement = delete(TelegramLinkToken).where(TelegramLinkToken.id.in_(eligible_ids))
+    result = session.execute(statement)
+    return result.rowcount or 0
+
+
 def _validate_token_hash(token_hash: str) -> str:
     if (
         not isinstance(token_hash, str)
@@ -337,6 +380,24 @@ def _validate_token_hash(token_hash: str) -> str:
 def _is_expected_token_insert_conflict(exc: IntegrityError) -> bool:
     constraint_name = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
     return constraint_name in _EXPECTED_TOKEN_INSERT_CONSTRAINTS
+
+
+def _terminal_link_token_purge_filter(cutoff: datetime):
+    return (
+        (
+            TelegramLinkToken.consumed_at.is_not(None)
+            & (TelegramLinkToken.consumed_at <= cutoff)
+        )
+        | (
+            TelegramLinkToken.invalidated_at.is_not(None)
+            & (TelegramLinkToken.invalidated_at <= cutoff)
+        )
+        | (
+            TelegramLinkToken.consumed_at.is_(None)
+            & TelegramLinkToken.invalidated_at.is_(None)
+            & (TelegramLinkToken.expires_at <= cutoff)
+        )
+    )
 
 
 def _as_utc(value: datetime) -> datetime:
