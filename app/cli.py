@@ -1,11 +1,15 @@
 import argparse
 import getpass
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TextIO
+from uuid import UUID, uuid4
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.auth.error_codes import ErrorCode
 from app.auth.phone import PhoneNormalizationError, normalize_uzbekistan_phone
 from app.auth.service import (
     CreateUserError,
@@ -15,8 +19,46 @@ from app.auth.service import (
 )
 from app.db import create_database_engine, create_database_session_factory
 from app.settings import Settings
+from app.shop import repository as shop_repository
+from app.shop.enums import ShopRole, ShopStatus
+from app.shop.service import (
+    AddStaffResult,
+    ChangeStaffRoleResult,
+    ProvisionActiveShopError,
+    ShopStatusTransitionOutcome,
+    ShopStatusTransitionResult,
+    add_staff,
+    change_staff_role,
+    provision_active_shop,
+    reactivate_shop,
+    suspend_shop,
+)
+from app.shop.values import ShopId, ShopStaffId, UserId
 
 LOCAL_ENVIRONMENTS = frozenset({"development", "local", "testing"})
+DEMO_USER_PASSWORD = "DemoPassword123"
+DEMO_SHOP_A_ID = UUID("11111111-1111-4111-8111-111111111111")
+DEMO_SHOP_B_ID = UUID("22222222-2222-4222-8222-222222222222")
+DEMO_OWNER_A_PHONE = "+998900005001"
+DEMO_MANAGER_A_PHONE = "+998900005002"
+DEMO_CASHIER_A_PHONE = "+998900005003"
+DEMO_OWNER_B_PHONE = "+998900005004"
+DEMO_SHOP_A_NAME = "Demo Shop A"
+DEMO_SHOP_B_NAME = "Demo Shop B"
+DEMO_SHOP_A_PHONE = "+998900005101"
+DEMO_SHOP_B_PHONE = "+998900005102"
+DEMO_SHOP_A_ADDRESS = "Demo address A"
+DEMO_SHOP_B_ADDRESS = "Demo address B"
+
+
+@dataclass(frozen=True)
+class DemoShopSpec:
+    label: str
+    shop_id: UUID
+    name: str
+    phone: str
+    address_text: str
+    owner_phone: str
 
 
 class CliError(RuntimeError):
@@ -34,6 +76,26 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Reset password for an existing local user.",
     )
+    shop = subparsers.add_parser("shop")
+    shop_subparsers = shop.add_subparsers(dest="shop_command", required=True)
+
+    shop_create = shop_subparsers.add_parser("create")
+    shop_create.add_argument("--name", required=True)
+    shop_create.add_argument("--phone", required=True)
+    shop_create.add_argument("--address")
+    shop_create.add_argument("--owner-phone", required=True)
+
+    shop_suspend = shop_subparsers.add_parser("suspend")
+    shop_suspend.add_argument("shop_uuid", type=UUID)
+    shop_suspend.add_argument("--reason", required=True)
+
+    shop_reactivate = shop_subparsers.add_parser("reactivate")
+    shop_reactivate.add_argument("shop_uuid", type=UUID)
+    shop_reactivate.add_argument("--reason", required=True)
+
+    demo = subparsers.add_parser("demo")
+    demo_subparsers = demo.add_subparsers(dest="demo_command", required=True)
+    demo_subparsers.add_parser("seed")
     return parser
 
 
@@ -106,6 +168,343 @@ def create_or_update_local_user(args: argparse.Namespace, settings: Settings) ->
         engine.dispose()
 
 
+def create_shop(args: argparse.Namespace, settings: Settings) -> int:
+    ensure_local_environment(settings)
+    engine = create_database_engine(settings)
+    session_factory = create_database_session_factory(engine)
+    try:
+        with session_factory() as session:
+            try:
+                owner_phone = normalize_uzbekistan_phone(args.owner_phone)
+            except PhoneNormalizationError:
+                print("Invalid owner phone number", file=sys.stderr)
+                return 2
+
+            owner = get_by_phone(session, owner_phone)
+            if owner is None:
+                print("Owner user not found", file=sys.stderr)
+                return 2
+
+            shop_id = ShopId(uuid4())
+            result = provision_active_shop(
+                session,
+                shop_id=shop_id,
+                name=args.name,
+                phone=args.phone,
+                address_text=args.address,
+                owner_user_id=UserId(owner.id),
+                actor_user_id=UserId(owner.id),
+            )
+            if result.error is not None:
+                session.rollback()
+                return _print_shop_create_error(result.error)
+
+            session.commit()
+            print(f"Shop created: {result.shop.shop_id}")
+            return 0
+    except SQLAlchemyError:
+        print("Database operation failed", file=sys.stderr)
+        return 1
+    finally:
+        engine.dispose()
+
+
+def suspend_shop_command(args: argparse.Namespace, settings: Settings) -> int:
+    return _run_shop_status_transition(
+        args,
+        settings,
+        transition_func=suspend_shop,
+        transitioned_label="suspended",
+        noop_label="already suspended",
+    )
+
+
+def reactivate_shop_command(args: argparse.Namespace, settings: Settings) -> int:
+    return _run_shop_status_transition(
+        args,
+        settings,
+        transition_func=reactivate_shop,
+        transitioned_label="reactivated",
+        noop_label="already active",
+    )
+
+
+def seed_demo(args: argparse.Namespace, settings: Settings) -> int:
+    _ = args
+    ensure_local_environment(settings)
+    engine = create_database_engine(settings)
+    session_factory = create_database_session_factory(engine)
+    try:
+        with session_factory() as session:
+            now = datetime.now(UTC)
+            demo_users = _ensure_demo_users(session)
+            shop_a_spec = _demo_shop_a_spec()
+            shop_b_spec = _demo_shop_b_spec()
+            _ensure_demo_shop(
+                session,
+                spec=shop_a_spec,
+                owner=demo_users[shop_a_spec.owner_phone],
+                now=now,
+            )
+            _ensure_demo_shop(
+                session,
+                spec=shop_b_spec,
+                owner=demo_users[shop_b_spec.owner_phone],
+                now=now,
+            )
+            _ensure_demo_staff(
+                session,
+                shop_id=DEMO_SHOP_A_ID,
+                actor=demo_users[DEMO_OWNER_A_PHONE],
+                subject=demo_users[DEMO_MANAGER_A_PHONE],
+                role=ShopRole.MANAGER,
+                now=now,
+            )
+            _ensure_demo_staff(
+                session,
+                shop_id=DEMO_SHOP_A_ID,
+                actor=demo_users[DEMO_OWNER_A_PHONE],
+                subject=demo_users[DEMO_CASHIER_A_PHONE],
+                role=ShopRole.CASHIER,
+                now=now,
+            )
+            _ensure_demo_staff(
+                session,
+                shop_id=DEMO_SHOP_B_ID,
+                actor=demo_users[DEMO_OWNER_B_PHONE],
+                subject=demo_users[DEMO_OWNER_A_PHONE],
+                role=ShopRole.MANAGER,
+                now=now,
+            )
+            session.commit()
+            print("Demo seed complete.")
+            print(f"Shop A: {DEMO_SHOP_A_ID}")
+            print(f"Shop B: {DEMO_SHOP_B_ID}")
+            return 0
+    except SQLAlchemyError:
+        print("Database operation failed", file=sys.stderr)
+        return 1
+    finally:
+        engine.dispose()
+
+
+def _run_shop_status_transition(
+    args: argparse.Namespace,
+    settings: Settings,
+    *,
+    transition_func: Callable[..., ShopStatusTransitionResult],
+    transitioned_label: str,
+    noop_label: str,
+) -> int:
+    normalized_reason = _normalize_cli_reason(args.reason)
+    if normalized_reason is None:
+        print("Reason is required", file=sys.stderr)
+        return 2
+
+    ensure_local_environment(settings)
+    engine = create_database_engine(settings)
+    session_factory = create_database_session_factory(engine)
+    try:
+        with session_factory() as session:
+            result = transition_func(
+                session,
+                shop_id=ShopId(args.shop_uuid),
+                actor_user_id=None,
+                reason=normalized_reason,
+            )
+            if result.error is not None:
+                session.rollback()
+                return _print_shop_transition_error(result.error)
+
+            session.commit()
+            label = transitioned_label
+            if result.transition.outcome is ShopStatusTransitionOutcome.NOOP:
+                label = noop_label
+            print(f"Shop {label}: {result.transition.shop_id}")
+            return 0
+    except SQLAlchemyError:
+        print("Database operation failed", file=sys.stderr)
+        return 1
+    finally:
+        engine.dispose()
+
+
+def _ensure_demo_users(session) -> dict[str, object]:
+    return {
+        phone: _ensure_demo_user(session, phone=phone)
+        for phone in (
+            DEMO_OWNER_A_PHONE,
+            DEMO_MANAGER_A_PHONE,
+            DEMO_CASHIER_A_PHONE,
+            DEMO_OWNER_B_PHONE,
+        )
+    }
+
+
+def _ensure_demo_user(session, *, phone: str):
+    existing_user = get_by_phone(session, phone)
+    if existing_user is not None:
+        return existing_user
+
+    result = create_user(session, phone, DEMO_USER_PASSWORD)
+    if result.error is not None:
+        raise CliError("Demo user provisioning failed")
+    session.flush()
+    return result.user
+
+
+def _ensure_demo_shop(
+    session,
+    *,
+    spec: DemoShopSpec,
+    owner,
+    now: datetime,
+) -> None:
+    existing_shop = shop_repository.get_shop(session, shop_id=ShopId(spec.shop_id))
+    if existing_shop is None:
+        result = provision_active_shop(
+            session,
+            shop_id=ShopId(spec.shop_id),
+            name=spec.name,
+            phone=spec.phone,
+            address_text=spec.address_text,
+            owner_user_id=UserId(owner.id),
+            actor_user_id=None,
+            now=now,
+        )
+        if result.error is not None:
+            raise CliError(f"{spec.label} provisioning failed")
+        session.flush()
+        return
+
+    if existing_shop.name != spec.name or existing_shop.phone != spec.phone:
+        raise CliError(
+            f"{spec.label} fixed UUID points to an unexpected shop; "
+            "aborting without mutation"
+        )
+    if ShopStatus(existing_shop.status) is not ShopStatus.ACTIVE:
+        raise CliError(
+            f"{spec.label} fixed UUID is not in expected demo state; "
+            "aborting without mutation"
+        )
+
+    owner_staff = shop_repository.get_active_staff(
+        session,
+        shop_id=ShopId(spec.shop_id),
+        user_id=UserId(owner.id),
+    )
+    if owner_staff is None or owner_staff.role != ShopRole.OWNER.value:
+        raise CliError(
+            f"{spec.label} fixed UUID is missing expected owner; "
+            "aborting without mutation"
+        )
+
+
+def _ensure_demo_staff(
+    session,
+    *,
+    shop_id: UUID,
+    actor,
+    subject,
+    role: ShopRole,
+    now: datetime,
+) -> None:
+    add_result = add_staff(
+        session,
+        shop_id=ShopId(shop_id),
+        actor_user_id=UserId(actor.id),
+        phone=subject.phone,
+        role=role,
+        now=now,
+    )
+    _raise_for_staff_service_error(add_result, "Demo staff provisioning failed")
+    session.flush()
+
+    staff = shop_repository.get_active_staff(
+        session,
+        shop_id=ShopId(shop_id),
+        user_id=UserId(subject.id),
+    )
+    if staff is None:
+        raise CliError("Demo staff provisioning failed")
+    if staff.role == role.value:
+        return
+
+    change_result = change_staff_role(
+        session,
+        shop_id=ShopId(shop_id),
+        actor_user_id=UserId(actor.id),
+        target_staff_id=ShopStaffId(staff.id),
+        new_role=role,
+        now=now,
+    )
+    _raise_for_staff_service_error(change_result, "Demo staff role update failed")
+
+
+def _raise_for_staff_service_error(
+    result: AddStaffResult | ChangeStaffRoleResult,
+    message: str,
+) -> None:
+    if result.error is not None:
+        raise CliError(message)
+
+
+def _demo_shop_a_spec() -> DemoShopSpec:
+    return DemoShopSpec(
+        label="Demo Shop A",
+        shop_id=DEMO_SHOP_A_ID,
+        name=DEMO_SHOP_A_NAME,
+        phone=DEMO_SHOP_A_PHONE,
+        address_text=DEMO_SHOP_A_ADDRESS,
+        owner_phone=DEMO_OWNER_A_PHONE,
+    )
+
+
+def _demo_shop_b_spec() -> DemoShopSpec:
+    return DemoShopSpec(
+        label="Demo Shop B",
+        shop_id=DEMO_SHOP_B_ID,
+        name=DEMO_SHOP_B_NAME,
+        phone=DEMO_SHOP_B_PHONE,
+        address_text=DEMO_SHOP_B_ADDRESS,
+        owner_phone=DEMO_OWNER_B_PHONE,
+    )
+
+
+def _normalize_cli_reason(reason: str | None) -> str | None:
+    if reason is None:
+        return None
+    normalized_reason = reason.strip()
+    if not normalized_reason:
+        return None
+    return normalized_reason
+
+
+def _print_shop_create_error(error: ProvisionActiveShopError) -> int:
+    if error is ProvisionActiveShopError.INVALID_NAME:
+        print("Invalid shop name", file=sys.stderr)
+        return 2
+    if error is ProvisionActiveShopError.INVALID_PHONE:
+        print("Invalid shop phone number", file=sys.stderr)
+        return 2
+    if error is ProvisionActiveShopError.OWNER_NOT_FOUND:
+        print("Owner user not found", file=sys.stderr)
+        return 2
+    print("Shop creation failed", file=sys.stderr)
+    return 1
+
+
+def _print_shop_transition_error(error: ErrorCode) -> int:
+    if error is ErrorCode.REASON_REQUIRED:
+        print("Reason is required", file=sys.stderr)
+        return 2
+    if error is ErrorCode.FORBIDDEN:
+        print("Shop not found or transition not allowed", file=sys.stderr)
+        return 2
+    print("Shop transition failed", file=sys.stderr)
+    return 1
+
+
 def main(
     argv: Sequence[str] | None = None,
     settings: Settings | None = None,
@@ -117,6 +516,15 @@ def main(
     try:
         if args.command == "create-local-user":
             return create_or_update_local_user(args, effective_settings)
+        if args.command == "shop":
+            if args.shop_command == "create":
+                return create_shop(args, effective_settings)
+            if args.shop_command == "suspend":
+                return suspend_shop_command(args, effective_settings)
+            if args.shop_command == "reactivate":
+                return reactivate_shop_command(args, effective_settings)
+        if args.command == "demo" and args.demo_command == "seed":
+            return seed_demo(args, effective_settings)
     except CliError as exc:
         print(str(exc), file=stderr or sys.stderr)
         return 1

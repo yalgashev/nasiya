@@ -5,7 +5,9 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.auth.models import User
@@ -66,8 +68,12 @@ def add_staff(
     return staff
 
 
-def test_read_repository_identifiers_are_keyword_only() -> None:
+def test_repository_identifiers_are_keyword_only() -> None:
     functions = (
+        repository.add_shop,
+        repository.add_shop_staff,
+        repository.add_shop_staff_event,
+        repository.add_shop_status_event,
         repository.get_shop,
         repository.get_active_staff,
         repository.get_active_staff_by_id,
@@ -75,6 +81,9 @@ def test_read_repository_identifiers_are_keyword_only() -> None:
         repository.get_shop_for_staff,
         repository.list_active_shop_staff,
         repository.count_active_owners,
+        repository.lock_shop_for_update,
+        repository._lock_active_staff_by_id_for_update,
+        repository._lock_staff_for_user_for_update,
     )
 
     for function in functions:
@@ -88,20 +97,52 @@ def test_read_repository_identifiers_are_keyword_only() -> None:
         )
 
 
-def test_read_repository_has_no_write_http_or_lock_boundary() -> None:
+def test_repository_has_no_transaction_or_http_boundary() -> None:
     source = Path(repository.__file__).read_text()
 
     forbidden_fragments = {
         ".commit(",
         ".rollback(",
         ".flush(",
-        ".add(",
         "HTTPException",
-        "with_for_update",
         " update(",
         " delete(",
     }
     assert forbidden_fragments.isdisjoint(source)
+
+
+def test_repository_public_api_excludes_private_lock_helpers() -> None:
+    assert repository.__all__ == (
+        "add_shop",
+        "add_shop_staff",
+        "add_shop_staff_event",
+        "add_shop_status_event",
+        "count_active_owners",
+        "get_active_staff",
+        "get_active_staff_by_id",
+        "get_shop",
+        "get_shop_for_staff",
+        "list_active_shop_staff",
+        "list_user_active_staff",
+        "lock_shop_for_update",
+    )
+    assert "_LockedShop" not in repository.__all__
+    assert "_lock_active_staff_by_id_for_update" not in repository.__all__
+    assert "_lock_staff_for_user_for_update" not in repository.__all__
+
+
+def test_staff_lock_helpers_require_locked_shop_marker_not_shop_id() -> None:
+    for helper in (
+        repository._lock_active_staff_by_id_for_update,
+        repository._lock_staff_for_user_for_update,
+    ):
+        signature = inspect.signature(helper)
+        assert "shop_id" not in signature.parameters
+        assert "locked_shop" in signature.parameters
+
+        source = inspect.getsource(helper)
+        assert "select(Shop)" not in source
+        assert "with_for_update" in source
 
 
 @pytest.mark.integration
@@ -286,3 +327,201 @@ def test_count_active_owners_is_shop_scoped_and_active_only(
     assert (
         repository.count_active_owners(db_session, shop_id=ShopId(second_shop.id)) == 1
     )
+
+
+@pytest.mark.integration
+def test_lock_shop_for_update_returns_marker_and_takes_real_row_lock(
+    m2_test_database: Engine,
+) -> None:
+    session_factory = create_database_session_factory(m2_test_database)
+    with session_factory() as setup_session:
+        shop = add_shop(setup_session, "Locked Shop")
+        shop_id = shop.id
+        setup_session.commit()
+
+    locking_session = session_factory()
+    competing_session = session_factory()
+    try:
+        locked_shop = repository.lock_shop_for_update(
+            locking_session,
+            shop_id=ShopId(shop_id),
+        )
+
+        assert locked_shop is not None
+        assert locked_shop.shop.id == shop_id
+        assert_shop_row_is_locked_by_other_transaction(competing_session, shop_id)
+    finally:
+        competing_session.rollback()
+        competing_session.close()
+        locking_session.rollback()
+        locking_session.close()
+
+
+@pytest.mark.integration
+def test_staff_lock_helper_takes_real_row_lock_after_shop_lock(
+    m2_test_database: Engine,
+) -> None:
+    session_factory = create_database_session_factory(m2_test_database)
+    with session_factory() as setup_session:
+        user = add_user(setup_session)
+        shop = add_shop(setup_session, "Staff Locked Shop")
+        staff = add_staff(setup_session, shop, user)
+        shop_id = shop.id
+        staff_id = staff.id
+        setup_session.commit()
+
+    locking_session = session_factory()
+    competing_session = session_factory()
+    try:
+        locked_shop = repository.lock_shop_for_update(
+            locking_session,
+            shop_id=ShopId(shop_id),
+        )
+        assert locked_shop is not None
+
+        locked_staff = repository._lock_active_staff_by_id_for_update(
+            locking_session,
+            locked_shop=locked_shop,
+            staff_id=ShopStaffId(staff_id),
+        )
+
+        assert locked_staff is not None
+        assert locked_staff.id == staff_id
+        assert_staff_row_is_locked_by_other_transaction(competing_session, staff_id)
+    finally:
+        competing_session.rollback()
+        competing_session.close()
+        locking_session.rollback()
+        locking_session.close()
+
+
+@pytest.mark.integration
+def test_staff_lock_helpers_reject_raw_shop_id(db_session: Session) -> None:
+    user = add_user(db_session)
+    shop = add_shop(db_session, "Raw ShopId Shop")
+    staff = add_staff(db_session, shop, user)
+
+    with pytest.raises(TypeError, match="lock_shop_for_update"):
+        repository._lock_active_staff_by_id_for_update(
+            db_session,
+            locked_shop=ShopId(shop.id),
+            staff_id=ShopStaffId(staff.id),
+        )
+
+    with pytest.raises(TypeError, match="lock_shop_for_update"):
+        repository._lock_staff_for_user_for_update(
+            db_session,
+            locked_shop=ShopId(shop.id),
+            user_id=UserId(user.id),
+        )
+
+
+@pytest.mark.integration
+def test_locked_shop_token_from_other_session_is_rejected(
+    db_session: Session,
+    m2_test_database: Engine,
+) -> None:
+    user = add_user(db_session)
+    shop = add_shop(db_session, "Other Session Shop")
+    staff = add_staff(db_session, shop, user)
+    locked_shop = repository.lock_shop_for_update(
+        db_session,
+        shop_id=ShopId(shop.id),
+    )
+    assert locked_shop is not None
+
+    session_factory = create_database_session_factory(m2_test_database)
+    other_session = session_factory()
+    try:
+        with pytest.raises(RuntimeError, match="different SQLAlchemy session"):
+            repository._lock_active_staff_by_id_for_update(
+                other_session,
+                locked_shop=locked_shop,
+                staff_id=ShopStaffId(staff.id),
+            )
+        with pytest.raises(RuntimeError, match="different SQLAlchemy session"):
+            repository._lock_staff_for_user_for_update(
+                other_session,
+                locked_shop=locked_shop,
+                user_id=UserId(user.id),
+            )
+    finally:
+        other_session.rollback()
+        other_session.close()
+
+
+@pytest.mark.integration
+def test_staff_lock_for_user_returns_active_or_revoked_staff(
+    db_session: Session,
+) -> None:
+    active_user = add_user(db_session)
+    revoked_user = add_user(db_session)
+    other_user = add_user(db_session)
+    shop = add_shop(db_session, "Staff For User Shop")
+    other_shop = add_shop(db_session, "Other Staff For User Shop")
+    active_staff = add_staff(db_session, shop, active_user)
+    revoked_staff = add_staff(db_session, shop, revoked_user, is_active=False)
+    add_staff(db_session, other_shop, other_user)
+
+    locked_shop = repository.lock_shop_for_update(
+        db_session,
+        shop_id=ShopId(shop.id),
+    )
+    assert locked_shop is not None
+
+    assert (
+        repository._lock_staff_for_user_for_update(
+            db_session,
+            locked_shop=locked_shop,
+            user_id=UserId(active_user.id),
+        )
+        is active_staff
+    )
+    assert (
+        repository._lock_staff_for_user_for_update(
+            db_session,
+            locked_shop=locked_shop,
+            user_id=UserId(revoked_user.id),
+        )
+        is revoked_staff
+    )
+    assert (
+        repository._lock_staff_for_user_for_update(
+            db_session,
+            locked_shop=locked_shop,
+            user_id=UserId(other_user.id),
+        )
+        is None
+    )
+    assert (
+        repository._lock_active_staff_by_id_for_update(
+            db_session,
+            locked_shop=locked_shop,
+            staff_id=ShopStaffId(revoked_staff.id),
+        )
+        is None
+    )
+
+
+def assert_shop_row_is_locked_by_other_transaction(
+    session: Session,
+    shop_id,
+) -> None:
+    with pytest.raises(OperationalError):
+        session.execute(
+            select(Shop.id).where(Shop.id == shop_id).with_for_update(nowait=True)
+        ).all()
+    session.rollback()
+
+
+def assert_staff_row_is_locked_by_other_transaction(
+    session: Session,
+    staff_id,
+) -> None:
+    with pytest.raises(OperationalError):
+        session.execute(
+            select(ShopStaff.id)
+            .where(ShopStaff.id == staff_id)
+            .with_for_update(nowait=True)
+        ).all()
+    session.rollback()
