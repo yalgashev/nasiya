@@ -16,6 +16,10 @@ class ErrorCode(StrEnum):
     TELEGRAM_NOT_LINKED = "TELEGRAM_NOT_LINKED"
     TELEGRAM_CHAT_ALREADY_LINKED = "TELEGRAM_CHAT_ALREADY_LINKED"
     LINK_TOKEN_INVALID = "LINK_TOKEN_INVALID"
+    FORBIDDEN = "FORBIDDEN"
+    SHOP_SUSPENDED = "SHOP_SUSPENDED"
+    LAST_OWNER = "LAST_OWNER"
+    REASON_REQUIRED = "REASON_REQUIRED"
 
 
 @dataclass(frozen=True)
@@ -70,6 +74,26 @@ ERROR_CATALOG: Final[Mapping[ErrorCode, ErrorDefinition]] = MappingProxyType(
         ErrorCode.LINK_TOKEN_INVALID: ErrorDefinition(
             code=ErrorCode.LINK_TOKEN_INVALID,
             user_message="Telegram bog'lash tokeni yaroqsiz yoki muddati tugagan.",
+            http_status=HTTPStatus.UNPROCESSABLE_ENTITY,
+        ),
+        ErrorCode.FORBIDDEN: ErrorDefinition(
+            code=ErrorCode.FORBIDDEN,
+            user_message="Bu amal uchun ruxsat yo'q.",
+            http_status=HTTPStatus.FORBIDDEN,
+        ),
+        ErrorCode.SHOP_SUSPENDED: ErrorDefinition(
+            code=ErrorCode.SHOP_SUSPENDED,
+            user_message="Do'kon vaqtincha to'xtatilgan.",
+            http_status=HTTPStatus.FORBIDDEN,
+        ),
+        ErrorCode.LAST_OWNER: ErrorDefinition(
+            code=ErrorCode.LAST_OWNER,
+            user_message="Oxirgi egani olib tashlab bo'lmaydi.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.REASON_REQUIRED: ErrorDefinition(
+            code=ErrorCode.REASON_REQUIRED,
+            user_message="Sabab ko'rsatilishi shart.",
             http_status=HTTPStatus.UNPROCESSABLE_ENTITY,
         ),
     }

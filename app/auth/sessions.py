@@ -205,6 +205,24 @@ def touch_session(
     return True
 
 
+def set_session_active_shop_id(
+    db: DatabaseSession,
+    session: AuthSession,
+    *,
+    shop_id: UUID,
+) -> None:
+    session.active_shop_id = shop_id
+    db.add(session)
+
+
+def clear_session_active_shop_id(
+    db: DatabaseSession,
+    session: AuthSession,
+) -> None:
+    session.active_shop_id = None
+    db.add(session)
+
+
 def list_user_sessions(
     db: DatabaseSession,
     user_id: UUID,
