@@ -13,7 +13,7 @@
 | 7 | Kechikishda imtiyoz muddati, kunlik jarima va avtomatik `written_off` yo'q. Sabab bilan vakolatli clawback bekor qilish kerak. | Clawback reversal roli keyingi CR/TT aniqlashtirishida belgilanadi. |
 | 8 | Bitta `user` bir nechta `shop`ga a'zo bo'la oladi. `shop_staff` uniqueness `(shop_id, user_id)` bo'yicha bo'ladi. | Kelajakdagi multi-shop owner/account migratsiyasidan qochiladi. |
 | 9 | Shop switcher faqat faol shop a'zoligi bittadan ko'p bo'lganda ko'rinadi. | Bitta shopli do'kon oqimi oddiy qoladi. |
-| 10 | Suspend qilingan shopda barcha faol xodimlar o'z roli doirasida read-only ko'radi, barcha write amallar `SHOP_SUSPENDED` bilan rad etiladi. | Deaktivatsiya qilingan membership read-only huquq olmaydi. |
+| 10 | Suspend qilingan shopda barcha faol xodimlar o'z roli doirasida read-only ko'radi, barcha tenant business write amallari `SHOP_SUSPENDED` bilan rad etiladi. | Deaktivatsiya qilingan membership read-only huquq olmaydi. `/shop/select` esa tenant business write emas, session-context mutation bo'lgani uchun suspendda ham ishlaydi. |
 | 11 | M5da xodim faqat bazada mavjud authenticated userni kanonik telefon orqali shopga bog'lash bilan qo'shiladi. | Invitation va owner tomonidan yangi account yaratish keyingi milestone. |
 | 12 | M5da shop faqat identity va tenant chegarasini oladi; shop sozlamalari M6 prerequisite. Owner M5da mavjud M2 CLI userdan olinib, CLI orqali shopga owner sifatida ulanadi. | Kredit limiti, discount, default due date, news limit maydonlari front-load qilinmaydi. |
 
@@ -29,7 +29,7 @@
 | 5 | Tenant scope har route'da server tomonda tekshiriladi | Kiradi |
 | 5 | Owner roli: shop, staff, barcha operatsiyalar | Kiradi |
 | 5 | Cashier roli: mijoz qo'shish, qarz ochish, to'lov qabul qilish | Permission modelga kiradi; debt/payment amallari keyinga qoladi |
-| 5 | Manager roli | M5dan tashqarida; TT role scope uchun CR-M5-01 |
+| 5 | Manager roli | Role qiymati, basic read context va owner boshqaradigan staff lifecycle M5ga kiradi; managerga owner vakolati yoki alohida settings huquqi berilmaydi. CR-M5-01 M5 uchun yopilgan. |
 | 6.2 | Shop yaratish va shop identity/tenant chegarasi | Kiradi |
 | 6.2 | Shop sozlamalari: limitlar, discount, default due date, news limit | Keyinga qoladi, M6 prerequisite |
 | 6.2 | Staff qo'shish, rol o'zgartirish, deactivate | Kiradi |
@@ -48,52 +48,68 @@
 | 8 header | CSP, frame/options, nosniff, referrer policy | M5 sahifalariga kiradi |
 | 8 leakage | Stack trace, ichki tafsilot, boshqa tenant xom ma'lumoti chiqmaydi | Kiradi |
 | 14 | `UNAUTHORIZED`, `FORBIDDEN`, `VALIDATION_ERROR`, `SESSION_EXPIRED`, `CSRF_FAILED` | Kiradi |
-| 14 | `LAST_OWNER`, `SHOP_SUSPENDED` | Kiradi |
+| 14 | `LAST_OWNER`, `SHOP_SUSPENDED`, `REASON_REQUIRED` | Kiradi |
 | 14 | `APPLICATION_PENDING` | Keyinga qoladi |
 | 14 | File/document errorlari | Keyinga qoladi |
+
+### TT jim bandlari
+
+| TTda aniq belgilanmagan masala | Muzlatilgan qaror yoki disposition |
+| --- | --- |
+| Bitta userning bir nechta shop membershipi va switcher ko'rinishi | 8-9-qarorlar: `(shop_id, user_id)` unique; switcher faqat 2+ active membershipda. |
+| Suspenddagi read scope va session-context switch | 10-qaror: barcha active staff role-scoped read-only; tenant business write bloklanadi; `/shop/select` bundan mustasno. |
+| Staff onboarding transporti | 11-qaror: faqat mavjud authenticated user canonical phone orqali ulanadi; invitation/account creation keyinga qoladi. |
+| Shop settings va boshlang'ich owner oqimi | 12-qaror: M5da settings yo'q; mavjud M2 user production-guarded CLI orqali owner qilinadi. |
+| Discoverydagi managerga talab yo'qligi | CR-M5-01 yopilgan: TT bilan mos role qiymati saqlanadi, lekin M5da manager-specific owner permission yaratilmaydi. |
+| Badal, minimal/ortiqcha qisman to'lov semantikasi | 4-6-qarorlar M6 debt/payment implementatsiyasi uchun muzlatilgan; CR-M6-01 va CR-M6-02 orqali TTga kiritiladi. |
+| Clawback bekor qilish actor vakolati | 7-qarorning actor tafsiloti CR-M6-03 sifatida PRE-M6 PRODUCT GATEgacha ochiq. |
 
 ## 3. M5.03 real repository konvensiyalari
 
 | Konvensiya | Dalil |
 | --- | --- |
-| UUID primary key ORMda `PostgresUUID(as_uuid=True)` va `default=uuid4` bilan beriladi. | `app/auth/models.py:26` `id: Mapped[UUID] = mapped_column(`; `app/auth/models.py:27` `PostgresUUID(as_uuid=True),`; `app/auth/models.py:29` `default=uuid4,` |
-| Migrationda UUID PK server default `gen_random_uuid()` bilan yaratiladi. | `alembic/versions/843f79654ade_create_users_table.py:28` `postgresql.UUID(as_uuid=True),`; `alembic/versions/843f79654ade_create_users_table.py:29` `server_default=sa.text("gen_random_uuid()"),` |
-| Timestamplar timezone-aware `DateTime(timezone=True)` va UTC helper bilan ishlaydi. | `app/auth/models.py:19` `def utc_now() -> datetime:`; `app/auth/models.py:20` `return datetime.now(UTC)`; `app/auth/models.py:44` `DateTime(timezone=True),` |
-| Naive timestamp rad etiladi. | `app/auth/sessions.py:353` `def _as_utc(value: datetime) -> datetime:`; `app/auth/sessions.py:354` `if value.tzinfo is None or value.utcoffset() is None:` |
+| UUID primary key ORMda `PostgresUUID(as_uuid=True)` va `default=uuid4` bilan beriladi. | `app/auth/models.py:27` `id: Mapped[UUID] = mapped_column(`; `app/auth/models.py:28` `PostgresUUID(as_uuid=True),`; `app/auth/models.py:30` `default=uuid4,` |
+| Migrationda UUID PK server default `gen_random_uuid()` bilan yaratiladi. | `alembic/versions/843f79654ade_create_users_table.py:29` `postgresql.UUID(as_uuid=True),`; `alembic/versions/843f79654ade_create_users_table.py:30` `server_default=sa.text("gen_random_uuid()"),` |
+| Timestamplar timezone-aware `DateTime(timezone=True)` va UTC helper bilan ishlaydi. | `app/auth/models.py:20` `def utc_now() -> datetime:`; `app/auth/models.py:21` `return datetime.now(UTC)`; `app/auth/models.py:45` `DateTime(timezone=True),` |
+| Naive timestamp rad etiladi. | `app/auth/sessions.py:367` `def _as_utc(value: datetime) -> datetime:`; `app/auth/sessions.py:368` `if value.tzinfo is None or value.utcoffset() is None:` |
 | DB statuslar SQLAlchemy `Enum` emas, `String` va check constraint bilan saqlanadi. | `app/customer/models.py:38` `onboarding_status: Mapped[str] = mapped_column(`; `app/customer/models.py:39` `String(32),`; `app/customer/models.py:22` `CheckConstraint(` |
-| Python ichki enumlari `StrEnum`. | `app/auth/error_codes.py:9` `class ErrorCode(StrEnum):`; `app/auth/sessions.py:64` `class UserSessionStatus(StrEnum):` |
-| Constraint/index nomlari manual `pk_`, `fk_`, `ck_`, `uq_`, `ix_` prefixlari bilan yuritiladi. | `alembic/versions/352b864d3118_create_sessions_table.py:57` `name=op.f("fk_sessions_user_id_users_id"),`; `app/telegram/models.py:36` `name="ck_telegram_links_state_consistent",`; `app/telegram/models.py:39` `"uq_telegram_links_active_chat_id",` |
+| Python ichki enumlari `StrEnum`. | `app/auth/error_codes.py:9` `class ErrorCode(StrEnum):`; `app/auth/sessions.py:62` `class UserSessionStatus(StrEnum):` |
+| Constraint/index nomlari manual `pk_`, `fk_`, `ck_`, `uq_`, `ix_` prefixlari bilan yuritiladi. | `alembic/versions/352b864d3118_create_sessions_table.py:58` `name=op.f("fk_sessions_user_id_users_id"),`; `app/telegram/models.py:36` `name="ck_telegram_links_state_consistent",`; `app/telegram/models.py:39` `"uq_telegram_links_active_chat_id",` |
 | `Base.metadata.naming_convention` mavjud emas. | `app/db.py:10` `class Base(DeclarativeBase):`; `app/db.py:11` `pass` |
 | Repository/service imzolarida `session` birinchi parametr bo'ladi. | `app/customer/repository.py:16` `def create_customer_draft_if_missing(`; `app/customer/repository.py:17` `session: Session,`; `app/telegram/repository.py:235` `def insert_telegram_link_token(` |
 | Keyword-only parametrlar bor, lekin universal qoida emas. | `app/telegram/repository.py:330` `def get_telegram_link_tokens_eligible_for_purge(`; `app/telegram/repository.py:333` `*,`; `app/customer/repository.py:16` positional uslubda davom etadi |
 | Request transaction boundary dependencyda: success commit, exception rollback, finally close. | `app/db.py:25` `def get_database_session()`; `app/db.py:29` `session.commit()`; `app/db.py:31` `session.rollback()`; `app/db.py:34` `session.close()` |
-| CLI o'z transaction boundarysiga ega. | `app/cli.py:63` `with session_factory() as session:`; `app/cli.py:99` `session.commit()`; `app/cli.py:102` `except SQLAlchemyError:` |
-| Expected conflict pathlarda savepoint ishlatiladi. | `app/telegram/repository.py:269` `with session.begin_nested():`; `app/telegram/service.py:454` `with session.begin_nested():` |
-| Alembic revisionlar typed metadata, `upgrade()` va `downgrade()` uslubida. | `alembic/versions/4f9c2d7a1b03_create_telegram_linking_tables.py:16` `revision: str = "4f9c2d7a1b03"`; `alembic/versions/4f9c2d7a1b03_create_telegram_linking_tables.py:22` `def upgrade() -> None:`; `alembic/versions/4f9c2d7a1b03_create_telegram_linking_tables.py:139` `def downgrade() -> None:` |
-| Test DB URL guard PostgreSQL va `_test` suffixini talab qiladi. | `tests/postgresql.py:19` `def validate_test_database_url`; `tests/postgresql.py:25` `if driver_name.startswith("sqlite"):`; `tests/postgresql.py:29` `not url.database.endswith("_test")` |
-| Cleanup allowlist child-first tartibda. | `tests/postgresql.py:8` `M2_CLEANUP_TABLE_NAMES = (`; `tests/postgresql.py:9` `"telegram_link_events",`; `tests/postgresql.py:14` `"sessions",`; `tests/postgresql.py:15` `"users",` |
+| CLI o'z transaction boundarysiga ega. | `app/cli.py:176` `with session_factory() as session:`; `app/cli.py:199` `session.rollback()`; `app/cli.py:202` `session.commit()` |
+| Expected conflict pathlarda savepoint ishlatiladi. | `app/telegram/repository.py:269` `with session.begin_nested():`; `app/telegram/service.py:452` `with session.begin_nested():` |
+| Alembic revisionlar typed metadata, `upgrade()` va `downgrade()` uslubida. | `alembic/versions/4f9c2d7a1b03_create_telegram_linking_tables.py:17` `revision: str = "4f9c2d7a1b03"`; `alembic/versions/4f9c2d7a1b03_create_telegram_linking_tables.py:23` `def upgrade() -> None:`; `alembic/versions/4f9c2d7a1b03_create_telegram_linking_tables.py:138` `def downgrade() -> None:` |
+| Test DB URL guard PostgreSQL va `_test` suffixini talab qiladi. | `tests/postgresql.py:23` `def validate_test_database_url`; `tests/postgresql.py:29` `if driver_name.startswith("sqlite"):`; `tests/postgresql.py:33` `not url.database.endswith("_test")` |
+| Cleanup allowlist child-first tartibda. | `tests/postgresql.py:8` `M2_CLEANUP_TABLE_NAMES = (`; `tests/postgresql.py:14` `"sessions",`; `tests/postgresql.py:15` `"shop_staff_events",`; `tests/postgresql.py:18` `"shops",`; `tests/postgresql.py:19` `"users",` |
 | Concurrency harness thread/barrier bilan yoziladi. | `tests/test_telegram_consume_concurrency.py:112` `token_lock_barrier = Barrier(2)`; `tests/test_telegram_consume_concurrency.py:179` `executor = ThreadPoolExecutor(max_workers=2)` |
 | Auth dependency nomlari: `get_current_session_context`, `require_user`. | `app/auth/deps.py:113` `def get_current_session_context(`; `app/auth/deps.py:152` `def require_user(` |
-| Session ORM modeli `sessions` jadvali, update servisi `touch_session`. | `app/auth/models.py:56` `class Session(Base):`; `app/auth/models.py:57` `__tablename__ = "sessions"`; `app/auth/sessions.py:187` `def touch_session(` |
+| Session ORM modeli `sessions` jadvali, update servisi `touch_session`. | `app/auth/models.py:57` `class Session(Base):`; `app/auth/models.py:58` `__tablename__ = "sessions"`; `app/auth/sessions.py:185` `def touch_session(` |
 | CSRF form/header va no-store mexanizmi mavjud. | `app/auth/deps.py:34` `CSRF_FORM_FIELD_NAME = "csrf_token"`; `app/auth/deps.py:35` `CSRF_HEADER_NAME = "X-CSRF-Token"`; `app/security_headers.py:61` `def mark_auth_response_no_store` |
 | Security headers middleware mavjud. | `app/security_headers.py:21` `SECURITY_HEADERS`; `app/security_headers.py:23` `"X-Frame-Options": "DENY"`; `app/security_headers.py:24` `"X-Content-Type-Options": "nosniff"` |
-| Telefon kanoniklashtirish funksiyasi bitta joyda. | `app/auth/phone.py:18` `def normalize_uzbekistan_phone(raw_phone: str) -> str:`; `app/auth/phone.py:38` `canonical_phone = f"+{candidate}"` |
-| Stable error katalogi immutable mapping sifatida. | `app/auth/error_codes.py:9` `class ErrorCode(StrEnum):`; `app/auth/error_codes.py:28` `ERROR_CATALOG: Final[Mapping[ErrorCode, ErrorDefinition]] = MappingProxyType(` |
-| CLI registration va production guard local-only. | `app/cli.py:30` `create_local_user = subparsers.add_parser("create-local-user")`; `app/cli.py:19` `LOCAL_ENVIRONMENTS = frozenset({"development", "local", "testing"})`; `app/cli.py:44` `def ensure_local_environment(settings: Settings) -> None:` |
+| Telefon kanoniklashtirish funksiyasi bitta joyda. | `app/auth/phone.py:18` `def normalize_uzbekistan_phone(raw_phone: str) -> str:`; `app/auth/phone.py:37` `canonical_phone = f"+{candidate}"` |
+| Stable error katalogi immutable mapping sifatida. | `app/auth/error_codes.py:9` `class ErrorCode(StrEnum):`; `app/auth/error_codes.py:32` `ERROR_CATALOG: Final[Mapping[ErrorCode, ErrorDefinition]] = MappingProxyType(` |
+| CLI registration va production guard local-only. | `app/cli.py:38` `LOCAL_ENVIRONMENTS = frozenset({"development", "local", "testing"})`; `app/cli.py:79` `shop = subparsers.add_parser("shop")`; `app/cli.py:98` `demo_subparsers.add_parser("seed")`; `app/cli.py:106` `def ensure_local_environment(settings: Settings) -> None:` |
 
 ## 4. M5 artefaktlari
 
 | Tur | Artefakt | M5 mazmuni |
 | --- | --- | --- |
-| Jadval | `shops` | Shop identity, tenant root, suspend status/reason/timestamps. Shop settings maydonlari yo'q. |
+| Jadval | `shops` | Shop identity, tenant root, suspend status va timestamps. Reason bu jadvalda emas; shop settings maydonlari yo'q. |
 | Jadval | `shop_staff` | `shop_id`, `user_id`, role, active/deactivated metadata, unique `(shop_id, user_id)`, `LAST_OWNER` himoyasi. |
+| Jadval | `shop_status_events` | Append-only `activated`/`suspended`/`reactivated` jurnal; transition reason semantikasi DB CHECK bilan himoyalangan. |
+| Jadval | `shop_staff_events` | Append-only `added`/`role_changed`/`revoked` jurnal; old/new role kombinatsiyalari DB CHECK bilan himoyalangan. |
 | Model o'zgarishi | `sessions.active_shop_id` | Joriy session tanlagan shop; permission manbai emas, har requestda membership tekshiriladi. |
-| Model | `Shop`, `ShopStaff`, `StaffRole`, `ShopStatus` | ORM M1-M4 konvensiyalariga mos: UUID, aware timestamps, String/check status. |
+| Model | `Shop`, `ShopStaff`, `ShopStatusEvent`, `ShopStaffEvent` | ORM M1-M4 konvensiyalariga mos: UUID, aware timestamps, String/check status va append-only eventlar. |
+| Domen qiymatlari | `ShopRole`, `ShopStatus`, `ShopStatusAction`, `ShopStaffAction` | `StrEnum`; manager qiymati mavjud, lekin owner-only mutation vakolati olmaydi. |
+| Migration | `a6b4c2d8e9f1_create_m5_shop_tables.py` | To'rt M5 jadvali va `sessions.active_shop_id`; named FK/CHECK/indexlar va teskari downgrade tartibi. |
 | Servis | Shop context service | Active shopni tanlash, membershipni resolve qilish, tenant guard, role guard. |
-| Servis | Staff service | Existing userni canonical phone orqali owner/cashier sifatida qo'shish, rol o'zgartirish, deactivate, last owner guard. |
+| Servis | Shop lifecycle service | Provision, existing userni canonical phone orqali staff qilish, role change, revoke, `LAST_OWNER`, suspend/reactivate. |
 | Servis | Suspend policy | Suspended shopda write rad etish, role-scoped read-only saqlash. |
-| Route | `/shop/*` | Shop dashboard, staff ro'yxati, staff add/update/deactivate, active shop switch, read-only suspend UI. |
-| CLI | Local shop bootstrap | Mavjud M2 CLI userni canonical phone orqali topib shop yaratish va owner membershipga ulash; local-only production guard. |
+| Route | `/shop/*` | Workspace, shop select/switch, staff list/add/role/revoke va read-only suspend UI. |
+| CLI | Development shop commands | `shop create`, `shop suspend`, `shop reactivate`, `demo seed`; local-only production guard va caller-owned transaction. |
 | Docs | `docs/m5_scope_contract.md` | M5 scope va green gate contracti. |
 | Docs | `docs/m5_discovery_notes.md` | M5.00 discovery natijalari va CR nomzodlari. |
 
@@ -106,7 +122,7 @@
 | Shop sozlamalari: credit limit, discount, default due date, max open debts, news limit | M6 prerequisite. |
 | Debt/payment domain implementatsiyasi | M5 faqat shop/staff/tenant foundation. |
 | Installment schedule yoki grafik | Muzlatilgan qarorga ko'ra kirmaydi. |
-| Manager role UI/policy | M5dan tashqarida; CR-M5-01 yoki yangi TT versiyasi kerak. |
+| Manager-specific owner vakolati, settings yoki alohida business permission | M5 manager role qiymati va basic read contextni saqlaydi, ammo owner-only boshqaruv huquqini bermaydi. |
 | Billing, subscription va billing sababli suspend | TT 4.10 bo'yicha MVPdan tashqarida. |
 | PWA/service worker/offline shell | M5 shop foundation uchun shart emas. |
 | Platform admin owner approval UI | Owner application oqimi bilan keyinga qoladi. |
@@ -135,9 +151,11 @@
 | Bir nechta staff qatori kerak bo'lsa | `shop` lockdan keyin staff qatorlari deterministic tartibda: `user_id` yoki `id` bo'yicha. |
 | Last owner guard | Avval `shop`, keyin owner role active `shop_staff` qatorlari. |
 | Deactivate/role change | Avval `shop`, keyin target `shop_staff`, zarur bo'lsa owner count staff qatorlari. |
-| Active shop switch | Write bo'lsa avval target `shop`, keyin actor `shop_staff`, keyin `session.active_shop_id` update. |
+| Active shop switch | Business mutation lock kontraktiga kirmaydi: active membership read orqali tekshiriladi, keyin `session.active_shop_id` yangilanadi; suspended target ham tanlanishi mumkin. |
 
-Hech bir M5 code path `shop_staff -> shop` teskari tartibda lock olmaydi.
+Hech bir M5 existing-shop business mutation code path `shop_staff -> shop`
+teskari tartibda lock olmaydi. Session-context mutation bu lock kontraktidan
+alohida.
 
 ## 8. Ishlatiladigan TT error kodlari
 
@@ -149,7 +167,8 @@ Hech bir M5 code path `shop_staff -> shop` teskari tartibda lock olmaydi.
 | `FORBIDDEN` | Role yoki tenant membership ruxsati yo'q. |
 | `VALIDATION_ERROR` | Shop/staff input noto'g'ri. |
 | `LAST_OWNER` | Oxirgi active ownerni deactivate qilish yoki owner rolsiz qoldirish. |
-| `SHOP_SUSPENDED` | Suspended shopdagi barcha write amallar. |
+| `SHOP_SUSPENDED` | Suspended shopdagi tenant business write amallari. |
+| `REASON_REQUIRED` | Suspend/reactivate transitionida null yoki blank sabab. |
 
 `APPLICATION_PENDING` M5da ishlatilmaydi, chunki owner application oqimi scope tashqarisida.
 

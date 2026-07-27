@@ -68,13 +68,18 @@ jobs:
       - name: Show Alembic current revision
         run: uv run alembic current
 
-      - name: Verify Alembic M4 head
+      - name: Verify Alembic M5 head
         run: |
           current_revision="$(uv run alembic current | awk '{print $1}')"
-          test "$current_revision" = "4f9c2d7a1b03"
+          test "$current_revision" = "a6b4c2d8e9f1"
 
       - name: Run Ruff
-        run: uv run ruff check .
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
 
-      - name: Run pytest
+      - name: Run M5 containment guard
+        run: uv run pytest -q tests/test_shop_containment_guard.py
+
+      - name: Run full pytest
         run: uv run pytest -ra

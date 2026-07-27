@@ -1015,7 +1015,9 @@ asosiy branchga qo'shilmaydi.
 | `RATE_LIMITED` | So'rovlar chastotasi oshib ketdi |
 | `SESSION_EXPIRED` | Sessiya muddati tugagan |
 | `CSRF_FAILED` | CSRF token yo'q yoki noto'g'ri |
+| `TELEGRAM_ALREADY_LINKED` | Foydalanuvchining Telegram akkaunti allaqachon bog'langan |
 | `TELEGRAM_NOT_LINKED` | Telegram bog'lanmagan; OTP yuborib bo'lmaydi |
+| `TELEGRAM_CHAT_ALREADY_LINKED` | Telegram chat boshqa faol bog'lanishda ishlatilgan |
 | `LINK_TOKEN_INVALID` | Bog'lash tokeni yaroqsiz yoki muddati o'tgan |
 | `OFFER_UNAVAILABLE` | Joriy oferta yo'q (fail-closed) |
 | `DUPLICATE_JSHSHIR` | Bu JSHSHIR bilan mijoz allaqachon mavjud |

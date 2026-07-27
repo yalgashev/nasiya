@@ -78,18 +78,26 @@ beriladi, lekin bu barcha qarzlar, umumiy hisobotlar yoki eksportga kirish
 huquqini bermaydi.
 
 **Qarama-qarshilik:** TT 5-bo'limida manager alohida MVP roli sifatida
-berilgan. Manager rolini M5 yoki butun MVP dan chiqarish avtomatik amalga
-oshirilmaydi. Tegishli role/schema/policy vazifasidan oldin change request
-va Product Owner qarori kerak.
+berilgan. Discovery signali manager rolini avtomatik olib tashlamaydi.
+
+**M5 disposition:** Keyingi muzlatilgan M5 vazifalari `manager` role qiymati,
+staff lifecycle va basic read contextni aniq talab qildi. Shuning uchun
+CR-M5-01 M5 uchun quyidagicha yopildi:
+
+- `manager` schema, service va UI role qiymati sifatida saqlanadi;
+- manager owner-only staff mutation route'laridan `FORBIDDEN` oladi;
+- managerga alohida settings yoki owner vakolati berilmaydi;
+- rolni butun MVPdan olib tashlash faqat yangi change request va TT
+  revisiyasi bilan amalga oshiriladi.
 
 ### Q3. Yangi xodimni tizimga telefon orqali bog'lash tabiiy oqimmi?
 
 **Javob:** Ha.
 
 **M5 uchun xulosa:** PO-3 tasdiqlandi. M5 da owner bazada mavjud,
-authenticated userni kanonik telefon raqami orqali shopga cashier sifatida
-bog'laydi. Invitation va owner tomonidan yangi user akkaunti yaratish keyingi
-milestone masalasi bo'lib qoladi.
+authenticated userni kanonik telefon raqami orqali shopga tanlangan staff
+roli bilan bog'laydi. Invitation va owner tomonidan yangi user akkaunti
+yaratish keyingi milestone masalasi bo'lib qoladi.
 
 ### Q4. Xodim bo'shatilganda huquqi darhol yopilishi kerakmi?
 
@@ -115,12 +123,13 @@ Xodim deaktivatsiyasi shop suspend holatidan alohida policy hisoblanadi.
 - Suspend mavjud read huquqlarini saqlaydi, lekin yangi read huquqi bermaydi.
 - Owner barcha tarixiy qarzlar va hisobotlarni ko'rishda davom etadi.
 - Cashier faqat odatdagi roli doirasidagi operatsion ma'lumotni ko'radi.
-- Barcha write amallar `SHOP_SUSPENDED` bilan rad etiladi.
+- Barcha tenant business write amallari `SHOP_SUSPENDED` bilan rad etiladi.
+- `/shop/select` session-context mutation bo'lib, suspend policy doirasiga
+  kirmaydi; user suspended shopdan boshqa active membershipiga o'ta oladi.
 - Deaktivatsiya qilingan membership suspend sabab qayta read huquqi olmaydi.
 
-Bu TT dagi suspend siyosatini aniqlashtiradigan talab. U tegishli M5 policy
-va route matritsasi vazifasidan oldin change request yoki tasdiqlangan scope
-aniqlashtirishi orqali rasmiylashtiriladi.
+Bu TT dagi suspend siyosatini aniqlashtiradigan talab. CR-M5-02 keyingi
+muzlatilgan M5 policy va route matritsasi bilan shu semantikada yopildi.
 
 ### Q6. Qarz bitta to'lov muddati bilanmi yoki grafik bilanmi?
 
@@ -214,16 +223,17 @@ global blok va reyting oqibatini inson qarorisiz qo'llamasligi kerak.
 
 ## 3. Change request nomzodlari
 
-| ID | Topilma | Tegishli joy | Tavsiya |
+| ID | Topilma | Tegishli joy | Qaror yoki keyingi qadam |
 | --- | --- | --- | --- |
-| CR-M5-01 | Manager pilot segmentida kerak emas | TT 5 va role/policy scope | M5 dan chiqarish yoki keyinga qoldirish bo'yicha PO qarori |
-| CR-M5-02 | Suspendda faol xodimlar role-scoped read-only ko'radi | TT suspend siyosati | Read saqlansin, barcha write `SHOP_SUSPENDED` bo'lsin |
-| CR-M6-01 | Badal debt/payment tarkibiga kirmaydi | TT 4.3 va debt yaratish | Nasiyaga berilgan net summani saqlashni aniqlashtirish |
-| CR-M6-02 | Ortiqcha to'lov rad etiladi | TT 6.5 | Qoldiqdan katta paymentni rad etishni yozish |
-| CR-M6-03 | Vakolatli clawback bekor qilish kerak | TT 6.11 | Rol, sabab va audit talabini belgilash |
+| CR-M5-01 | Manager pilot segmentida kerak emas | TT 5 va role/policy scope | **YOPILDI (M5):** role qiymati/basic read saqlanadi; owner vakolati berilmaydi |
+| CR-M5-02 | Suspendda faol xodimlar role-scoped read-only ko'radi | TT suspend siyosati | **YOPILDI (M5):** business write bloklanadi; session-context switch mustasno |
+| CR-M6-01 | Badal debt/payment tarkibiga kirmaydi | TT 4.3 va debt yaratish | **OCHIQ (PRE-M6):** nasiyaga berilgan net summani saqlashni TTda aniqlashtirish |
+| CR-M6-02 | Ortiqcha to'lov rad etiladi | TT 6.5 | **OCHIQ (PRE-M6):** qoldiqdan katta paymentni rad etishni TTga yozish |
+| CR-M6-03 | Vakolatli clawback bekor qilish kerak | TT 6.11 | **OCHIQ (PRE-M6):** rol, sabab va audit talabini belgilash |
 
-Bu jadval change requestlarning o'zi yoki Product Owner qarori emas. U
-discovery topilmalaridan kelib chiqqan ko'rib chiqish ro'yxati.
+M5 dispositionlari keyingi muzlatilgan M5 vazifalarida berilgan aniq
+talablarni qayd etadi. M6 satrlari esa discovery topilmalaridan kelib chiqqan
+ochiq change request nomzodlari bo'lib, o'zicha TTni o'zgartirmaydi.
 
 ## 4. Tasdiqlangan va ochiq holatlar
 
@@ -234,7 +244,8 @@ discovery topilmalaridan kelib chiqqan ko'rib chiqish ro'yxati.
 | Javoblar hujjatlashtirildi | Ha |
 | Respondentlar PII saqlandi | Yo'q |
 | Har bir suhbat 30-40 daqiqa bo'lgani tasdiqlandi | Yo'q |
-| Change requestlar bo'yicha PO qarori | Kutilmoqda |
+| M5 change request dispositionlari | 2/2 yopildi |
+| PRE-M6 change requestlar bo'yicha PO/TT qarori | Kutilmoqda |
 
 Mazmuniy discovery yakunlangan. Biroq yozma savol-javoblarning har biri
 30-40 daqiqalik suhbatga teng bo'lgani tasdiqlanmagan. M5.00 ni to'liq

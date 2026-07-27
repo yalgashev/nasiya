@@ -139,7 +139,7 @@ uv run alembic upgrade head
 uv run alembic current
 ```
 
-M4 checkpointida `alembic current` natijasi `4f9c2d7a1b03 (head)` bo'lishi
+M5 checkpointida `alembic current` natijasi `a6b4c2d8e9f1 (head)` bo'lishi
 kerak. Migrationni development databasega container ichidan, test databasega
 esa faqat `_test` bilan tugaydigan alohida `TEST_DATABASE_URL` orqali qo'llang.
 
@@ -160,6 +160,30 @@ docker compose exec web python -m app.cli create-local-user --phone +99890123456
 Parol terminalda ikki marta hidden prompt orqali so'raladi. Raw passwordni
 command-line argument, README, log yoki chatga yozmang. Production muhitida bu
 CLI fail-closed ishlaydi.
+
+## Shop Development Flow (M5)
+
+Shop yaratishdan oldin owner telefoni bilan local user mavjud bo'lishi kerak.
+Development buyruqlari production muhitida fail-closed ishlaydi:
+
+```bash
+docker compose exec web python -m app.cli shop create \
+  --name "Demo Shop" \
+  --phone +998901234567 \
+  --address "Toshkent" \
+  --owner-phone +998901234567
+docker compose exec web python -m app.cli shop suspend <shop_uuid> \
+  --reason "Development smoke"
+docker compose exec web python -m app.cli shop reactivate <shop_uuid> \
+  --reason "Development smoke complete"
+docker compose exec web python -m app.cli demo seed
+```
+
+Login qilingandan keyin `/shop/select` active membershiplar orasidan do'kon
+tanlaydi. Switcher faqat membership bittadan ko'p bo'lsa ko'rinadi. `/shop`
+joriy workspace, `/shop/staff` esa active xodimlar ro'yxati va owner uchun
+staff add/role/revoke oqimlarini beradi. Suspended shop read-only qoladi,
+lekin `/shop/select` orqali boshqa shopga o'tish bloklanmaydi.
 
 ## Auth URLs
 
@@ -228,6 +252,7 @@ TEST_DATABASE_URL='postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_te
 TEST_DATABASE_URL='postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test' \
   uv run alembic current
 uv run ruff check .
+uv run ruff format --check .
 TEST_DATABASE_URL='postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test' \
   uv run pytest -ra
 git diff --check
@@ -252,6 +277,7 @@ $env:TEST_DATABASE_URL = "postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/na
 uv run alembic upgrade head
 uv run alembic current
 uv run ruff check .
+uv run ruff format --check .
 uv run pytest -ra
 git diff --check
 ```
@@ -268,7 +294,8 @@ docker compose logs -f web
 `pytest -ra` skip/failure sabablarini ko'rsatadi. CI yoki local validationda
 skipped testlarni yashiradigan flag ishlatilmaydi. Generic full suite real
 PostgreSQL test database orqali customer migration testlari bilan birga M4
-Telegram migration/replay/concurrency/retention testlarini ham avtomatik
+Telegram migration/replay/concurrency/retention va M5 shop
+persistence/tenant/lifecycle/HTTP containment testlarini ham avtomatik
 bajaradi. Real Telegram credential yoki network talab qilinmaydi.
 
 ## Stop Services
