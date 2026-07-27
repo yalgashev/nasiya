@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+
+{% block title %}Do'kon - Nasiya{% endblock %}
+
+{% block content %}
+<main class="shop-workspace">
+    <h1>{{ shop_name }}</h1>
+    <section aria-labelledby="shop-workspace-heading">
+        <h2 id="shop-workspace-heading">Ish joyi</h2>
+        <dl>
+            <dt>Holat</dt>
+            <dd>{{ status_label }}</dd>
+            <dt>Joriy rol</dt>
+            <dd>{{ role_label }}</dd>
+            <dt>Faol xodimlar</dt>
+            <dd>{{ active_staff_count }}</dd>
+        </dl>
+        {% if is_read_only %}
+        <p class="shop-read-only">faqat ko'rish rejimi</p>
+        {% endif %}
+        <p class="shop-placeholder">Mijozlar va qarzlar keyingi bosqichda paydo bo'ladi</p>
+        {% if show_shop_switcher %}
+        <nav class="shop-actions" aria-label="Do'kon navigatsiyasi">
+            <a href="/shop/select">Do'kon almashtirish</a>
+        </nav>
+        {% endif %}
+    </section>
+</main>
+{% endblock %}

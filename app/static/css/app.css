@@ -191,6 +191,133 @@ dd {
     outline-offset: 3px;
 }
 
+.shop-workspace,
+.shop-select,
+.shop-staff {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+
+.shop-workspace h1,
+.shop-workspace h2,
+.shop-workspace p,
+.shop-select h1,
+.shop-select h2,
+.shop-select h3,
+.shop-select p,
+.shop-select button,
+.shop-staff h1,
+.shop-staff h2,
+.shop-staff h3,
+.shop-staff p,
+.shop-staff button,
+.shop-staff select {
+    overflow-wrap: anywhere;
+}
+
+.shop-read-only {
+    margin-top: 16px;
+    border-left: 4px solid #b45309;
+    padding: 10px 12px;
+    background: #fffbeb;
+    color: #78350f;
+    font-weight: 700;
+}
+
+.shop-placeholder {
+    margin-top: 16px;
+}
+
+.shop-actions {
+    display: grid;
+    gap: 12px;
+}
+
+.shop-actions a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+}
+
+.shop-list {
+    display: grid;
+    gap: 16px;
+    margin-top: 16px;
+}
+
+.shop-option {
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    padding: 16px;
+    background: #ffffff;
+}
+
+.shop-option h3 {
+    margin: 0 0 8px;
+    font-size: 1.125rem;
+}
+
+.shop-empty {
+    margin-top: 16px;
+}
+
+.shop-staff select {
+    width: 100%;
+    min-height: 44px;
+    border: 1px solid #94a3b8;
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: #111827;
+    background: #ffffff;
+    font: inherit;
+}
+
+.shop-notice {
+    margin-top: 16px;
+    border-left: 4px solid #0f766e;
+    padding: 10px 12px;
+    background: #ecfdf5;
+    color: #134e4a;
+    font-weight: 700;
+}
+
+.shop-staff-add {
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    padding: 16px;
+    background: #ffffff;
+}
+
+.shop-staff-list {
+    display: grid;
+    gap: 16px;
+    margin-top: 16px;
+}
+
+.shop-staff-row {
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    padding: 16px;
+    background: #ffffff;
+}
+
+.shop-staff-row h3 {
+    margin: 0;
+    font-size: 1.125rem;
+}
+
+.shop-staff-action {
+    margin-top: 16px;
+}
+
+.shop-workspace a:focus-visible,
+.shop-select button:focus-visible,
+.shop-staff button:focus-visible,
+.shop-staff select:focus-visible {
+    outline: 3px solid #f59e0b;
+    outline-offset: 3px;
+}
+
 @media (max-width: 430px) {
     main {
         width: min(100% - 24px, 640px);
@@ -207,5 +334,23 @@ dd {
 
     .customer-actions a {
         width: 100%;
+    }
+
+    .shop-workspace,
+    .shop-select,
+    .shop-staff {
+        width: min(100% - 24px, 640px);
+    }
+
+    .shop-actions a {
+        width: 100%;
+    }
+}
+
+@media (max-width: 320px) {
+    .shop-workspace,
+    .shop-select,
+    .shop-staff {
+        width: min(100% - 16px, 640px);
     }
 }

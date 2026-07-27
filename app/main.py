@@ -16,6 +16,7 @@ from app.db import (
 )
 from app.security_headers import install_security_headers_middleware
 from app.settings import Settings
+from app.shop.router import router as shop_router
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
@@ -46,6 +47,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     application.include_router(auth_router)
     application.include_router(customer_router)
+    application.include_router(shop_router)
     application.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @application.get("/", response_class=HTMLResponse)

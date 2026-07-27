@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block title %}Xodimlar - Nasiya{% endblock %}
+
+{% block content %}
+<main class="shop-staff">
+    <h1>Xodimlar</h1>
+    <section aria-labelledby="shop-staff-heading">
+        <h2 id="shop-staff-heading">{{ shop_name }}</h2>
+        {% if error_message %}
+        <p role="alert">{{ error_message }}</p>
+        {% endif %}
+        {% if notice_message %}
+        <p class="shop-notice">{{ notice_message }}</p>
+        {% endif %}
+        {% if is_read_only %}
+        <p class="shop-read-only">faqat ko'rish rejimi</p>
+        {% endif %}
+        {% if can_manage_staff %}
+        <form method="post" action="/shop/staff/add" class="shop-staff-add">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div>
+                <label for="staff-phone">Telefon</label>
+                <input id="staff-phone" name="phone" inputmode="tel" autocomplete="tel" required>
+            </div>
+            <div>
+                <label for="staff-role">Rol</label>
+                <select id="staff-role" name="role" required>
+                    {% for role_option in role_options %}
+                    <option value="{{ role_option.value }}">{{ role_option.label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <button type="submit">Qo'shish</button>
+        </form>
+        {% endif %}
+        {% if has_staff %}
+        <div class="shop-staff-list">
+            {% for staff in staff_rows %}
+            <article class="shop-staff-row">
+                <h3>{{ staff.masked_phone }}</h3>
+                <dl>
+                    <dt>Rol</dt>
+                    <dd>{{ staff.role_label }}</dd>
+                    <dt>Qo'shilgan sana</dt>
+                    <dd>{{ staff.created_at }}</dd>
+                </dl>
+                {% if can_manage_staff %}
+                <form method="post" action="/shop/staff/{{ staff.staff_id }}/role" class="shop-staff-action">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <label for="role-{{ staff.staff_id }}">Rolni o'zgartirish</label>
+                    <select id="role-{{ staff.staff_id }}" name="new_role" required>
+                        {% for role_option in role_options %}
+                        <option value="{{ role_option.value }}" {% if role_option.value == staff.role.value %}selected{% endif %}>{{ role_option.label }}</option>
+                        {% endfor %}
+                    </select>
+                    <button type="submit">Rolni o'zgartirish</button>
+                </form>
+                <form method="post" action="/shop/staff/{{ staff.staff_id }}/revoke" class="shop-staff-action">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit" class="button-danger">Bo'shatish</button>
+                </form>
+                {% endif %}
+            </article>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="shop-empty">Faol xodimlar yo'q.</p>
+        {% endif %}
+    </section>
+</main>
+{% endblock %}

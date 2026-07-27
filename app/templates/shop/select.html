@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block title %}Do'kon tanlash - Nasiya{% endblock %}
+
+{% block content %}
+<main class="shop-select">
+    <h1>Do'kon tanlash</h1>
+    {% if has_memberships %}
+    <section aria-labelledby="shop-select-heading">
+        <h2 id="shop-select-heading">Do'konlar</h2>
+        <div class="shop-list">
+            {% for membership in memberships %}
+            <article class="shop-option">
+                <h3>{{ membership.shop_name }}</h3>
+                <p>Holat: {{ membership.status_label }}</p>
+                <form method="post" action="/shop/select">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit" name="shop_id" value="{{ membership.shop_id }}">Tanlash</button>
+                </form>
+            </article>
+            {% endfor %}
+        </div>
+    </section>
+    {% else %}
+    <p class="shop-empty">Siz hali hech bir do'konga bog'lanmagansiz.</p>
+    {% endif %}
+</main>
+{% endblock %}
