@@ -688,11 +688,14 @@ def test_repository_does_not_commit_or_full_rollback(
             get_telegram_link_token_by_hash_for_update(session_spy, token_hash(16))
             is token
         )
-        assert get_telegram_link_token_status(
-            session_spy,
-            user,
-            now,
-        ).outstanding_count == 1
+        assert (
+            get_telegram_link_token_status(
+                session_spy,
+                user,
+                now,
+            ).outstanding_count
+            == 1
+        )
         assert (
             invalidate_outstanding_telegram_link_tokens(
                 session_spy,

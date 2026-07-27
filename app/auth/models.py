@@ -6,6 +6,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Integer,
     String,
     Text,
@@ -60,6 +61,12 @@ class Session(Base):
             "token_hash ~ '^[0-9a-f]{64}$'",
             name="ck_sessions_token_hash_sha256_hex",
         ),
+        ForeignKeyConstraint(
+            ["active_shop_id"],
+            ["shops.id"],
+            name="fk_sessions_active_shop_id_shops_id",
+            ondelete="RESTRICT",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -70,6 +77,10 @@ class Session(Base):
     user_id: Mapped[UUID | None] = mapped_column(
         PostgresUUID(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    active_shop_id: Mapped[UUID | None] = mapped_column(
+        PostgresUUID(as_uuid=True),
         nullable=True,
     )
     token_hash: Mapped[str] = mapped_column(

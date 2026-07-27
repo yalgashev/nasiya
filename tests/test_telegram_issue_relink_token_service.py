@@ -398,10 +398,13 @@ def test_issue_relink_token_reissue_invalidates_old_token_and_preserves_link(
         active_link.updated_at,
     ) == original_link_state
     assert len(tokens) == 2
-    assert sum(
-        token.consumed_at is None and token.invalidated_at is None
-        for token in tokens
-    ) == 1
+    assert (
+        sum(
+            token.consumed_at is None and token.invalidated_at is None
+            for token in tokens
+        )
+        == 1
+    )
     assert count_table(db_session, TelegramLinkEvent) == 0
 
 

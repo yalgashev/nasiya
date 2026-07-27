@@ -179,9 +179,7 @@ def test_same_token_two_chat_parallel_consume_has_exactly_one_winner(
     executor = ThreadPoolExecutor(max_workers=2)
     try:
         with caplog.at_level(logging.DEBUG):
-            futures = [
-                executor.submit(worker, label) for label in ("first", "second")
-            ]
+            futures = [executor.submit(worker, label) for label in ("first", "second")]
             done, not_done = wait(futures, timeout=_FUTURE_TIMEOUT_SECONDS)
         if not_done:
             token_lock_barrier.abort()
@@ -251,10 +249,7 @@ def test_same_token_two_chat_parallel_consume_has_exactly_one_winner(
     assert active_link_count == 1
     assert tombstone_count == 0
     assert links[0].unlinked_at is None
-    if (
-        links[0].telegram_chat_id
-        != chat_by_label[winners[0].label].as_bigint()
-    ):
+    if links[0].telegram_chat_id != chat_by_label[winners[0].label].as_bigint():
         pytest.fail("active Telegram link does not belong to the winner", pytrace=False)
     assert len(events) == 1
     assert events[0].action in {"linked", "relinked"}
@@ -388,9 +383,7 @@ def test_same_chat_two_user_parallel_consume_keeps_loser_token_reusable(
     executor = ThreadPoolExecutor(max_workers=2)
     try:
         with caplog.at_level(logging.DEBUG):
-            futures = [
-                executor.submit(worker, label) for label in ("user_a", "user_b")
-            ]
+            futures = [executor.submit(worker, label) for label in ("user_a", "user_b")]
             done, not_done = wait(futures, timeout=_FUTURE_TIMEOUT_SECONDS)
         if not_done:
             link_mutation_barrier.abort()

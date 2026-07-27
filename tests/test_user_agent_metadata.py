@@ -15,8 +15,7 @@ CHROME_WINDOWS_UA = (
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
 FIREFOX_LINUX_UA = (
-    "Mozilla/5.0 (X11; Linux x86_64; rv:127.0) "
-    "Gecko/20100101 Firefox/127.0"
+    "Mozilla/5.0 (X11; Linux x86_64; rv:127.0) Gecko/20100101 Firefox/127.0"
 )
 SAFARI_IOS_UA = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "

@@ -256,8 +256,7 @@ def test_get_customer_onboarding_existing_draft_renders_safe_state(
     assert "Status: Qoralama" in visible_html
     assert 'href="/customer/profile"' in response.text
     assert (
-        '<form method="post" action="/customer/onboarding/start">'
-        not in response.text
+        '<form method="post" action="/customer/onboarding/start">' not in response.text
     )
     assert 'name="csrf_token"' not in response.text
     assert 'type="submit"' not in response.text
@@ -463,8 +462,7 @@ def test_customer_onboarding_start_route_contract() -> None:
         if "customer" in body_param.name or "user" in body_param.name
     ] == []
     assert any(
-        dependency.call is validate_csrf
-        for dependency in route.dependant.dependencies
+        dependency.call is validate_csrf for dependency in route.dependant.dependencies
     )
 
 

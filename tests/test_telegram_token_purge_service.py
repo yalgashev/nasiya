@@ -626,9 +626,7 @@ def test_parallel_purge_deletes_each_eligible_row_at_most_once(
     executor = ThreadPoolExecutor(max_workers=2)
     try:
         with caplog.at_level(logging.DEBUG):
-            futures = [
-                executor.submit(worker, label) for label in ("first", "second")
-            ]
+            futures = [executor.submit(worker, label) for label in ("first", "second")]
             done, not_done = wait(futures, timeout=_FUTURE_TIMEOUT_SECONDS)
         if not_done:
             start_barrier.abort()

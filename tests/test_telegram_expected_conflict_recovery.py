@@ -242,8 +242,7 @@ def test_duplicate_token_hash_conflict_maps_safe_and_session_recovers(
                 token_generator=token_generator,
             )
         error_text = (
-            f"{exc_info.value!r} {exc_info.value} "
-            f"{exc_info.value.public_error}"
+            f"{exc_info.value!r} {exc_info.value} {exc_info.value.public_error}"
         )
         continuation_user_id = assert_same_session_select_and_insert(
             session,
@@ -311,8 +310,7 @@ def test_active_chat_unique_conflict_maps_safe_and_session_recovers(
                     consume_at,
                 )
         error_text = (
-            f"{exc_info.value!r} {exc_info.value} "
-            f"{exc_info.value.public_error}"
+            f"{exc_info.value!r} {exc_info.value} {exc_info.value.public_error}"
         )
         continuation_user_id = assert_same_session_select_and_insert(
             session,
@@ -380,8 +378,7 @@ def test_user_link_unique_conflict_maps_safe_and_session_recovers(
                     consume_at,
                 )
         error_text = (
-            f"{exc_info.value!r} {exc_info.value} "
-            f"{exc_info.value.public_error}"
+            f"{exc_info.value!r} {exc_info.value} {exc_info.value.public_error}"
         )
         continuation_user_id = assert_same_session_select_and_insert(
             session,
@@ -472,11 +469,7 @@ def test_parallel_issue_partial_unique_conflict_session_recovers_with_insert(
                 assert_no_raw_detail(error_text, *raw_by_label.values())
                 assert_same_session_select_and_insert(
                     session,
-                    phone=(
-                        "+998900019302"
-                        if label == "first"
-                        else "+998900019303"
-                    ),
+                    phone=("+998900019302" if label == "first" else "+998900019303"),
                 )
                 session.commit()
                 return (label, "domain_error", exc.error_code, True, "")

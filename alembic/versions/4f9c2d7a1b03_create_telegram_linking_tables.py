@@ -5,6 +5,7 @@ Revises: b1f3a7c9d2e4
 Create Date: 2026-07-24 00:00:00.000000
 
 """
+
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -106,9 +107,7 @@ def upgrade() -> None:
         "telegram_link_tokens",
         ["user_id"],
         unique=True,
-        postgresql_where=sa.text(
-            "consumed_at IS NULL AND invalidated_at IS NULL"
-        ),
+        postgresql_where=sa.text("consumed_at IS NULL AND invalidated_at IS NULL"),
     )
 
     op.create_table(
@@ -142,9 +141,7 @@ def downgrade() -> None:
     op.drop_index(
         "uq_telegram_link_tokens_one_outstanding_per_user",
         table_name="telegram_link_tokens",
-        postgresql_where=sa.text(
-            "consumed_at IS NULL AND invalidated_at IS NULL"
-        ),
+        postgresql_where=sa.text("consumed_at IS NULL AND invalidated_at IS NULL"),
     )
     op.drop_table("telegram_link_tokens")
     op.drop_index(

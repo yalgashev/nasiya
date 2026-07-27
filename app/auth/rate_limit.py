@@ -134,28 +134,25 @@ def record_failure(
         attempt_count=1,
         updated_at=current_time,
     )
-    statement = (
-        insert_statement.on_conflict_do_update(
-            index_elements=[AuthRateLimit.scope, AuthRateLimit.key_hash],
-            set_={
-                "window_started_at": case(
-                    (
-                        AuthRateLimit.window_started_at <= reset_cutoff,
-                        current_time,
-                    ),
-                    else_=AuthRateLimit.window_started_at,
+    statement = insert_statement.on_conflict_do_update(
+        index_elements=[AuthRateLimit.scope, AuthRateLimit.key_hash],
+        set_={
+            "window_started_at": case(
+                (
+                    AuthRateLimit.window_started_at <= reset_cutoff,
+                    current_time,
                 ),
-                "attempt_count": case(
-                    (AuthRateLimit.window_started_at <= reset_cutoff, 1),
-                    else_=AuthRateLimit.attempt_count + 1,
-                ),
-                "updated_at": current_time,
-            },
-        )
-        .returning(
-            AuthRateLimit.attempt_count,
-            AuthRateLimit.window_started_at,
-        )
+                else_=AuthRateLimit.window_started_at,
+            ),
+            "attempt_count": case(
+                (AuthRateLimit.window_started_at <= reset_cutoff, 1),
+                else_=AuthRateLimit.attempt_count + 1,
+            ),
+            "updated_at": current_time,
+        },
+    ).returning(
+        AuthRateLimit.attempt_count,
+        AuthRateLimit.window_started_at,
     )
     attempt_count, window_started_at = db.execute(statement).one()
     return _result_from_attempts(

@@ -128,11 +128,14 @@ def test_login_ip_threshold_blocks_independent_of_phone(
 
     assert blocked.allowed is False
     assert blocked.error_code is ErrorCode.RATE_LIMITED
-    assert policy.check(
-        "+998901234569",
-        client_host,
-        now + timedelta(seconds=2),
-    ).allowed is False
+    assert (
+        policy.check(
+            "+998901234569",
+            client_host,
+            now + timedelta(seconds=2),
+        ).allowed
+        is False
+    )
 
 
 def test_login_phone_buckets_are_isolated_by_normalized_phone(
@@ -259,11 +262,7 @@ def test_login_policy_does_not_store_raw_phone_or_ip(
             "FROM auth_rate_limits"
         )
     ).all()
-    stored_text = "|".join(
-        str(value)
-        for row in stored_values
-        for value in row
-    )
+    stored_text = "|".join(str(value) for row in stored_values for value in row)
 
     assert raw_phone not in stored_text
     assert canonical_phone not in stored_text

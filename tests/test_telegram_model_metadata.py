@@ -95,12 +95,8 @@ def test_telegram_links_columns_and_state_constraints() -> None:
 
     assert isinstance(columns["telegram_chat_id"].type, BigInteger)
     assert columns["telegram_chat_id"].nullable is True
-    assert unique_constraints(TelegramLink)["uq_telegram_links_user_id"] == {
-        "user_id"
-    }
-    assert check_constraints(TelegramLink)[
-        "ck_telegram_links_state_consistent"
-    ] == (
+    assert unique_constraints(TelegramLink)["uq_telegram_links_user_id"] == {"user_id"}
+    assert check_constraints(TelegramLink)["ck_telegram_links_state_consistent"] == (
         "(telegram_chat_id IS NOT NULL AND unlinked_at IS NULL) "
         "OR (telegram_chat_id IS NULL AND unlinked_at IS NOT NULL)"
     )
@@ -110,9 +106,7 @@ def test_telegram_links_active_chat_partial_unique_index() -> None:
     active_chat_index = indexes(TelegramLink)["uq_telegram_links_active_chat_id"]
 
     assert active_chat_index.unique is True
-    assert {column.name for column in active_chat_index.columns} == {
-        "telegram_chat_id"
-    }
+    assert {column.name for column in active_chat_index.columns} == {"telegram_chat_id"}
     assert str(active_chat_index.dialect_options["postgresql"]["where"]) == (
         "telegram_chat_id IS NOT NULL AND unlinked_at IS NULL"
     )
@@ -131,12 +125,14 @@ def test_telegram_link_tokens_hash_and_lifecycle_constraints() -> None:
     assert token_constraints["ck_telegram_link_tokens_token_hash_sha256_hex"] == (
         "token_hash ~ '^[0-9a-f]{64}$'"
     )
-    assert token_constraints[
-        "ck_telegram_link_tokens_expires_after_created"
-    ] == "expires_at > created_at"
-    assert token_constraints[
-        "ck_telegram_link_tokens_terminal_state_exclusive"
-    ] == "NOT (consumed_at IS NOT NULL AND invalidated_at IS NOT NULL)"
+    assert (
+        token_constraints["ck_telegram_link_tokens_expires_after_created"]
+        == "expires_at > created_at"
+    )
+    assert (
+        token_constraints["ck_telegram_link_tokens_terminal_state_exclusive"]
+        == "NOT (consumed_at IS NOT NULL AND invalidated_at IS NOT NULL)"
+    )
 
 
 def test_telegram_link_tokens_one_outstanding_partial_unique_index() -> None:
@@ -156,9 +152,10 @@ def test_telegram_link_events_action_check() -> None:
 
     assert isinstance(columns["action"].type, String)
     assert columns["action"].nullable is False
-    assert check_constraints(TelegramLinkEvent)[
-        "ck_telegram_link_events_action_allowed"
-    ] == "action IN ('linked', 'unlinked', 'relinked')"
+    assert (
+        check_constraints(TelegramLinkEvent)["ck_telegram_link_events_action_allowed"]
+        == "action IN ('linked', 'unlinked', 'relinked')"
+    )
 
 
 def test_telegram_timestamps_are_timezone_aware() -> None:

@@ -98,8 +98,7 @@ def event_snapshot(
         .order_by(TelegramLinkEvent.occurred_at, TelegramLinkEvent.id)
     ).all()
     return [
-        (event.id, event.user_id, event.action, event.occurred_at)
-        for event in events
+        (event.id, event.user_id, event.action, event.occurred_at) for event in events
     ]
 
 

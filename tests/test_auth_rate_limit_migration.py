@@ -10,8 +10,7 @@ def test_auth_rate_limits_table_exists_with_expected_sql_shape(
     assert "auth_rate_limits" in inspector.get_table_names()
 
     columns = {
-        column["name"]: column
-        for column in inspector.get_columns("auth_rate_limits")
+        column["name"]: column for column in inspector.get_columns("auth_rate_limits")
     }
     assert set(columns) == {
         "scope",
@@ -48,9 +47,10 @@ def test_auth_rate_limits_sql_constraints_are_present(
     ]
     assert "key_hash" in key_hash_constraint
     assert "~" in key_hash_constraint
-    assert "'^[0-9a-f]{64}$'" in check_constraints[
-        "ck_auth_rate_limits_key_hash_hmac_sha256_hex"
-    ]
+    assert (
+        "'^[0-9a-f]{64}$'"
+        in check_constraints["ck_auth_rate_limits_key_hash_hmac_sha256_hex"]
+    )
     assert (
         check_constraints["ck_auth_rate_limits_attempt_count_positive"]
         == "attempt_count > 0"
@@ -62,8 +62,7 @@ def test_auth_rate_limits_table_has_no_raw_identifier_or_secret_sql_columns(
 ) -> None:
     inspector = inspect(m2_test_database)
     column_names = {
-        column["name"]
-        for column in inspector.get_columns("auth_rate_limits")
+        column["name"] for column in inspector.get_columns("auth_rate_limits")
     }
 
     assert {

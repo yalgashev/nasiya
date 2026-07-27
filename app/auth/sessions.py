@@ -55,9 +55,7 @@ class ResolvedSession:
 
     def __repr__(self) -> str:
         return (
-            "ResolvedSession("
-            "session=<AuthSession>, authenticated_user=<User | None>"
-            ")"
+            "ResolvedSession(session=<AuthSession>, authenticated_user=<User | None>)"
         )
 
 
@@ -195,9 +193,7 @@ def touch_session(
     if not _is_active_authenticated_session(db, session, current_time):
         return False
 
-    touch_interval = timedelta(
-        minutes=resolved_settings.session_touch_interval_minutes
-    )
+    touch_interval = timedelta(minutes=resolved_settings.session_touch_interval_minutes)
     if _as_utc(session.last_seen_at) + touch_interval > current_time:
         return False
 

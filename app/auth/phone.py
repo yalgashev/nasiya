@@ -29,10 +29,9 @@ def normalize_uzbekistan_phone(raw_phone: str) -> str:
     if len(candidate) == UZBEKISTAN_LOCAL_LENGTH:
         candidate = f"{UZBEKISTAN_COUNTRY_CODE}{candidate}"
 
-    if (
-        len(candidate) != len(UZBEKISTAN_COUNTRY_CODE) + UZBEKISTAN_LOCAL_LENGTH
-        or not candidate.startswith(UZBEKISTAN_COUNTRY_CODE)
-    ):
+    if len(candidate) != len(
+        UZBEKISTAN_COUNTRY_CODE
+    ) + UZBEKISTAN_LOCAL_LENGTH or not candidate.startswith(UZBEKISTAN_COUNTRY_CODE):
         raise PhoneNormalizationError("Invalid phone number format")
 
     canonical_phone = f"+{candidate}"

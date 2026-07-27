@@ -46,19 +46,23 @@ def test_alembic_head_exists() -> None:
     assert get_alembic_head()
 
 
-def test_m2_cleanup_tables_use_allowlist_with_m4_child_first_order(
+def test_m2_cleanup_tables_use_allowlist_with_m5_child_first_order(
     monkeypatch,
 ) -> None:
     inspector = Mock()
     inspector.get_table_names.return_value = [
         "debt",
+        "shops",
         "telegram_links",
+        "shop_status_events",
         "telegram_link_tokens",
+        "shop_staff",
         "telegram_link_events",
         "auth_rate_limits",
         "sessions",
         "users",
         "customers",
+        "shop_staff_events",
     ]
     monkeypatch.setattr(postgresql, "inspect", lambda _: inspector)
 
@@ -69,6 +73,10 @@ def test_m2_cleanup_tables_use_allowlist_with_m4_child_first_order(
         "customers",
         "auth_rate_limits",
         "sessions",
+        "shop_staff_events",
+        "shop_status_events",
+        "shop_staff",
+        "shops",
         "users",
     ]
 

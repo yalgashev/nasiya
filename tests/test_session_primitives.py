@@ -14,10 +14,7 @@ SHA256_HEX_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 def test_session_tokens_do_not_repeat() -> None:
-    token_values = {
-        create_session_token().as_cookie_value()
-        for _ in range(128)
-    }
+    token_values = {create_session_token().as_cookie_value() for _ in range(128)}
 
     assert len(token_values) == 128
 

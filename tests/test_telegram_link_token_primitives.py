@@ -28,8 +28,7 @@ DETERMINISTIC_TOKEN_SHA256 = (
 
 def test_telegram_link_tokens_do_not_repeat() -> None:
     token_values = {
-        create_telegram_link_token().as_internal_value()
-        for _ in range(128)
+        create_telegram_link_token().as_internal_value() for _ in range(128)
     }
 
     assert len(token_values) == 128
@@ -111,9 +110,7 @@ def test_telegram_link_token_hash_is_64_lowercase_hex_characters() -> None:
 
 
 def test_telegram_link_token_hash_matches_exact_sha256() -> None:
-    token_hash = hash_telegram_link_token(
-        RawTelegramLinkToken(DETERMINISTIC_RAW_TOKEN)
-    )
+    token_hash = hash_telegram_link_token(RawTelegramLinkToken(DETERMINISTIC_RAW_TOKEN))
 
     assert token_hash == DETERMINISTIC_TOKEN_SHA256
     assert SHA256_HEX_PATTERN.fullmatch(token_hash)
@@ -126,9 +123,7 @@ def test_same_telegram_link_token_produces_same_hash() -> None:
 
 
 def test_different_telegram_link_tokens_produce_different_hashes() -> None:
-    first_hash = hash_telegram_link_token(
-        RawTelegramLinkToken(DETERMINISTIC_RAW_TOKEN)
-    )
+    first_hash = hash_telegram_link_token(RawTelegramLinkToken(DETERMINISTIC_RAW_TOKEN))
     second_hash = hash_telegram_link_token(
         RawTelegramLinkToken("another_deterministic-token_456")
     )
@@ -160,14 +155,10 @@ def test_raw_telegram_link_token_repr_str_and_logging_are_redacted(caplog) -> No
 
 
 def test_url_safe_token_is_valid_deep_link_payload() -> None:
-    token = create_telegram_link_token(
-        token_generator=lambda _: "abc_DEF-123"
-    )
+    token = create_telegram_link_token(token_generator=lambda _: "abc_DEF-123")
     token_value = token.as_internal_value()
     query_string = urlencode({"start": token_value})
-    parsed_query = parse_qs(
-        urlsplit(f"https://t.me/nasiya_bot?{query_string}").query
-    )
+    parsed_query = parse_qs(urlsplit(f"https://t.me/nasiya_bot?{query_string}").query)
 
     assert URLSAFE_TOKEN_PATTERN.fullmatch(token_value)
     assert parsed_query == {"start": [token_value]}

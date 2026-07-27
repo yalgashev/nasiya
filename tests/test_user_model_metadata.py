@@ -63,6 +63,7 @@ def test_sessions_table_has_required_columns() -> None:
     assert set(columns.keys()) == {
         "id",
         "user_id",
+        "active_shop_id",
         "token_hash",
         "csrf_secret",
         "user_agent",
@@ -76,6 +77,8 @@ def test_sessions_table_has_required_columns() -> None:
     assert columns["id"].nullable is False
     assert isinstance(columns["user_id"].type, PostgresUUID)
     assert columns["user_id"].nullable is True
+    assert isinstance(columns["active_shop_id"].type, PostgresUUID)
+    assert columns["active_shop_id"].nullable is True
     assert isinstance(columns["token_hash"].type, String)
     assert columns["token_hash"].type.length == 64
     assert columns["token_hash"].nullable is False
@@ -121,6 +124,15 @@ def test_sessions_user_foreign_key_cascades_on_user_delete() -> None:
     assert foreign_key.ondelete == "CASCADE"
 
 
+def test_sessions_active_shop_foreign_key_restricts_on_shop_delete() -> None:
+    active_shop_id_column = AuthSession.__table__.columns["active_shop_id"]
+    foreign_key = next(iter(active_shop_id_column.foreign_keys))
+
+    assert foreign_key.target_fullname == "shops.id"
+    assert foreign_key.ondelete == "RESTRICT"
+    assert foreign_key.constraint.name == "fk_sessions_active_shop_id_shops_id"
+
+
 def test_sessions_table_has_no_raw_token_cookie_password_or_business_columns() -> None:
     forbidden_columns = {
         "session_token",
@@ -132,7 +144,6 @@ def test_sessions_table_has_no_raw_token_cookie_password_or_business_columns() -
         "password_hash",
         "role",
         "mode",
-        "shop",
         "customer",
     }
 

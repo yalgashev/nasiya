@@ -679,8 +679,7 @@ def test_rotate_authenticated_session_on_relogin_invalidates_old_token(
     assert rotated.session.csrf_secret != old_csrf_secret
     assert rotated.session.user_agent == "new-agent"
     assert (
-        resolve_by_raw_token(db_session, authenticated.raw_token, relogin_time)
-        is None
+        resolve_by_raw_token(db_session, authenticated.raw_token, relogin_time) is None
     )
     new_resolved = resolve_by_raw_token(db_session, rotated.raw_token, relogin_time)
     assert new_resolved is not None
@@ -705,8 +704,7 @@ def test_rotate_authenticated_session_on_relogin_invalidates_old_token(
     assert new_session.user_id == user.id
     assert new_session.user_agent == "new-agent"
     assert (
-        resolve_by_raw_token(db_session, authenticated.raw_token, relogin_time)
-        is None
+        resolve_by_raw_token(db_session, authenticated.raw_token, relogin_time) is None
     )
     assert resolve_by_raw_token(db_session, rotated.raw_token, relogin_time) is not None
 
@@ -801,8 +799,7 @@ def test_revoke_user_session_revokes_owned_session_without_committing(
     db_session.commit()
 
     assert (
-        revoke_user_session(db_session, user.id, other.session.id, revoke_time)
-        is False
+        revoke_user_session(db_session, user.id, other.session.id, revoke_time) is False
     )
     assert other.session.revoked_at is None
 
@@ -886,10 +883,13 @@ def test_revoke_other_sessions_keeps_current_session_and_scope(
 
     db_session.commit()
 
-    assert fetch_stored_session_by_id(
-        m2_test_database,
-        current.session.id,
-    ).revoked_at is None
+    assert (
+        fetch_stored_session_by_id(
+            m2_test_database,
+            current.session.id,
+        ).revoked_at
+        is None
+    )
     assert (
         fetch_stored_session_by_id(m2_test_database, first_other.session.id).revoked_at
         == revoke_time
@@ -898,10 +898,13 @@ def test_revoke_other_sessions_keeps_current_session_and_scope(
         fetch_stored_session_by_id(m2_test_database, second_other.session.id).revoked_at
         == revoke_time
     )
-    assert fetch_stored_session_by_id(
-        m2_test_database,
-        other_user_session.session.id,
-    ).revoked_at is None
+    assert (
+        fetch_stored_session_by_id(
+            m2_test_database,
+            other_user_session.session.id,
+        ).revoked_at
+        is None
+    )
 
 
 @pytest.mark.integration

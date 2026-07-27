@@ -54,9 +54,10 @@ def test_database_session_factory_is_created_from_engine_without_connecting() ->
     )
     engine = create_database_engine(settings)
 
-    with patch.object(Engine, "connect") as connect_mock, patch(
-        "app.db.sessionmaker"
-    ) as sessionmaker_mock:
+    with (
+        patch.object(Engine, "connect") as connect_mock,
+        patch("app.db.sessionmaker") as sessionmaker_mock,
+    ):
         create_database_session_factory(engine)
 
     connect_mock.assert_not_called()

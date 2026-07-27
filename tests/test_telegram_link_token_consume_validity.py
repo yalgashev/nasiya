@@ -299,9 +299,7 @@ def test_invalid_consume_tokens_return_uniform_link_token_invalid(
     if terminal_kwargs is not None:
         user = add_user(db_session, f"+9989000100{len(label):02d}")
         consumed_at = now if terminal_kwargs.get("consumed_at") == "now" else None
-        invalidated_at = (
-            now if terminal_kwargs.get("invalidated_at") == "now" else None
-        )
+        invalidated_at = now if terminal_kwargs.get("invalidated_at") == "now" else None
         expires_marker = terminal_kwargs.get("expires_at")
         expires_at = {
             "now": now,

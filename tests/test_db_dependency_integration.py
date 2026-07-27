@@ -39,9 +39,7 @@ def dependency_probe_table(
         yield m2_test_database
     finally:
         with m2_test_database.begin() as connection:
-            connection.exec_driver_sql(
-                f'DROP TABLE IF EXISTS "{PROBE_TABLE_NAME}"'
-            )
+            connection.exec_driver_sql(f'DROP TABLE IF EXISTS "{PROBE_TABLE_NAME}"')
 
 
 def count_probe_rows(engine: Engine) -> int:

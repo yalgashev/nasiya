@@ -93,8 +93,7 @@ def test_create_local_user_reset_password_updates_existing_user_only(
     settings = make_settings(test_database_url)
     patch_getpass(monkeypatch, "Password123", "Password123")
     assert (
-        cli.main(["create-local-user", "--phone", "901234567"], settings=settings)
-        == 0
+        cli.main(["create-local-user", "--phone", "901234567"], settings=settings) == 0
     )
     original_hash = get_single_user(m2_test_database).password_hash
 

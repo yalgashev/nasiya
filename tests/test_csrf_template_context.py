@@ -8,9 +8,7 @@ from app.auth.template_context import (
     with_csrf_context,
 )
 
-CSRF_INPUT_TEMPLATE = (
-    '<input type="hidden" name="csrf_token" value="{{ csrf_token }}">'
-)
+CSRF_INPUT_TEMPLATE = '<input type="hidden" name="csrf_token" value="{{ csrf_token }}">'
 
 
 def render_csrf_input(context: dict[str, str | None]) -> str:

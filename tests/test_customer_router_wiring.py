@@ -114,17 +114,13 @@ def test_customer_routes_forbid_external_ids_and_scope_drift() -> None:
     assert not any("activation" in path for path in all_route_paths)
 
     get_customer_routes = {
-        route.path_format
-        for route in customer_routes
-        if route.methods == {"GET"}
+        route.path_format for route in customer_routes if route.methods == {"GET"}
     }
     assert get_customer_routes == {"/customer/onboarding", "/customer/profile"}
     assert "/customer/onboarding/start" not in get_customer_routes
 
     customer_unsafe_routes = [
-        route
-        for route in customer_routes
-        if (route.methods or set()) & UNSAFE_METHODS
+        route for route in customer_routes if (route.methods or set()) & UNSAFE_METHODS
     ]
     assert [route.path_format for route in customer_unsafe_routes] == [
         "/customer/onboarding/start"

@@ -158,8 +158,7 @@ def _build_rate_limit_buckets(
         _TelegramLinkRateLimitBucket(
             scope=TELEGRAM_LINK_RATE_LIMIT_IP_SCOPE,
             raw_key=(
-                f"{TELEGRAM_LINK_RATE_LIMIT_IP_KEY_PREFIX}"
-                f"{client_ip.as_hmac_input()}"
+                f"{TELEGRAM_LINK_RATE_LIMIT_IP_KEY_PREFIX}{client_ip.as_hmac_input()}"
             ),
             limit=_to_existing_limiter_threshold(
                 settings.telegram_link_rate_limit_ip_attempts

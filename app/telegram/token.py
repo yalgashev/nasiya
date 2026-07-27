@@ -62,15 +62,11 @@ def create_telegram_link_token(
     token_generator: Callable[[int], str] | None = None,
 ) -> RawTelegramLinkToken:
     resolved_generator = token_generator or secrets.token_urlsafe
-    return RawTelegramLinkToken(
-        resolved_generator(TELEGRAM_LINK_TOKEN_ENTROPY_BYTES)
-    )
+    return RawTelegramLinkToken(resolved_generator(TELEGRAM_LINK_TOKEN_ENTROPY_BYTES))
 
 
 def hash_telegram_link_token(raw_token: RawTelegramLinkToken) -> str:
-    return hashlib.sha256(
-        raw_token.as_internal_value().encode("utf-8")
-    ).hexdigest()
+    return hashlib.sha256(raw_token.as_internal_value().encode("utf-8")).hexdigest()
 
 
 def build_telegram_start_link(

@@ -9,6 +9,7 @@ from app.auth import models as _auth_models  # noqa: F401
 from app.customer import models as _customer_models  # noqa: F401
 from app.db import Base
 from app.settings import Settings
+from app.shop import models as _shop_models  # noqa: F401
 from app.telegram import models as _telegram_models  # noqa: F401
 
 # This is the Alembic Config object, which provides
@@ -21,6 +22,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
+
 
 def _get_database_url() -> str:
     database_url = os.getenv("TEST_DATABASE_URL") or os.getenv("DATABASE_URL")
@@ -57,9 +59,7 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection, target_metadata=target_metadata
-        )
+        context.configure(connection=connection, target_metadata=target_metadata)
 
         with context.begin_transaction():
             context.run_migrations()

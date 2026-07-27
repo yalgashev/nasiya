@@ -558,9 +558,7 @@ def test_parallel_double_unlink_has_exactly_one_transition_and_event(
     executor = ThreadPoolExecutor(max_workers=2)
     try:
         with caplog.at_level(logging.DEBUG):
-            futures = [
-                executor.submit(worker, label) for label in ("first", "second")
-            ]
+            futures = [executor.submit(worker, label) for label in ("first", "second")]
             done, not_done = wait(futures, timeout=_FUTURE_TIMEOUT_SECONDS)
         if not_done:
             unlink_barrier.abort()
@@ -1098,8 +1096,7 @@ def test_relink_consume_then_parallel_unlink_finalizes_unlinked_state(
     assert unexpected == []
     assert len(consume_outcomes) == 1
     assert (
-        consume_outcomes[0].consume_outcome
-        is TelegramStartTokenConsumeOutcome.RELINKED
+        consume_outcomes[0].consume_outcome is TelegramStartTokenConsumeOutcome.RELINKED
     )
     assert consume_outcomes[0].event_action == "relinked"
     assert consume_outcomes[0].event_at == relink_at

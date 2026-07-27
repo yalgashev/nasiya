@@ -12,6 +12,10 @@ M2_CLEANUP_TABLE_NAMES = (
     "customers",
     "auth_rate_limits",
     "sessions",
+    "shop_staff_events",
+    "shop_status_events",
+    "shop_staff",
+    "shops",
     "users",
 )
 

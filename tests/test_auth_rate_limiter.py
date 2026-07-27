@@ -124,13 +124,16 @@ def test_rate_limiter_resets_after_window_expires(
         window_seconds=60,
     )
 
-    assert limiter.check(
-        "phone",
-        "same-key",
-        now + timedelta(seconds=2),
-        limit=2,
-        window_seconds=60,
-    ).allowed is False
+    assert (
+        limiter.check(
+            "phone",
+            "same-key",
+            now + timedelta(seconds=2),
+            limit=2,
+            window_seconds=60,
+        ).allowed
+        is False
+    )
     assert limiter.check("phone", "same-key", later, limit=2, window_seconds=60).allowed
 
     reset = limiter.record_failure(
@@ -166,20 +169,26 @@ def test_rate_limiter_keeps_scopes_isolated(
         window_seconds=60,
     )
 
-    assert limiter.check(
-        "phone",
-        raw_key,
-        now + timedelta(seconds=2),
-        limit=2,
-        window_seconds=60,
-    ).allowed is False
-    assert limiter.check(
-        "ip",
-        raw_key,
-        now + timedelta(seconds=2),
-        limit=2,
-        window_seconds=60,
-    ).allowed is True
+    assert (
+        limiter.check(
+            "phone",
+            raw_key,
+            now + timedelta(seconds=2),
+            limit=2,
+            window_seconds=60,
+        ).allowed
+        is False
+    )
+    assert (
+        limiter.check(
+            "ip",
+            raw_key,
+            now + timedelta(seconds=2),
+            limit=2,
+            window_seconds=60,
+        ).allowed
+        is True
+    )
 
     limiter.record_failure(
         "ip",

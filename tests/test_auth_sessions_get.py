@@ -233,7 +233,7 @@ def test_sessions_html_has_mobile_accessible_controls_and_no_business_placeholde
     assert "dashboard" not in html_lower
     assert str(current.session.id) not in visible_html
     assert str(other.session.id) not in visible_html.replace(
-        f'/auth/sessions/{other.session.id}/revoke',
+        f"/auth/sessions/{other.session.id}/revoke",
         "",
     )
 

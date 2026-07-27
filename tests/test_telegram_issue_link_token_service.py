@@ -373,14 +373,20 @@ def test_issue_link_token_rate_limit_uses_db_canonical_phone_not_stale_object_ph
         settings,
         f"{TELEGRAM_LINK_RATE_LIMIT_PHONE_KEY_PREFIX}{user.phone}",
     )
-    assert hash_rate_limit_key(
-        settings,
-        f"{TELEGRAM_LINK_RATE_LIMIT_PHONE_KEY_PREFIX}+998900007991",
-    ) != phone_records[0].key_hash
-    assert hash_rate_limit_key(
-        settings,
-        f"{TELEGRAM_LINK_RATE_LIMIT_PHONE_KEY_PREFIX}+998900007992",
-    ) != phone_records[0].key_hash
+    assert (
+        hash_rate_limit_key(
+            settings,
+            f"{TELEGRAM_LINK_RATE_LIMIT_PHONE_KEY_PREFIX}+998900007991",
+        )
+        != phone_records[0].key_hash
+    )
+    assert (
+        hash_rate_limit_key(
+            settings,
+            f"{TELEGRAM_LINK_RATE_LIMIT_PHONE_KEY_PREFIX}+998900007992",
+        )
+        != phone_records[0].key_hash
+    )
     assert "+998900007991" not in stored_rate_limit_text
     assert "+998900007992" not in stored_rate_limit_text
     assert count_table(db_session, TelegramLinkToken) == 1
@@ -1115,9 +1121,7 @@ def test_issue_link_token_parallel_four_same_user_keeps_rate_limit_ceiling(
 
     user_raw_key = f"{TELEGRAM_LINK_RATE_LIMIT_USER_KEY_PREFIX}{user_id}"
     phone_raw_key = f"{TELEGRAM_LINK_RATE_LIMIT_PHONE_KEY_PREFIX}{phone}"
-    ip_raw_key = (
-        f"{TELEGRAM_LINK_RATE_LIMIT_IP_KEY_PREFIX}{client_ip.as_hmac_input()}"
-    )
+    ip_raw_key = f"{TELEGRAM_LINK_RATE_LIMIT_IP_KEY_PREFIX}{client_ip.as_hmac_input()}"
     sensitive_values = (
         *raw_by_label.values(),
         phone,
@@ -1206,9 +1210,7 @@ def test_issue_link_token_parallel_four_same_user_keeps_rate_limit_ceiling(
     executor = ThreadPoolExecutor(max_workers=len(raw_by_label))
     try:
         with caplog.at_level(logging.INFO):
-            futures = [
-                executor.submit(worker, label) for label in raw_by_label
-            ]
+            futures = [executor.submit(worker, label) for label in raw_by_label]
             done, not_done = wait(futures, timeout=15)
             if not_done:
                 start_barrier.abort()
@@ -1278,8 +1280,7 @@ def test_issue_link_token_parallel_four_same_user_keeps_rate_limit_ceiling(
     assert len(issued_outcomes) <= 3
     assert len(issued_outcomes) + len(domain_outcomes) == 4
     assert all(
-        outcome.error_code is ErrorCode.RATE_LIMITED
-        for outcome in domain_outcomes
+        outcome.error_code is ErrorCode.RATE_LIMITED for outcome in domain_outcomes
     )
     assert all(outcome.session_usable for outcome in outcomes)
     assert sum(outcome.generated_count for outcome in outcomes) <= 3
@@ -1383,9 +1384,7 @@ def test_issue_link_token_parallel_shared_ip_respects_twenty_ceiling(
     )
     now = datetime(2026, 7, 24, 16, 32, tzinfo=UTC)
     client_ip = ResolvedClientIp("203.0.113.172")
-    ip_raw_key = (
-        f"{TELEGRAM_LINK_RATE_LIMIT_IP_KEY_PREFIX}{client_ip.as_hmac_input()}"
-    )
+    ip_raw_key = f"{TELEGRAM_LINK_RATE_LIMIT_IP_KEY_PREFIX}{client_ip.as_hmac_input()}"
     start_barrier = Barrier(len(labels))
     logger = logging.getLogger("tests.telegram_parallel_shared_ip")
     sensitive_values = (

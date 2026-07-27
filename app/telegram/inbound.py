@@ -8,9 +8,7 @@ class VerifiedPrivateTelegramChatIdentity:
 
     def __init__(self, chat_id: int) -> None:
         if isinstance(chat_id, bool) or not isinstance(chat_id, int):
-            raise ValueError(
-                "Verified private Telegram chat identity must be numeric"
-            )
+            raise ValueError("Verified private Telegram chat identity must be numeric")
         if chat_id < 1 or chat_id > _POSTGRES_BIGINT_MAX:
             raise ValueError(
                 "Verified private Telegram chat identity must be a valid "

@@ -155,9 +155,7 @@ def app_source_text() -> str:
 
 def template_text(*relative_paths: str) -> str:
     return "\n".join(
-        (PROJECT_ROOT / "app" / "templates" / relative_path).read_text(
-            encoding="utf-8"
-        )
+        (PROJECT_ROOT / "app" / "templates" / relative_path).read_text(encoding="utf-8")
         for relative_path in relative_paths
     )
 

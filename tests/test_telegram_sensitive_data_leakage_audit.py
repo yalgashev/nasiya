@@ -312,8 +312,7 @@ def test_m4_wrappers_logs_and_domain_errors_do_not_expose_raw_values(caplog) -> 
             logger.info("domain error %s %r", error, error)
 
     error_text = " ".join(
-        f"{error!r} {error} {getattr(error, 'public_error', {})}"
-        for error in errors
+        f"{error!r} {error} {getattr(error, 'public_error', {})}" for error in errors
     )
     invalid_input_messages: list[str] = []
     for invalid_factory in (
@@ -347,9 +346,7 @@ def test_m4_wrappers_logs_and_domain_errors_do_not_expose_raw_values(caplog) -> 
 def test_auth_customer_html_and_m4_sources_have_no_identifier_dump_paths() -> None:
     template_paths = tuple(
         sorted((PROJECT_ROOT / "app" / "templates" / "auth").glob("*.html"))
-    ) + tuple(
-        sorted((PROJECT_ROOT / "app" / "templates" / "customer").glob("*.html"))
-    )
+    ) + tuple(sorted((PROJECT_ROOT / "app" / "templates" / "customer").glob("*.html")))
     forbidden_template_snippets = (
         "telegram",
         "t.me",

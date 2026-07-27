@@ -320,8 +320,8 @@ def test_account_route_does_not_query_customer_state_or_own_db_session() -> None
     )
 
     router_source = Path("app/auth/router.py").read_text(encoding="utf-8")
-    account_source = router_source.split("@router.get(\"/account\"", 1)[1].split(
-        "@router.get(\"/sessions\"",
+    account_source = router_source.split('@router.get("/account"', 1)[1].split(
+        '@router.get("/sessions"',
         1,
     )[0]
     assert "get_current_customer_draft_state" not in account_source

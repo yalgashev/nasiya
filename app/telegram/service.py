@@ -69,9 +69,7 @@ class IssuedTelegramLinkToken:
 
     def __repr__(self) -> str:
         return (
-            "IssuedTelegramLinkToken("
-            "raw_token=<redacted>, token=<TelegramLinkToken>"
-            ")"
+            "IssuedTelegramLinkToken(raw_token=<redacted>, token=<TelegramLinkToken>)"
         )
 
 
