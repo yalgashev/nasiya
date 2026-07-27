@@ -8,6 +8,9 @@ implementation chegarasini belgilaydi. Kanonik product talablari
 `docs/tt_nasiya_web_v1.md`da qoladi; bu contract M6 ishlarini shu TTga qanday
 tartibda tushirishni aniqlashtiradi.
 
+PRE-M6 change requestlar bo'yicha yozma qaror `docs/m6_change_requests.md`da
+saqlanadi.
+
 ## 1. M6.00 dispositionlari
 
 | ID | Qaror | Scope ta'siri |

@@ -137,10 +137,6 @@ alohida vosita talab qilinmaydi.
 
 - Do'kon ro'yxatdan o'tgan mijozlar uchun chegirma foizini belgilashi mumkin.
 - Har bir qarzda ikkita summa saqlanadi: **asl summa** va **chegirmali summa**.
-- Agar savdoda oldindan to'lov/badal bo'lsa, u qarz yoki `payment` yozuvi
-  emas. Debt uchun `original_amount` faqat nasiyaga qoldirilgan net summani
-  bildiradi; badalni tasdiqlovchi alohida naqd savdo kvitansiyasi MVP debt
-  modeliga kirmaydi.
 - Mijoz o'z vaqtida to'liq to'lasa — chegirma kuchda qoladi va qarz chegirmali
   summa asosida `paid` bo'ladi.
 - Mijoz muddatni o'tkazib yuborsa (overdue) — **clawback** ishga tushadi:
@@ -164,19 +160,6 @@ overdue paytidagi qoldiq = 1 000 000 − 300 000 = 700 000
 - Clawback bir marta, `active → overdue` o'tish paytida qo'llanadi.
 - Clawback hodisasi `debt.clawback_applied` sifatida audit qilinadi.
 - Clawback natijasida qoldiq manfiy bo'lishi mumkin emas.
-- Clawback bekor qilinishi mumkin, lekin faqat vakolatli actor tomonidan:
-  do'kon egasi o'z do'koni doirasida, platforma admini esa dispute/compliance
-  holatlarida. Kassir va menejer clawbackni bekor qila olmaydi.
-- Clawback reversal sabab bilan bajariladi, append-only audit yozadi
-  (`debt.clawback_reversed`) va avvalgi clawback auditini o'chirmaydi.
-- Reversal faqat `overdue` qarz `written_off` qilinmasidan oldin ruxsat
-  etiladi. Reversaldan keyingi qoldiq chegirmali asosda qayta hisoblanadi:
-
-```text
-qoldiq = max(discounted_amount − total_non_voided_payments, 0)
-```
-
-- Agar reversal natijasida qoldiq 0 bo'lsa, qarz `paid` holatiga o'tadi.
 
 ### 4.2 Qarz modeli — bitta to'lov muddati
 
@@ -206,8 +189,6 @@ exposure = max(original_amount − total_non_voided_payments, 0)
 
 - Chegirma kredit limitini sun'iy kattalashtirmaydi; limit tekshiruvida
   yangi qarz uchun `original_amount` ishlatiladi.
-- Badal mavjud bo'lsa, limit va exposure faqat nasiyaga qoldirilgan net
-  `original_amount` bo'yicha hisoblanadi; badal summasi exposurega qo'shilmaydi.
 - Limit oshsa `CREDIT_LIMIT_EXCEEDED` qaytadi.
 - Bir mijozning bitta do'konda bir vaqtda ochiq (`pending`/`active`/`overdue`)
   qarzlar soni `MAX_OPEN_DEBTS` bilan cheklanadi.
@@ -345,7 +326,7 @@ rating_eligible_min_amount = 100 000 UZS
 | --- | --- |
 | Platforma admini | Butun tizim ustidan nazorat — web admin bo'limi orqali, to'liq ro'yxat 6.11-bo'limda |
 | Do'kon egasi | O'z do'koni sozlamalari, xodimlar, barcha operatsiyalar |
-| Menejer | Kundalik operatsiyalar va role-scoped read konteksti; M6da settings mutation huquqi yo'q |
+| Menejer | Kundalik operatsiyalar, cheklangan sozlamalar |
 | Kassir | Mijoz qo'shish, qarz ochish, to'lov qabul qilish |
 | Mijoz | Ro'yxatdan o'tish, ofertani qabul qilish, qarz/to'lovlarini ko'rish |
 
@@ -433,24 +414,11 @@ Sessiya (web):
 - Standart sozlamalar:
 
 ```text
-default_discount_percent = 0
-default_due_days = 30
 default_credit_limit = 1 000 000 UZS
 default_max_open_debts = 2
 shop_news_daily_limit = 2
 ```
 
-- `default_due_days` yangi debt yaratilayotgan Toshkent biznes sanasiga
-  qo'shilib, forma uchun boshlang'ich `due_date`ni beradi. Kassir formadagi
-  aniq `due_date`ni tahrirlay oladi.
-- Shop settingsni M6da faqat owner o'zgartiradi. Menejer role qiymati saqlanadi,
-  lekin settings mutation huquqi olmaydi; cashier settingsni faqat o'qiydi.
-- Settings update suspended shopda `SHOP_SUSPENDED` bilan rad etiladigan tenant
-  business write hisoblanadi.
-- Settings validatsiyasi service qatlamida bitta joyda bajariladi:
-  `default_discount_percent` 0..100 oralig'ida, `default_due_days` kamida 1,
-  `default_credit_limit` manfiy emas, `default_max_open_debts` kamida 1,
-  `shop_news_daily_limit` manfiy emas bo'lishi kerak.
 - Xodim qo'shish, rolini o'zgartirish, ishdan bo'shatish (deaktivatsiya).
 - Oxirgi egani rolsiz qoldirib bo'lmaydi (`LAST_OWNER` himoyasi).
 
@@ -525,12 +493,6 @@ Qarz holat mashinasi:
 - Qarz yaratishda tekshiruvlar: active customer, qora ro'yxat, global
   blok/reyting, kredit limiti, ochiq qarzlar soni, joriy oferta mavjudligi.
 - Customer leadga qarz yaratilmaydi (`CUSTOMER_NOT_ACTIVE`).
-- Debt yaratish formasida `original_amount` nasiyaga qoldirilgan net summa,
-  `discounted_amount` esa o'z vaqtida to'liq to'lansa yopiladigan summa sifatida
-  olinadi. Kassir `due_date`ni tahrirlay oladi; default qiymat do'kon
-  sozlamasidan keladi.
-- Oldindan to'langan badal debt ichida saqlanmaydi va payment sifatida
-  yaratib yuborilmaydi.
 - Idempotency kaliti majburiy (3.4).
 - Mijoz qabul qilishida "rozilik isboti" (acceptance) yoziladi: oferta
   versiyasi/tili/xeshi, vaqt, brauzer metadata (User-Agent) — auditga
@@ -539,10 +501,6 @@ Qarz holat mashinasi:
 ### 6.5 To'lovlar
 
 - To'liq va qisman to'lov qabul qilinadi.
-- Qisman to'lov uchun minimal summa yo'q, lekin summa 0 dan katta bo'lishi
-  shart.
-- To'lov qoldiqdan katta bo'lsa qat'iy rad etiladi (`PAYMENT_EXCEEDS_BALANCE`).
-  Mijoz krediti, avans wallet yoki ortiqcha to'lov balansi MVP'da yaratilmaydi.
 - To'lov qabul qilinadigan qarz holatlari:
 
 ```text
@@ -556,10 +514,6 @@ PAYABLE_DEBT_STATUSES = active, overdue, written_off
   bank integratsiyasi yo'q.
 - Balans hisob-kitobi faqat serverda; to'lovdan keyin sahifada qoldiq va
   kvitansiya (receipt) xulosasi ko'rsatiladi.
-- To'lov formasi server hisoblagan joriy qoldiqni ko'rsatadi va "to'liq
-  to'lash" amalini shu qoldiq bilan to'ldiradi. Submit paytida qoldiq qayta
-  tekshiriladi; parallel to'lov sabab qoldiq o'zgargan bo'lsa ortiqcha summa
-  rad etiladi.
 - Idempotency kaliti majburiy (3.4); PRG naqshi majburiy.
 - To'lovni bekor qilish (void): sabab majburiy, faqat vakolatli rol;
   qoldiq qayta hisoblanadi, kerak bo'lsa qarz holati orqaga qaytadi va
@@ -709,19 +663,17 @@ qilinmaydi, lekin barcha amallar quyidagi ro'yxat bo'yicha ishlashi shart:
    joriy qilib belgilash (4.8 ga mos).
 9. **Written-off amalini bajarish/tasdiqlash** — yuqori vakolat, sabab
    majburiy.
-10. **Clawback reversal** — dispute/compliance holatlarida sabab bilan,
-    auditlangan holda bajarish.
-11. **Reyting override** — sabab bilan qo'lda tuzatish.
-12. **Platforma darajasidagi hisobotlar** — barcha do'konlar agregati.
-13. **Audit jurnalini ko'rish** — redaksiya qilingan shaklda; kirishning
+10. **Reyting override** — sabab bilan qo'lda tuzatish.
+11. **Platforma darajasidagi hisobotlar** — barcha do'konlar agregati.
+12. **Audit jurnalini ko'rish** — redaksiya qilingan shaklda; kirishning
     o'zi ham qayd etiladi.
-14. **Tizim sozlamalarini boshqarish** — reyting konstantalari, farming
+13. **Tizim sozlamalarini boshqarish** — reyting konstantalari, farming
     porog'lari, pending muddati, e'lon limiti kabi global konfiguratsiyalar.
-15. **Bildirishnoma va job monitoring** — muvaffaqiyatsizlarni qayta yuborish,
+14. **Bildirishnoma va job monitoring** — muvaffaqiyatsizlarni qayta yuborish,
     scheduler holatini kuzatish.
-16. **Impersonation YO'Q** — admin boshqa foydalanuvchi nomidan tizimga
+15. **Impersonation YO'Q** — admin boshqa foydalanuvchi nomidan tizimga
     kirmaydi; yordam faqat aniq, auditlangan amallar orqali.
-17. **Qoidabuzar do'kon e'lonini olib tashlash** — 6.12 dagi e'lonlar
+16. **Qoidabuzar do'kon e'lonini olib tashlash** — 6.12 dagi e'lonlar
     ustidan nazorat.
 
 ### 6.12 Do'kon yangiliklari (e'lonlar)
@@ -802,7 +754,7 @@ tasdiqlanadi:
 | `customer` | Mijoz profili (PII shifrlangan) |
 | `customer_document` | Hujjat metadata + saqlash havolasi |
 | `shop_customer` | Do'kon–mijoz bog'lami: limit, oq/qora holat, mute |
-| `debt` | Qarz: asl/chegirmali summa, muddat, holat, exposure va clawback/reversal maydonlari |
+| `debt` | Qarz: asl/chegirmali summa, muddat, holat, exposure maydonlari |
 | `payment` | To'lov: summa, usul, void maydonlari |
 | `offer` | Oferta versiyalari (til, xesh, holat: qoralama/tasdiqlangan/joriy) |
 | `acceptance` | Rozilik isboti (oferta versiyasi/xeshi, vaqt, brauzer metadata) |
@@ -934,14 +886,6 @@ Backend va domen (pytest, haqiqiy PostgreSQL bilan):
   shu jumladan `written_off → written_off_settled` va voiddan keyingi qaytish.
 - Pul matematikasi: chegirma, clawback, qisman to'lov, void — Decimal va
   ROUND_HALF_UP bilan chekka holatlar.
-- Badal semantikasi: oldindan to'lov debt/payment yozuvi yaratmasligi,
-  `original_amount` faqat nasiyaga qoldirilgan net summa bo'lishi.
-- Ortiqcha to'lov: qoldiqdan katta payment rad etilishi
-  (`PAYMENT_EXCEEDS_BALANCE`), parallel submitda ham qoldiq qayta
-  tekshirilishi.
-- Clawback reversal: faqat owner yoki platforma admini, sabab majburiy,
-  audit yozilishi, `written_off`dan keyin rad etilishi va qoldiq chegirmali
-  asosda qayta hisoblanishi.
 - Kredit exposure: limit tekshiruvi `original_amount` asosida ishlashi,
   chegirma limitni oshirmasligi.
 - IDOR: bir do'kon xodimi boshqa do'kon resurslariga (route darajasida)
@@ -1029,12 +973,6 @@ asosiy branchga qo'shilmaydi.
 - Written_off qarz mijozni barcha do'konlarda bloklashi tasdiqlangan.
 - Written_off qarz keyin to'liq qoplanganda `written_off_settled` bo'lishi,
   hard block yechilishi, +10 rating yozilishi va tarix saqlanishi testlangan.
-- Badal debt/payment tarkibiga kiritilmasligi va debt `original_amount`i net
-  nasiya summasi sifatida ishlashi testlangan.
-- Qoldiqdan katta to'lov `PAYMENT_EXCEEDS_BALANCE` bilan rad etilishi,
-  ortiqcha summa customer credit/wallet sifatida saqlanmasligi testlangan.
-- Clawback reversal faqat owner yoki platforma admini tomonidan sabab bilan
-  bajarilishi, auditlanishi va `written_off`dan keyin rad etilishi testlangan.
 - Do'konlararo oshkoralik faqat band ekani tasdiqlangan.
 - Idempotentlik: takroriy so'rov (forma qayta yuborish, sahifa yangilash,
   ikki marta bosish) ikkinchi moliyaviy yozuv yaratmasligi testlangan; PRG
@@ -1091,9 +1029,7 @@ asosiy branchga qo'shilmaydi.
 | `DEBT_NOT_PENDING` | Amal faqat pending qarz uchun |
 | `DEBT_EXPIRED` | Pending qarz qabul muddati tugagan |
 | `DEBT_NOT_PAYABLE` | Bu holatdagi qarzga to'lov qabul qilinmaydi |
-| `PAYMENT_EXCEEDS_BALANCE` | To'lov summasi joriy qoldiqdan katta |
 | `PAYMENT_NOT_VOIDABLE` | To'lovni bekor qilib bo'lmaydi |
-| `CLAWBACK_NOT_REVERSIBLE` | Clawback bu holatda bekor qilinmaydi |
 | `REASON_REQUIRED` | Sabab ko'rsatilishi shart |
 | `IDEMPOTENCY_CONFLICT` | Bir xil kalit, boshqa mazmunli so'rov |
 | `APPLICATION_PENDING` | Egalik arizasi hali ko'rib chiqilmoqda |
