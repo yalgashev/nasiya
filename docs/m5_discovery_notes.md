@@ -1,10 +1,11 @@
 # M5.00 -- Erta product discovery natijalari
 
-Status: MAZMUNIY JAVOBLAR OLINDI
+Status: PRE-M6 UCHUN YOPILDI
 Sana: 2026-07-26
 Respondentlar: 2 ta real nasiya do'koni egasi
 Manba: yozma savol-javob, Product Owner tomonidan umumlashtirilgan
-Suhbat davomiyligi: tasdiqlanmagan
+Suhbat davomiyligi: tasdiqlanmagan; M6.00 disposition bo'yicha delivery
+blocker emas
 
 ## 1. Kontekst va dalil chegarasi
 
@@ -227,13 +228,13 @@ global blok va reyting oqibatini inson qarorisiz qo'llamasligi kerak.
 | --- | --- | --- | --- |
 | CR-M5-01 | Manager pilot segmentida kerak emas | TT 5 va role/policy scope | **YOPILDI (M5):** role qiymati/basic read saqlanadi; owner vakolati berilmaydi |
 | CR-M5-02 | Suspendda faol xodimlar role-scoped read-only ko'radi | TT suspend siyosati | **YOPILDI (M5):** business write bloklanadi; session-context switch mustasno |
-| CR-M6-01 | Badal debt/payment tarkibiga kirmaydi | TT 4.3 va debt yaratish | **OCHIQ (PRE-M6):** nasiyaga berilgan net summani saqlashni TTda aniqlashtirish |
-| CR-M6-02 | Ortiqcha to'lov rad etiladi | TT 6.5 | **OCHIQ (PRE-M6):** qoldiqdan katta paymentni rad etishni TTga yozish |
-| CR-M6-03 | Vakolatli clawback bekor qilish kerak | TT 6.11 | **OCHIQ (PRE-M6):** rol, sabab va audit talabini belgilash |
+| CR-M6-01 | Badal debt/payment tarkibiga kirmaydi | TT 4.1, 4.3, 6.4 | **YOPILDI (M6.00):** `original_amount` nasiyaga qoldirilgan net summa; badal debt/payment emas |
+| CR-M6-02 | Ortiqcha to'lov rad etiladi | TT 6.5 va 14 | **YOPILDI (M6.00):** qoldiqdan katta payment `PAYMENT_EXCEEDS_BALANCE` bilan rad etiladi |
+| CR-M6-03 | Vakolatli clawback bekor qilish kerak | TT 4.1 va 6.11 | **YOPILDI (M6.00):** owner yoki platforma admini, sabab majburiy, append-only audit |
 
 M5 dispositionlari keyingi muzlatilgan M5 vazifalarida berilgan aniq
-talablarni qayd etadi. M6 satrlari esa discovery topilmalaridan kelib chiqqan
-ochiq change request nomzodlari bo'lib, o'zicha TTni o'zgartirmaydi.
+talablarni qayd etadi. M6 satrlari M6.00da `docs/tt_nasiya_web_v1.md` va
+`docs/m6_scope_contract.md` orqali TT/scope qaroriga aylantirildi.
 
 ## 4. Tasdiqlangan va ochiq holatlar
 
@@ -243,14 +244,12 @@ ochiq change request nomzodlari bo'lib, o'zicha TTni o'zgartirmaydi.
 | M5.00 mazmuniy savollari | 7/7 |
 | Javoblar hujjatlashtirildi | Ha |
 | Respondentlar PII saqlandi | Yo'q |
-| Har bir suhbat 30-40 daqiqa bo'lgani tasdiqlandi | Yo'q |
+| Har bir suhbat 30-40 daqiqa bo'lgani tasdiqlandi | Yo'q; M6.00 uchun delivery blocker emas |
 | M5 change request dispositionlari | 2/2 yopildi |
-| PRE-M6 change requestlar bo'yicha PO/TT qarori | Kutilmoqda |
+| PRE-M6 change requestlar bo'yicha PO/TT qarori | 3/3 yopildi |
 
-Mazmuniy discovery yakunlangan. Biroq yozma savol-javoblarning har biri
-30-40 daqiqalik suhbatga teng bo'lgani tasdiqlanmagan. M5.00 ni to'liq
-`TEKSHIRILGAN` deb yopish uchun Product Owner yozma formatni acceptance
-criterionga teng deb tasdiqlashi yoki davomiylik talabini qoplaydigan
-follow-up suhbatlar o'tkazishi kerak.
-
-Bu ochiq protsess mezoni M5.01 boshlanishi yoki davom etishini bloklamaydi.
+Mazmuniy discovery yakunlangan. Yozma savol-javoblarning har biri 30-40
+daqiqalik suhbatga teng bo'lgani tasdiqlanmagan, shuning uchun bu hujjat
+intervyu davomiyligini dalil sifatida da'vo qilmaydi. M6.00 dispositioniga
+ko'ra mavjud yozma discovery M6 scope qarorlarini boshlash uchun yetarli deb
+qabul qilindi va davomiylik mezoni M6 delivery blocker sifatida olib tashlandi.

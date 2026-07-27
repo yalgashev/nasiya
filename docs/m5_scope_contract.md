@@ -61,8 +61,8 @@
 | Staff onboarding transporti | 11-qaror: faqat mavjud authenticated user canonical phone orqali ulanadi; invitation/account creation keyinga qoladi. |
 | Shop settings va boshlang'ich owner oqimi | 12-qaror: M5da settings yo'q; mavjud M2 user production-guarded CLI orqali owner qilinadi. |
 | Discoverydagi managerga talab yo'qligi | CR-M5-01 yopilgan: TT bilan mos role qiymati saqlanadi, lekin M5da manager-specific owner permission yaratilmaydi. |
-| Badal, minimal/ortiqcha qisman to'lov semantikasi | 4-6-qarorlar M6 debt/payment implementatsiyasi uchun muzlatilgan; CR-M6-01 va CR-M6-02 orqali TTga kiritiladi. |
-| Clawback bekor qilish actor vakolati | 7-qarorning actor tafsiloti CR-M6-03 sifatida PRE-M6 PRODUCT GATEgacha ochiq. |
+| Badal, minimal/ortiqcha qisman to'lov semantikasi | 4-6-qarorlar M6 debt/payment implementatsiyasi uchun muzlatilgan; CR-M6-01 va CR-M6-02 M6.00da TTga kiritildi. |
+| Clawback bekor qilish actor vakolati | 7-qarorning actor tafsiloti CR-M6-03 orqali M6.00da yopildi: shop owneri yoki platforma admini, sabab va audit majburiy. |
 
 ## 3. M5.03 real repository konvensiyalari
 
@@ -179,3 +179,6 @@ alohida.
 | M5 TECHNICAL GREEN | M5 artefaktlari implementatsiya qilingan; migration bitta Alembic head beradi; test DB guard saqlangan; M5 testlari va mavjud regression testlar o'tgan; `git status --short` toza; M5 scope contractga zid code path yo'q. |
 | M5 REMOTE GREEN | M5 TECHNICAL GREEN commit qilingan va `origin/main` bilan sinxron; remote divergence `0 behind / 0 ahead`; remote CI/checklar mavjud bo'lsa yashil; M5 closeout commit logda ko'rinadi. |
 | PRE-M6 PRODUCT GATE | M5.00 discovery acceptance holati PO tomonidan yopilgan; M6 shop settings, debt/payment, overpayment, badal va clawback reversal CR/TT aniqlashtirishlari hal qilingan; M5 scope tashqarisidagi ish M6 scopega qayta kiritilgan yoki alohida qoldirilgan. |
+
+M6.00 disposition: PRE-M6 PRODUCT GATE `docs/m6_scope_contract.md` orqali
+2026-07-27 sanasida yopildi.

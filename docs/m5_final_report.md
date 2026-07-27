@@ -151,9 +151,11 @@ failure yoki yangi M5 regressiyasi emas.
 - Shop settings: credit limit, discount, default due date va boshqa M6 prerequisite maydonlari.
 - Debt/payment, badal, overpayment, due-date formasi va clawback reversal.
 - PWA/service worker/offline shell.
-- Manager-specific settings yoki owner vakolati.
-- PRE-M6 CR-M6-01, CR-M6-02 va CR-M6-03 TT/PO dispositionlari.
-- M5.00dagi har bir owner suhbati 30-40 daqiqa bo'lganini tasdiqlash process mezoni.
+- Manager-specific settings yoki owner vakolati; M6.00da ham scope tashqarisida
+  qoldi.
+
+PRE-M6 CR-M6-01, CR-M6-02, CR-M6-03 va discovery acceptance dispositionlari
+M6.00da yopildi; keyingi implementation contracti `docs/m6_scope_contract.md`.
 
 ## 8. Local validation dalillari
 
