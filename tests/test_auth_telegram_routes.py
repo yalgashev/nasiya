@@ -2,6 +2,7 @@ import re
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from html import unescape
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.dependencies.models import Dependant
@@ -15,6 +16,7 @@ from app.auth.csrf import get_csrf_token
 from app.auth.deps import get_current_time, validate_csrf
 from app.auth.error_codes import ErrorCode
 from app.auth.models import AuthRateLimit, User
+from app.auth.models import Session as AuthSession
 from app.auth.service import create_user
 from app.auth.sessions import CreatedSession, create_authenticated_session
 from app.db import create_database_session_factory
@@ -23,9 +25,17 @@ from app.security_headers import AUTH_NO_STORE_CACHE_CONTROL, CONTENT_SECURITY_P
 from app.settings import Settings
 from app.shop.context import resolve_current_shop
 from app.shop.dependencies import require_shop_owner, require_shop_staff
+from app.shop.enums import ShopRole, ShopStatus
+from app.shop.models import Shop, ShopStaff
+from app.telegram.bot_api import TelegramMessageEnvelope, TelegramUpdateEnvelope
 from app.telegram.models import TelegramLink, TelegramLinkEvent, TelegramLinkToken
+from app.telegram.polling_repository import load_or_create_polling_state
 from app.telegram.service import TELEGRAM_LINK_TOKEN_TTL_SECONDS
 from app.telegram.token import RawTelegramLinkToken, hash_telegram_link_token
+from app.telegram.update_processing import (
+    TelegramUpdateOutcomeCode,
+    process_telegram_update_tx_a,
+)
 
 TEST_RATE_LIMIT_HMAC_KEY = "test-rate-limit-hmac-key-for-auth-telegram-routes"
 TEST_CLIENT_HOST = "203.0.113.45"
@@ -195,6 +205,12 @@ def extract_start_token(html: str) -> str:
     return match.group("token")
 
 
+def extract_attempt_id(html: str) -> UUID:
+    match = re.search(r'data-attempt-id="(?P<attempt_id>[0-9a-f-]{36})"', html)
+    assert match is not None
+    return UUID(match.group("attempt_id"))
+
+
 def assert_auth_security_headers(response) -> None:
     assert response.headers["cache-control"] == AUTH_NO_STORE_CACHE_CONTROL
     assert response.headers["content-security-policy"] == CONTENT_SECURITY_POLICY
@@ -247,6 +263,7 @@ def test_telegram_routes_are_account_scoped_and_csrf_protected(
 
     assert route_paths == {
         "/auth/telegram",
+        "/auth/telegram/attempts/{attempt_id}/status",
         "/auth/telegram/status",
         "/auth/telegram/link-token",
         "/auth/telegram/relink-token",
@@ -272,6 +289,23 @@ def test_get_telegram_page_requires_authenticated_account_session(
     client, _settings = make_client(m2_test_database, now)
 
     response = client.get("/auth/telegram", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/auth/login"
+    assert response.headers["x-error-code"] == ErrorCode.UNAUTHORIZED.value
+    assert_auth_security_headers(response)
+
+
+def test_get_telegram_attempt_status_requires_authenticated_account_session(
+    m2_test_database: Engine,
+) -> None:
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=UTC)
+    client, _settings = make_client(m2_test_database, now)
+
+    response = client.get(
+        f"/auth/telegram/attempts/{uuid4()}/status",
+        follow_redirects=False,
+    )
 
     assert response.status_code == 303
     assert response.headers["location"] == "/auth/login"
@@ -495,3 +529,274 @@ def test_relink_and_unlink_use_current_account_only(
         select(TelegramLinkEvent.action).where(TelegramLinkEvent.user_id == user.id)
     ).all()
     assert event_actions == ["unlinked"]
+
+
+def test_non_htmx_issue_is_repeatable_mutation_free_prg(
+    m2_test_database: Engine,
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=UTC)
+    client, _settings, _user, created = create_logged_in_client(
+        m2_test_database,
+        db_session,
+        now,
+    )
+
+    for _attempt in range(2):
+        response = client.post(
+            "/auth/telegram/link-token",
+            data={"csrf_token": csrf_token(created)},
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 303
+        assert response.headers["location"] == (
+            "/auth/telegram?notice=javascript_required"
+        )
+        assert_auth_security_headers(response)
+
+    assert count_table(db_session, TelegramLinkToken) == 0
+    assert count_table(db_session, AuthRateLimit) == 0
+
+
+def test_forged_htmx_header_does_not_bypass_auth_or_csrf(
+    m2_test_database: Engine,
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=UTC)
+    anonymous_client, _settings = make_client(m2_test_database, now)
+
+    anonymous_response = anonymous_client.post(
+        "/auth/telegram/link-token",
+        data={"csrf_token": "forged"},
+        headers={"HX-Request": "true"},
+    )
+
+    assert anonymous_response.status_code == 403
+    assert anonymous_response.headers["x-error-code"] == ErrorCode.CSRF_FAILED.value
+    assert_auth_security_headers(anonymous_response)
+
+    client, _settings, _user, _created = create_logged_in_client(
+        m2_test_database,
+        db_session,
+        now,
+    )
+    csrf_response = client.post(
+        "/auth/telegram/link-token",
+        data={"csrf_token": "forged"},
+        headers={"HX-Request": "true"},
+    )
+
+    assert csrf_response.status_code == 403
+    assert csrf_response.headers["x-error-code"] == ErrorCode.CSRF_FAILED.value
+    assert count_table(db_session, TelegramLinkToken) == 0
+
+
+def test_one_time_reveal_has_attempt_polling_and_history_fences(
+    m2_test_database: Engine,
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=UTC)
+    client, _settings, _user, created = create_logged_in_client(
+        m2_test_database,
+        db_session,
+        now,
+    )
+
+    page_response = client.get("/auth/telegram")
+    response = client.post(
+        "/auth/telegram/link-token",
+        data={"csrf_token": csrf_token(created)},
+        headers={"HX-Request": "true"},
+    )
+
+    raw_token = extract_start_token(response.text)
+    attempt_id = extract_attempt_id(response.text)
+    assert response.text.count(raw_token) == 1
+    assert response.headers["hx-push-url"] == "false"
+    assert 'hx-history="false"' in response.text
+    assert f'hx-get="/auth/telegram/attempts/{attempt_id}/status"' in response.text
+    assert 'hx-trigger="load delay:3s"' in response.text
+    assert "localStorage" not in response.text
+    assert "sessionStorage" not in response.text
+    assert "<script" not in response.text
+    assert raw_token not in str(response.request.url)
+    assert "/static/vendor/htmx-2.0.4.min.js" in page_response.text
+
+
+def test_attempt_polling_handles_supersession_link_and_foreign_uuid(
+    m2_test_database: Engine,
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=UTC)
+    client, _settings, user, created = create_logged_in_client(
+        m2_test_database,
+        db_session,
+        now,
+    )
+    issue_headers = {"HX-Request": "true"}
+
+    first_response = client.post(
+        "/auth/telegram/link-token",
+        data={"csrf_token": csrf_token(created)},
+        headers=issue_headers,
+    )
+    first_attempt_id = extract_attempt_id(first_response.text)
+    second_response = client.post(
+        "/auth/telegram/link-token",
+        data={"csrf_token": csrf_token(created)},
+        headers=issue_headers,
+    )
+    second_attempt_id = extract_attempt_id(second_response.text)
+    second_raw_token = extract_start_token(second_response.text)
+
+    superseded_response = client.get(
+        f"/auth/telegram/attempts/{first_attempt_id}/status"
+    )
+    waiting_response = client.get(f"/auth/telegram/attempts/{second_attempt_id}/status")
+
+    assert 'data-telegram-attempt-status="SUPERSEDED"' in superseded_response.text
+    assert superseded_response.headers["hx-retarget"] == "#telegram-link-reveal"
+    assert superseded_response.headers["hx-reswap"] == "innerHTML"
+    assert "hx-get" not in superseded_response.text
+    assert 'data-telegram-attempt-status="WAITING"' in waiting_response.text
+    assert 'hx-trigger="every 3s"' in waiting_response.text
+    assert "hx-retarget" not in waiting_response.headers
+    assert second_raw_token not in waiting_response.text
+
+    session_factory = create_database_session_factory(m2_test_database)
+    with session_factory.begin() as worker_session:
+        load_or_create_polling_state(worker_session)
+    worker_result = process_telegram_update_tx_a(
+        session_factory,
+        update=TelegramUpdateEnvelope(
+            update_id=700,
+            message=TelegramMessageEnvelope(
+                chat_id=9_900_200,
+                chat_type="private",
+                text=f"/start {second_raw_token}",
+                structurally_valid=True,
+            ),
+        ),
+        now=now,
+    )
+    assert worker_result.outcome is TelegramUpdateOutcomeCode.LINKED
+
+    for attempt_id in (first_attempt_id, second_attempt_id):
+        linked_response = client.get(f"/auth/telegram/attempts/{attempt_id}/status")
+        assert 'data-telegram-attempt-status="LINKED"' in linked_response.text
+        assert "hx-get" not in linked_response.text
+        assert linked_response.headers["hx-retarget"] == "#telegram-link-reveal"
+
+    foreign_user = commit_user(db_session, "+998901234599")
+    foreign_token = TelegramLinkToken(
+        user_id=foreign_user.id,
+        token_hash="f" * 64,
+        created_at=now,
+        expires_at=now + timedelta(minutes=10),
+    )
+    db_session.add(foreign_token)
+    db_session.commit()
+
+    foreign_response = client.get(f"/auth/telegram/attempts/{foreign_token.id}/status")
+    unknown_response = client.get(f"/auth/telegram/attempts/{uuid4()}/status")
+
+    for unavailable_response in (foreign_response, unknown_response):
+        assert 'data-telegram-attempt-status="UNAVAILABLE"' in unavailable_response.text
+        assert str(user.id) not in unavailable_response.text
+        assert user.phone not in unavailable_response.text
+        assert "hx-get" not in unavailable_response.text
+    assert foreign_response.text == unknown_response.text
+
+    malformed_response = client.get("/auth/telegram/attempts/not-a-uuid/status")
+    assert malformed_response.status_code == 200
+    assert malformed_response.text == unknown_response.text
+    assert_auth_security_headers(malformed_response)
+
+
+def test_telegram_account_flow_ignores_active_suspended_and_revoked_shop(
+    m2_test_database: Engine,
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=UTC)
+    client, _settings, user, created = create_logged_in_client(
+        m2_test_database,
+        db_session,
+        now,
+    )
+    shop = Shop(
+        name="Telegram Isolation Shop",
+        phone="+998907770001",
+        status=ShopStatus.ACTIVE.value,
+    )
+    db_session.add(shop)
+    db_session.flush()
+    staff = ShopStaff(
+        shop_id=shop.id,
+        user_id=user.id,
+        role=ShopRole.CASHIER.value,
+    )
+    db_session.add(staff)
+    auth_session = db_session.get(AuthSession, created.session.id)
+    assert auth_session is not None
+    auth_session.active_shop_id = shop.id
+    db_session.commit()
+
+    for expected_status in (
+        ShopStatus.ACTIVE.value,
+        ShopStatus.SUSPENDED.value,
+    ):
+        shop.status = expected_status
+        db_session.commit()
+        response = client.get("/auth/telegram")
+        assert response.status_code == 200
+        assert "Bog'lanmagan" in unescape(response.text)
+        db_session.expire_all()
+        stored_session = db_session.get(AuthSession, created.session.id)
+        assert stored_session is not None
+        assert stored_session.active_shop_id == shop.id
+
+    staff = db_session.get(ShopStaff, staff.id)
+    assert staff is not None
+    staff.is_active = False
+    staff.revoked_at = now
+    db_session.commit()
+
+    revoked_response = client.get("/auth/telegram")
+    assert revoked_response.status_code == 200
+    db_session.expire_all()
+    stored_session = db_session.get(AuthSession, created.session.id)
+    assert stored_session is not None
+    assert stored_session.active_shop_id == shop.id
+
+
+def test_telegram_page_and_attempt_status_support_russian(
+    m2_test_database: Engine,
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=UTC)
+    client, _settings, _user, created = create_logged_in_client(
+        m2_test_database,
+        db_session,
+        now,
+    )
+    language_headers = {"Accept-Language": "ru-RU,uz;q=0.8"}
+
+    page_response = client.get("/auth/telegram", headers=language_headers)
+    issue_response = client.post(
+        "/auth/telegram/link-token",
+        data={"csrf_token": csrf_token(created)},
+        headers={**language_headers, "HX-Request": "true"},
+    )
+    attempt_id = extract_attempt_id(issue_response.text)
+    status_response = client.get(
+        f"/auth/telegram/attempts/{attempt_id}/status",
+        headers=language_headers,
+    )
+
+    assert '<html lang="ru">' in page_response.text
+    assert "Не подключен" in page_response.text
+    assert "Открыть в Telegram" in issue_response.text
+    assert "Ожидаем подтверждение в Telegram." in status_response.text
+    for response in (page_response, issue_response, status_response):
+        assert_auth_security_headers(response)

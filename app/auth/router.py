@@ -57,6 +57,14 @@ from app.telegram.service import (
 )
 from app.telegram.service import unlink as unlink_telegram
 from app.telegram.token import build_telegram_start_link
+from app.telegram.web_presentation import (
+    TELEGRAM_ATTEMPT_POLL_INTERVAL_SECONDS,
+    TelegramLinkAttemptPresentation,
+    TelegramWebLanguage,
+    get_link_attempt_presentation,
+    get_telegram_web_copy,
+    resolve_telegram_web_language,
+)
 
 TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates"
 LOGIN_FAILED_MESSAGE = "Telefon raqam yoki parol noto'g'ri."
@@ -271,6 +279,7 @@ def telegram_page(
 
 @router.get("/telegram/status", response_class=HTMLResponse, response_model=None)
 def telegram_status(
+    request: Request,
     db: Annotated[
         DatabaseSession,
         Depends(get_database_session, scope="function"),
@@ -287,7 +296,57 @@ def telegram_status(
         return _redirect_auth_login(context, settings)
 
     link_status = get_link_status(db, user)
-    response = HTMLResponse(_render_telegram_status_fragment(link_status))
+    language = _telegram_web_language(request)
+    response = HTMLResponse(
+        _render_telegram_status_fragment(link_status, language=language)
+    )
+    return mark_auth_response_no_store(response)
+
+
+@router.get(
+    "/telegram/attempts/{attempt_id}/status",
+    response_class=HTMLResponse,
+    response_model=None,
+)
+def telegram_attempt_status(
+    request: Request,
+    attempt_id: str,
+    db: Annotated[
+        DatabaseSession,
+        Depends(get_database_session, scope="function"),
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+    now: Annotated[datetime, Depends(get_current_time)],
+    context: Annotated[
+        CurrentSessionContext,
+        Depends(get_current_session_context),
+    ],
+) -> Response:
+    try:
+        user = require_user(context)
+    except LoginRequired:
+        return _redirect_auth_login(context, settings)
+
+    try:
+        parsed_attempt_id = UUID(attempt_id)
+    except ValueError:
+        parsed_attempt_id = None
+    presentation = (
+        get_link_attempt_presentation(db, user, parsed_attempt_id, now)
+        if parsed_attempt_id is not None
+        else TelegramLinkAttemptPresentation.UNAVAILABLE
+    )
+    language = _telegram_web_language(request)
+    response = HTMLResponse(
+        _render_telegram_attempt_status_fragment(
+            parsed_attempt_id,
+            presentation,
+            language=language,
+        )
+    )
+    if presentation.is_terminal:
+        response.headers["HX-Retarget"] = "#telegram-link-reveal"
+        response.headers["HX-Reswap"] = "innerHTML"
     return mark_auth_response_no_store(response)
 
 
@@ -311,6 +370,9 @@ def issue_telegram_link_token(
         user = require_user(context)
     except LoginRequired:
         return _redirect_auth_login(context, settings)
+
+    if not _is_htmx_request(request):
+        return _redirect_telegram_javascript_required()
 
     try:
         client_ip = resolve_client_ip(request, settings)
@@ -341,6 +403,7 @@ def issue_telegram_link_token(
     return _render_telegram_reveal_response(
         request,
         start_link.as_delivery_url(),
+        attempt_id=issued.token.id,
         action="link",
     )
 
@@ -365,6 +428,9 @@ def issue_telegram_relink_token(
         user = require_user(context)
     except LoginRequired:
         return _redirect_auth_login(context, settings)
+
+    if not _is_htmx_request(request):
+        return _redirect_telegram_javascript_required()
 
     try:
         client_ip = resolve_client_ip(request, settings)
@@ -395,6 +461,7 @@ def issue_telegram_relink_token(
     return _render_telegram_reveal_response(
         request,
         start_link.as_delivery_url(),
+        attempt_id=issued.token.id,
         action="relink",
     )
 
@@ -650,28 +717,47 @@ def _render_telegram_page(
     notice_key: str | None = None,
 ) -> Response:
     link_status = get_link_status(db, user)
+    language = _telegram_web_language(request)
+    copy = get_telegram_web_copy(language)
     return templates.TemplateResponse(
         request,
         "auth/telegram.html",
         with_csrf_context(
             {
                 "bot_configured": settings.telegram_bot_username is not None,
-                "error_message": _telegram_error_message(error_key),
+                "copy": copy,
+                "error_message": _telegram_error_message(
+                    error_key,
+                    language=language,
+                ),
                 "is_linked": link_status is TelegramLinkStatus.LINKED,
-                "notice_message": _telegram_notice_message(notice_key),
-                "status_label": _telegram_status_label(link_status),
+                "notice_message": _telegram_notice_message(
+                    notice_key,
+                    language=language,
+                ),
+                "page_language": language.value,
+                "status_label": _telegram_status_label(
+                    link_status,
+                    language=language,
+                ),
             },
             context.get_session_row(),
         ),
     )
 
 
-def _render_telegram_status_fragment(link_status: TelegramLinkStatus) -> str:
+def _render_telegram_status_fragment(
+    link_status: TelegramLinkStatus,
+    *,
+    language: TelegramWebLanguage,
+) -> str:
     status_value = escape(link_status.value)
-    status_label = escape(_telegram_status_label(link_status))
+    copy = get_telegram_web_copy(language)
+    status_label = escape(_telegram_status_label(link_status, language=language))
     return (
-        f'<div data-telegram-link-status="{status_value}">'
-        f"Telegram holati: {status_label}"
+        f'<div role="status" aria-live="polite" '
+        f'data-telegram-link-status="{status_value}">'
+        f"{escape(copy['status_heading'])}: {status_label}"
         "</div>"
     )
 
@@ -680,32 +766,91 @@ def _render_telegram_reveal_response(
     request: Request,
     start_link_url: str,
     *,
+    attempt_id: UUID,
     action: str,
 ) -> Response:
-    fragment = _render_telegram_reveal_fragment(start_link_url, action=action)
+    language = _telegram_web_language(request)
+    fragment = _render_telegram_reveal_fragment(
+        start_link_url,
+        attempt_id=attempt_id,
+        action=action,
+        language=language,
+    )
     response = HTMLResponse(fragment)
     response.headers["X-Telegram-Link-Reveal"] = "one-time"
+    response.headers["HX-Push-Url"] = "false"
     return mark_auth_response_no_store(response)
 
 
-def _render_telegram_reveal_fragment(start_link_url: str, *, action: str) -> str:
+def _render_telegram_reveal_fragment(
+    start_link_url: str,
+    *,
+    attempt_id: UUID,
+    action: str,
+    language: TelegramWebLanguage,
+) -> str:
+    copy = get_telegram_web_copy(language)
     escaped_url = escape(start_link_url, quote=True)
-    title = "Telegram havolasi"
-    hint = (
-        "Telegramda qayta bog'lashni tasdiqlang."
-        if action == "relink"
-        else "Telegramda bog'lashni tasdiqlang."
-    )
+    escaped_attempt_id = escape(str(attempt_id), quote=True)
+    status_url = f"{TELEGRAM_PATH}/attempts/{escaped_attempt_id}/status"
+    hint_key = "relink_hint" if action == "relink" else "link_hint"
     return (
         '<section aria-labelledby="telegram-reveal-heading" '
-        'data-telegram-link-reveal="one-time">'
-        f'<h2 id="telegram-reveal-heading">{title}</h2>'
-        f'<p><a href="{escaped_url}" rel="noopener noreferrer">'
-        "Telegramda ochish"
+        'data-telegram-link-reveal="one-time" hx-history="false">'
+        f'<h2 id="telegram-reveal-heading">{escape(copy["reveal_heading"])}</h2>'
+        f'<p><a class="telegram-open-link" href="{escaped_url}" '
+        'rel="noopener noreferrer">'
+        f"{escape(copy['open_telegram'])}"
         "</a></p>"
-        f"<p>{escape(hint)}</p>"
+        f"<p>{escape(copy[hint_key])}</p>"
+        f'<div id="telegram-attempt-status-{escaped_attempt_id}" '
+        'role="status" aria-live="polite" '
+        f'data-attempt-id="{escaped_attempt_id}" '
+        'data-telegram-attempt-status="WAITING" '
+        f'hx-get="{status_url}" '
+        f'hx-trigger="load delay:{TELEGRAM_ATTEMPT_POLL_INTERVAL_SECONDS}s" '
+        'hx-swap="outerHTML">'
+        f"{escape(copy['waiting'])}"
+        f'<span class="telegram-loading" aria-hidden="true">'
+        f"{escape(copy['loading'])}</span>"
+        "</div>"
         "</section>"
     )
+
+
+def _render_telegram_attempt_status_fragment(
+    attempt_id: UUID | None,
+    presentation: TelegramLinkAttemptPresentation,
+    *,
+    language: TelegramWebLanguage,
+) -> str:
+    copy = get_telegram_web_copy(language)
+    status_copy_key = {
+        TelegramLinkAttemptPresentation.WAITING: "waiting",
+        TelegramLinkAttemptPresentation.LINKED: "attempt_linked",
+        TelegramLinkAttemptPresentation.SUPERSEDED: "superseded",
+        TelegramLinkAttemptPresentation.EXPIRED: "expired",
+        TelegramLinkAttemptPresentation.UNAVAILABLE: "attempt_unavailable",
+    }[presentation]
+    escaped_status = escape(presentation.value, quote=True)
+    attributes = (
+        'role="status" aria-live="polite" '
+        f'data-telegram-attempt-status="{escaped_status}"'
+    )
+    if presentation is TelegramLinkAttemptPresentation.WAITING:
+        if attempt_id is None:
+            raise ValueError("WAITING presentation requires an owned attempt UUID")
+        escaped_attempt_id = escape(str(attempt_id), quote=True)
+        status_url = f"{TELEGRAM_PATH}/attempts/{escaped_attempt_id}/status"
+        attributes = (
+            f'id="telegram-attempt-status-{escaped_attempt_id}" '
+            f"{attributes} "
+            f'data-attempt-id="{escaped_attempt_id}"'
+            f' hx-get="{status_url}"'
+            f' hx-trigger="every {TELEGRAM_ATTEMPT_POLL_INTERVAL_SECONDS}s"'
+            ' hx-swap="outerHTML"'
+        )
+    return f"<div {attributes}>{escape(copy[status_copy_key])}</div>"
 
 
 def _render_telegram_issue_error(
@@ -726,7 +871,8 @@ def _render_telegram_public_error(
     error_key: str,
 ) -> Response:
     if _is_htmx_request(request):
-        message = _telegram_error_message(error_key)
+        language = _telegram_web_language(request)
+        message = _telegram_error_message(error_key, language=language)
         if message is None:
             public_error = get_public_error_body(error_code)
             message = public_error["message"]
@@ -749,10 +895,15 @@ def _render_telegram_error_fragment(message: str) -> str:
     return f'<div role="alert">{escape(message)}</div>'
 
 
-def _telegram_status_label(link_status: TelegramLinkStatus) -> str:
+def _telegram_status_label(
+    link_status: TelegramLinkStatus,
+    *,
+    language: TelegramWebLanguage,
+) -> str:
+    copy = get_telegram_web_copy(language)
     return {
-        TelegramLinkStatus.LINKED: "Bog'langan",
-        TelegramLinkStatus.UNLINKED: "Bog'lanmagan",
+        TelegramLinkStatus.LINKED: copy["linked"],
+        TelegramLinkStatus.UNLINKED: copy["unlinked"],
     }[link_status]
 
 
@@ -760,23 +911,54 @@ def _telegram_error_key(error_code: ErrorCode) -> str:
     return error_code.value.casefold()
 
 
-def _telegram_error_message(error_key: str | None) -> str | None:
+def _telegram_error_message(
+    error_key: str | None,
+    *,
+    language: TelegramWebLanguage,
+) -> str | None:
     if error_key is None:
         return None
+    copy = get_telegram_web_copy(language)
     if error_key == "bot_unavailable":
-        return "Telegram bot havolasi hali sozlanmagan."
+        return copy["bot_config_error"]
     if error_key == "client_ip":
-        return "Telegram bog'lashni hozir boshlash mumkin emas."
+        return copy["client_ip_error"]
+    mapped_key = {
+        ErrorCode.RATE_LIMITED.value.casefold(): "rate_limited",
+        ErrorCode.TELEGRAM_ALREADY_LINKED.value.casefold(): "already_linked",
+        ErrorCode.TELEGRAM_NOT_LINKED.value.casefold(): "not_linked",
+    }.get(error_key)
+    if mapped_key is not None:
+        return copy[mapped_key]
     try:
         return get_public_error_body(ErrorCode(error_key.upper()))["message"]
     except ValueError:
-        return "So'rov bajarilmadi."
+        return copy["request_failed"]
 
 
-def _telegram_notice_message(notice_key: str | None) -> str | None:
+def _telegram_notice_message(
+    notice_key: str | None,
+    *,
+    language: TelegramWebLanguage,
+) -> str | None:
+    copy = get_telegram_web_copy(language)
     if notice_key == "unlinked":
-        return "Telegram bog'lanishi uzildi."
+        return copy["unlinked_notice"]
+    if notice_key == "javascript_required":
+        return copy["javascript_required"]
     return None
+
+
+def _telegram_web_language(request: Request) -> TelegramWebLanguage:
+    return resolve_telegram_web_language(request.headers.get("accept-language"))
+
+
+def _redirect_telegram_javascript_required() -> Response:
+    response = RedirectResponse(
+        f"{TELEGRAM_PATH}?notice=javascript_required",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+    return mark_auth_response_no_store(response)
 
 
 def _is_htmx_request(request: Request) -> bool:

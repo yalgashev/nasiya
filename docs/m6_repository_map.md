@@ -64,6 +64,10 @@ solutions from `docs/m6_decisions.md`.
 | Per-update worker bridge | `app/telegram/update_processing.py` `TelegramUpdateProcessor`; default processor selected by `app/telegram/worker.py` `run_worker` |
 | Post-commit reply delivery | `app/telegram/bot_reply.py` `deliver_bot_reply_best_effort`; called by the default worker processor only after TX-A returns committed |
 | Narrow localization catalog | `app/telegram/bot_reply.py` `render_bot_reply`; Uzbek Latin default and Russian `ru*` mapping, with one privacy-safe failure group |
+| Account web route owner | `app/auth/router.py` `telegram_page`, `issue_telegram_link_token`, `issue_telegram_relink_token`, and `telegram_attempt_status`; request-owned transaction, auth/CSRF/no-store, no shop dependency |
+| Attempt presentation | `app/telegram/web_presentation.py` `get_link_attempt_presentation`; owned UUID mapping to `WAITING`, `LINKED`, `SUPERSEDED`, `EXPIRED`, or `UNAVAILABLE` |
+| Web localization | `app/telegram/web_presentation.py` `resolve_telegram_web_language` and `get_telegram_web_copy`; bounded Uzbek Latin/Russian catalog |
+| One-time browser reveal | `app/templates/auth/telegram.html`, `app/static/vendor/htmx-2.0.4.min.js`, and router fragment renderers; local script, `hx-history=false`, no push URL/storage/CDN |
 
 ## 4. Shop Context Boundary
 
@@ -133,7 +137,7 @@ solutions from `docs/m6_decisions.md`.
 | Runtime external HTTP client | `TOPILMADI` | Promote approved locked `httpx 0.28.1` to runtime at M6.12; use a narrow injected async transport adapter. |
 | QR encoder | `TOPILMADI` | Add approved `segno 1.6.6` at M6.56 and render in-memory PNG of the same one-time deep-link. |
 | i18n framework | No generic framework was needed; implemented narrow immutable catalog in `app/telegram/bot_reply.py`. | Uzbek Latin and Russian bot replies only; no Babel/gettext subsystem. |
-| HTMX polling | `TOPILMADI` | Add a bounded account-scoped status fragment poller that stops on terminal/expiry; no WebSocket/SPA. |
+| HTMX polling | `app/static/vendor/htmx-2.0.4.min.js`; `app/auth/router.py` `telegram_attempt_status`; contract route `GET /auth/telegram/attempts/{attempt_id}/status` with a `3s` interval. | Account-owned status fragment polls only in `WAITING`, terminal responses retarget the reveal contents, and no WebSocket/SPA is used. |
 | Worker service | Implemented in `app/telegram/worker.py`: `main`, `run_worker`, `run_polling_loop`, and `ShutdownController`; `compose.yaml` service `telegram-worker` reuses the web image. | Dedicated command, one replica, process-owned engine/client, per-operation sessions, signal-aware cleanup, and no web-process thread. |
 | Worker healthcheck/restart policy | Implemented by `worker_health_is_fresh`, `run_healthcheck_command`, polling heartbeat task, and `compose.yaml` worker lifecycle values. | PostgreSQL readiness/heartbeat CLI; `unless-stopped`, stop grace `45s`, heartbeat `10s`, freshness `60s`. |
 | Advisory lock | Implemented in `app/telegram/worker_lock.py`: `TELEGRAM_POLLER_ADVISORY_LOCK_KEY`, `TelegramPollingLock`, and `acquire_telegram_polling_lock`. | Stable non-secret 64-bit key, dedicated connection, bounded `pg_try_advisory_lock` for `60s` at `1s` intervals. |

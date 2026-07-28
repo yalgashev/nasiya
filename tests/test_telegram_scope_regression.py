@@ -178,6 +178,7 @@ def test_no_production_telegram_route_webhook_callback_or_public_csrf_bypass(
     route_paths = {route.path_format for route in routes}
     allowed_auth_telegram_paths = {
         "/auth/telegram",
+        "/auth/telegram/attempts/{attempt_id}/status",
         "/auth/telegram/status",
         "/auth/telegram/link-token",
         "/auth/telegram/relink-token",

@@ -1,23 +1,27 @@
 {% extends "base.html" %}
 
-{% block title %}Telegram - Nasiya{% endblock %}
+{% block title %}{{ copy.page_title }} - Nasiya{% endblock %}
+
+{% block head %}
+<script src="{{ url_for('static', path='vendor/htmx-2.0.4.min.js') }}" defer></script>
+{% endblock %}
 
 {% block content %}
 <main class="telegram-page">
-    <h1>Telegram</h1>
+    <h1>{{ copy.page_title }}</h1>
     {% if error_message %}
     <div role="alert">{{ error_message }}</div>
     {% endif %}
     {% if notice_message %}
-    <p class="customer-status">{{ notice_message }}</p>
+    <p class="telegram-notice" role="status">{{ notice_message }}</p>
     {% endif %}
     <section aria-labelledby="telegram-status-heading">
-        <h2 id="telegram-status-heading">Holat</h2>
-        <p>{{ status_label }}</p>
+        <h2 id="telegram-status-heading">{{ copy.status_heading }}</h2>
+        <p class="telegram-account-status" role="status">{{ status_label }}</p>
     </section>
     {% if bot_configured %}
     <section aria-labelledby="telegram-actions-heading">
-        <h2 id="telegram-actions-heading">Amallar</h2>
+        <h2 id="telegram-actions-heading">{{ copy.actions_heading }}</h2>
         <div id="telegram-link-reveal" aria-live="polite"></div>
         {% if is_linked %}
         <form
@@ -26,13 +30,15 @@
             hx-post="/auth/telegram/relink-token"
             hx-target="#telegram-link-reveal"
             hx-swap="innerHTML"
+            hx-disabled-elt="find button"
         >
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button type="submit">Qayta bog'lash havolasini olish</button>
+            <button type="submit">{{ copy.reissue }}</button>
+            <span class="htmx-indicator" role="status">{{ copy.loading }}</span>
         </form>
         <form method="post" action="/auth/telegram/unlink">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button class="button-danger" type="submit">Telegramni uzish</button>
+            <button class="button-danger" type="submit">{{ copy.unlink }}</button>
         </form>
         {% else %}
         <form
@@ -41,20 +47,23 @@
             hx-post="/auth/telegram/link-token"
             hx-target="#telegram-link-reveal"
             hx-swap="innerHTML"
+            hx-disabled-elt="find button"
         >
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button type="submit">Bog'lash havolasini olish</button>
+            <button type="submit">{{ copy.issue }}</button>
+            <span class="htmx-indicator" role="status">{{ copy.loading }}</span>
         </form>
         {% endif %}
+        <p class="telegram-privacy-guidance">{{ copy.privacy_guidance }}</p>
     </section>
     {% else %}
     <section aria-labelledby="telegram-unavailable-heading">
-        <h2 id="telegram-unavailable-heading">Hozircha mavjud emas</h2>
-        <p>Telegram bog'lash havolasi sozlanmagan.</p>
+        <h2 id="telegram-unavailable-heading">{{ copy.unavailable_heading }}</h2>
+        <p>{{ copy.bot_unavailable }}</p>
     </section>
     {% endif %}
     <nav aria-label="Hisob navigatsiyasi">
-        <a href="/auth/account">Hisobga qaytish</a>
+        <a href="/auth/account">{{ copy.back }}</a>
     </nav>
 </main>
 {% endblock %}

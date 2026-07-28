@@ -67,6 +67,11 @@ Approved production dependencies:
   production/stable, BSD licensed, pure Python, dependency-free, and supports
   local in-memory PNG generation. M6 uses PNG only, with no external QR API,
   temp file, Pillow, SVG active content, or JavaScript encoder.
+- Browser enhancement: locally vendored `htmx 2.0.4`, Zero-Clause BSD,
+  checksum
+  `e209dda5c8235479f3166defc7750e1dbcd5a5c1808b7792fc2e6733768fb447`.
+  It is served from the application origin so the linking flow has no CDN,
+  external-resource, or relaxed-CSP requirement.
 
 ## 6. CI And Deployment Decisions
 
@@ -89,3 +94,6 @@ Approved production dependencies:
   interval `15s`, timeout `5s`, retries `3`, start period `20s`.
 - Web `/health` remains independent of worker health and web starts without the
   bot token. Worker fails closed when the token is absent or empty.
+- Account-page attempt status uses a fixed `3s` HTMX polling interval. Only
+  `WAITING` continues polling; every other presentation state is terminal and
+  removes the one-time reveal container contents.

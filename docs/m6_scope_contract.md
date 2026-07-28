@@ -93,18 +93,28 @@ replace the current Production Telegram Linking capability.
 
 ## 6. Route And UX Contract
 
-| Route family | Scope | Required behavior |
-| --- | --- | --- |
-| `GET /auth/telegram/status` | Account scoped | Returns current user's `LINKED` or `UNLINKED` state. No shop context. |
-| `POST /auth/telegram/link-token` | Account scoped | Issues first-link token only when user is unlinked. CSRF required. Rate-limited. |
-| `POST /auth/telegram/relink-token` | Account scoped | Requires current-password re-auth, then issues a one-time relink token. CSRF required and rate-limited. |
-| `POST /auth/telegram/unlink` | Account scoped | Requires current-password re-auth, CSRF, and a fresh authenticated session before unlinking. |
+The exact M6 route table is:
+
+| Route | Auth and ownership | Request / response | CSRF and transaction owner | Cache / HTMX behavior | Stable errors and sensitive values |
+| --- | --- | --- | --- | --- | --- |
+| `GET /auth/telegram` | Authenticated current account. No shop dependency. | Full HTML status page with canonical `LINKED` or `UNLINKED`. | Safe method; no CSRF and no mutation. Request DB dependency owns the read transaction. | Always `Cache-Control: no-store`; normal browser GET. | Login failures use the existing auth redirect/error contract. No raw token, token UUID, chat ID, phone, or full identity. |
+| `GET /auth/telegram/status` | Authenticated current account. No shop dependency. | HTML fragment with canonical account link status. | Safe method; no CSRF and no mutation. Request DB dependency owns the read transaction. | Always `no-store`; no polling state or secret. | Foreign-account data is never accepted as input or returned. |
+| `POST /auth/telegram/link-token` | Authenticated current account; only valid while canonically unlinked. | Form or `X-CSRF-Token`; successful HTMX response is a one-time HTML reveal fragment. | CSRF is mandatory. The request DB dependency owns commit/rollback around the reused M4 issue service. | `HX-Request: true` may produce the reveal. Missing/false HX performs no mutation and returns `303` to `GET /auth/telegram?notice=javascript_required`. Always `no-store`; no push URL. | Reuses stable issue/rate-limit/client-IP domain mapping. Raw token occurs only in the successful deep-link `href`; the issued row UUID is the `attempt_id`. |
+| `POST /auth/telegram/relink-token` | Authenticated current account; only valid while canonically linked. Current-password re-auth is added at M6.60. | Same one-time reveal response shape as first-link issuance. | CSRF mandatory; request-owned transaction. M6.60 additionally requires current-password re-auth and fresh-session policy. | Same HTMX-only mutation and non-HTMX `303` fail-safe as link issuance; always `no-store`. | Same privacy contract. Stable lifecycle errors are mapped without internal text. |
+| `GET /auth/telegram/attempts/{attempt_id}/status` | Authenticated current account and exact token-row ownership. `UUID` path parsing plus ownership are both enforced. | HTML presentation fragment: `WAITING`, `LINKED`, `SUPERSEDED`, `EXPIRED`, or `UNAVAILABLE`. | Safe method; no CSRF and no mutation. Request DB dependency owns the read transaction. | Always `no-store`. `WAITING` polls every `3s`; every terminal response stops polling and retargets the reveal container so the deep-link is removed from the DOM. | Foreign, unknown, and purged UUIDs are indistinguishable `UNAVAILABLE`. Token hash/raw token/chat ID never appears. Canonical account `LINKED` takes precedence for every owned attempt. |
+| `POST /auth/telegram/unlink` | Authenticated current account. Current-password re-auth and fresh-session policy are added at M6.58-M6.59. | Form POST followed by `303` to the status page. | CSRF mandatory; request-owned transaction. | PRG and always `no-store`; HTMX grants no additional authority. | Stable lifecycle/auth errors only; no Telegram identity data. |
+
+Every route above is account-scoped. Its dependency graph excludes
+`require_shop_staff` and `resolve_current_shop`; `sessions.active_shop_id`,
+shop membership, and shop status are neither authorization inputs nor mutation
+targets.
 
 All state-changing routes use PRG except the narrowly approved authenticated
 HTMX one-time reveal response. Its top-level URL remains GET, history is
-disabled, no push URL or browser storage is used, and the response is
-`Cache-Control: no-store`. A non-HTMX/JS-off POST performs no mutation and
-returns `303` to a safe GET. `HX-Request` is never trusted as a security
+disabled with `hx-history="false"`, no push URL or browser storage is used, and
+the response is `Cache-Control: no-store`. A non-HTMX/JS-off issue or reissue
+POST performs no mutation and returns `303` to the safe status GET.
+`HX-Request` is never trusted as an authentication, authorization, or CSRF
 boundary.
 
 ## 7. Error And SQLSTATE Contract

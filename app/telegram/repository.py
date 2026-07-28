@@ -2,6 +2,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Final
+from uuid import UUID
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -192,6 +193,18 @@ def get_telegram_link_token_by_hash_for_update(
         select(TelegramLinkToken)
         .where(TelegramLinkToken.token_hash == normalized_hash)
         .with_for_update()
+    )
+    return session.scalar(statement)
+
+
+def get_telegram_link_token_by_id_for_user(
+    session: Session,
+    current_user: User,
+    token_id: UUID,
+) -> TelegramLinkToken | None:
+    statement = select(TelegramLinkToken).where(
+        TelegramLinkToken.id == token_id,
+        TelegramLinkToken.user_id == current_user.id,
     )
     return session.scalar(statement)
 
