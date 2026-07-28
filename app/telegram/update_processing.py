@@ -67,15 +67,22 @@ class BotReplyKey(StrEnum):
     LINK_FAILED = "LINK_FAILED"
 
 
+class TelegramReplyLanguage(StrEnum):
+    UZ_LATN = "uz-Latn"
+    RU = "ru"
+
+
 @dataclass(frozen=True, repr=False)
 class BotReplyIntent:
     chat_identity: VerifiedPrivateTelegramChatIdentity
     reply_key: BotReplyKey
+    language: TelegramReplyLanguage
 
     def __repr__(self) -> str:
         return (
             "BotReplyIntent(chat_identity=<redacted>, "
-            f"reply_key={self.reply_key.value!r})"
+            f"reply_key={self.reply_key.value!r}, "
+            f"language={self.language.value!r})"
         )
 
 
@@ -83,6 +90,19 @@ class BotReplyIntent:
 class TelegramTxAResult:
     outcome: TelegramUpdateOutcomeCode
     reply_intent: BotReplyIntent | None
+
+
+@dataclass(frozen=True)
+class _PendingBotReply:
+    chat_identity: VerifiedPrivateTelegramChatIdentity
+    reply_key: BotReplyKey
+    language: TelegramReplyLanguage
+
+
+@dataclass(frozen=True)
+class _PendingTelegramTxAResult:
+    outcome: TelegramUpdateOutcomeCode
+    reply: _PendingBotReply | None
 
 
 @dataclass(frozen=True)
@@ -112,16 +132,16 @@ def process_telegram_update_tx_a(
     now: datetime,
 ) -> TelegramTxAResult:
     current_time = _as_utc(now)
-    result: TelegramTxAResult
+    pending_result: _PendingTelegramTxAResult
     with session_factory.begin() as session:
         state = lock_polling_state(session)
         if update.update_id < state.next_offset:
-            result = TelegramTxAResult(
+            pending_result = _PendingTelegramTxAResult(
                 outcome=TelegramUpdateOutcomeCode.DUPLICATE,
-                reply_intent=None,
+                reply=None,
             )
         else:
-            result = _apply_terminal_update(
+            pending_result = _apply_terminal_update(
                 session,
                 update=update,
                 now=current_time,
@@ -135,7 +155,10 @@ def process_telegram_update_tx_a(
                 next_offset=update.update_id + 1,
                 now=current_time,
             )
-    return result
+    return TelegramTxAResult(
+        outcome=pending_result.outcome,
+        reply_intent=_materialize_reply_intent(pending_result.reply),
+    )
 
 
 def record_poison_failure_tx_b(
@@ -199,17 +222,20 @@ class TelegramUpdateProcessor:
         *,
         now_factory: Callable[[], datetime] = lambda: datetime.now(UTC),
         sleeper: Callable[[float], Awaitable[bool]] | None = None,
+        reply_delivery: Callable[[BotReplyIntent | None], Awaitable[object]]
+        | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._now_factory = now_factory
         self._sleeper = sleeper
+        self._reply_delivery = reply_delivery
 
     async def __call__(self, update: TelegramUpdateEnvelope):
         from app.telegram.worker import PollingUpdateOutcome
 
         now = self._now_factory()
         try:
-            process_telegram_update_tx_a(
+            tx_a_result = process_telegram_update_tx_a(
                 self._session_factory,
                 update=update,
                 now=now,
@@ -240,6 +266,13 @@ class TelegramUpdateProcessor:
                 )
             )
             return PollingUpdateOutcome.RETRY
+        if self._reply_delivery is not None:
+            try:
+                await self._reply_delivery(tx_a_result.reply_intent)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.warning("TELEGRAM_REPLY_DELIVERY_FAILED")
         return PollingUpdateOutcome.TERMINAL
 
     async def _wait(self, seconds: float) -> None:
@@ -254,7 +287,7 @@ def _apply_terminal_update(
     *,
     update: TelegramUpdateEnvelope,
     now: datetime,
-) -> TelegramTxAResult:
+) -> _PendingTelegramTxAResult:
     parsed = parse_telegram_update(update)
     parse_outcome = {
         TelegramUpdateParseCode.UNSUPPORTED_UPDATE: (
@@ -268,10 +301,11 @@ def _apply_terminal_update(
         ),
     }.get(parsed.code)
     if parse_outcome is not None:
-        return TelegramTxAResult(outcome=parse_outcome, reply_intent=None)
+        return _PendingTelegramTxAResult(outcome=parse_outcome, reply=None)
 
     if parsed.chat_identity is None or parsed.raw_token is None:
         raise RuntimeError("Private Telegram start parser invariant failed")
+    reply_language = _reply_language(parsed.language_code)
     try:
         consumed = consume_start_token(
             session,
@@ -282,21 +316,23 @@ def _apply_terminal_update(
     except TelegramLinkTokenConsumeError as exc:
         if exc.error_code is not ErrorCode.LINK_TOKEN_INVALID:
             raise
-        return TelegramTxAResult(
+        return _PendingTelegramTxAResult(
             outcome=TelegramUpdateOutcomeCode.LINK_TOKEN_INVALID,
-            reply_intent=BotReplyIntent(
+            reply=_PendingBotReply(
                 parsed.chat_identity,
                 BotReplyKey.LINK_FAILED,
+                reply_language,
             ),
         )
     except TelegramChatAlreadyLinkedError as exc:
         if exc.error_code is not ErrorCode.TELEGRAM_CHAT_ALREADY_LINKED:
             raise
-        return TelegramTxAResult(
+        return _PendingTelegramTxAResult(
             outcome=TelegramUpdateOutcomeCode.LINK_REJECTED,
-            reply_intent=BotReplyIntent(
+            reply=_PendingBotReply(
                 parsed.chat_identity,
                 BotReplyKey.LINK_FAILED,
+                reply_language,
             ),
         )
 
@@ -312,10 +348,33 @@ def _apply_terminal_update(
         if consumed.outcome is TelegramLinkOutcome.ALREADY_LINKED_TO_THIS_CHAT
         else BotReplyKey.LINKED
     )
-    return TelegramTxAResult(
+    return _PendingTelegramTxAResult(
         outcome=outcome,
-        reply_intent=BotReplyIntent(parsed.chat_identity, reply_key),
+        reply=_PendingBotReply(
+            parsed.chat_identity,
+            reply_key,
+            reply_language,
+        ),
     )
+
+
+def _materialize_reply_intent(
+    pending_reply: _PendingBotReply | None,
+) -> BotReplyIntent | None:
+    if pending_reply is None:
+        return None
+    return BotReplyIntent(
+        chat_identity=pending_reply.chat_identity,
+        reply_key=pending_reply.reply_key,
+        language=pending_reply.language,
+    )
+
+
+def _reply_language(language_code: str | None) -> TelegramReplyLanguage:
+    normalized = language_code.strip().casefold() if language_code is not None else ""
+    if normalized == "ru" or normalized.startswith(("ru-", "ru_")):
+        return TelegramReplyLanguage.RU
+    return TelegramReplyLanguage.UZ_LATN
 
 
 def _exception_chain(exc: BaseException):

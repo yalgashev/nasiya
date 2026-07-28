@@ -356,13 +356,16 @@ def delete_telegram_link_tokens_eligible_for_purge(
     if limit < 1:
         raise ValueError("Telegram link token purge batch limit must be positive")
     cutoff = current_time - timedelta(days=TELEGRAM_LINK_TOKEN_TERMINAL_RETENTION_DAYS)
-    eligible_ids = (
+    eligible_ids_statement = (
         select(TelegramLinkToken.id)
         .where(_terminal_link_token_purge_filter(cutoff))
         .order_by(TelegramLinkToken.created_at.asc(), TelegramLinkToken.id.asc())
         .limit(limit)
         .with_for_update(skip_locked=True)
     )
+    eligible_ids = list(session.scalars(eligible_ids_statement).all())
+    if not eligible_ids:
+        return 0
     statement = delete(TelegramLinkToken).where(TelegramLinkToken.id.in_(eligible_ids))
     result = session.execute(statement)
     return result.rowcount or 0

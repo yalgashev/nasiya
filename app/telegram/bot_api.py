@@ -20,6 +20,7 @@ TELEGRAM_BACKOFF_BASE_SECONDS = 1.0
 TELEGRAM_BACKOFF_CAP_SECONDS = 30.0
 TELEGRAM_RETRY_AFTER_CAP_SECONDS = 60.0
 TELEGRAM_UPDATE_ID_MAX = (1 << 63) - 2
+TELEGRAM_LANGUAGE_CODE_MAX_LENGTH = 35
 
 
 class TelegramApiErrorCode(StrEnum):
@@ -84,12 +85,14 @@ class TelegramMessageEnvelope:
     chat_type: str | None
     text: str | None
     structurally_valid: bool
+    language_code: str | None = None
 
     def __repr__(self) -> str:
         return (
             "TelegramMessageEnvelope("
             "chat_id=<redacted>, chat_type=<redacted>, text=<redacted>, "
-            f"structurally_valid={self.structurally_valid!r})"
+            f"structurally_valid={self.structurally_valid!r}, "
+            "language_code=<redacted>)"
         )
 
 
@@ -473,6 +476,16 @@ def _parse_message_envelope(
     chat_id = raw_chat.get("id")
     chat_type = raw_chat.get("type")
     text = raw_message.get("text")
+    raw_sender = raw_message.get("from")
+    language_code = (
+        raw_sender.get("language_code") if isinstance(raw_sender, Mapping) else None
+    )
+    if (
+        not isinstance(language_code, str)
+        or not language_code
+        or len(language_code) > TELEGRAM_LANGUAGE_CODE_MAX_LENGTH
+    ):
+        language_code = None
     if (
         isinstance(chat_id, bool)
         or not isinstance(chat_id, int)
@@ -485,6 +498,7 @@ def _parse_message_envelope(
         chat_type=chat_type,
         text=text,
         structurally_valid=True,
+        language_code=language_code,
     )
 
 
@@ -494,6 +508,7 @@ def _malformed_message_envelope() -> TelegramMessageEnvelope:
         chat_type=None,
         text=None,
         structurally_valid=False,
+        language_code=None,
     )
 
 

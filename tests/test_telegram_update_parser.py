@@ -17,6 +17,7 @@ def update_with_message(
     chat_type: str = "private",
     text: str | None = "/start safe_token-123",
     structurally_valid: bool = True,
+    language_code: str | None = None,
 ) -> TelegramUpdateEnvelope:
     return TelegramUpdateEnvelope(
         update_id=7,
@@ -25,6 +26,7 @@ def update_with_message(
             chat_type=chat_type,
             text=text,
             structurally_valid=structurally_valid,
+            language_code=language_code,
         ),
     )
 
@@ -113,6 +115,13 @@ def test_parser_accepts_maximum_bounded_token() -> None:
     assert parsed.code is TelegramUpdateParseCode.PRIVATE_START
     assert parsed.raw_token is not None
     assert parsed.raw_token.as_internal_value() == token
+
+
+def test_parser_carries_optional_language_only_in_redacted_memory_value() -> None:
+    parsed = parse_telegram_update(update_with_message(language_code="ru-RU"))
+
+    assert parsed.language_code == "ru-RU"
+    assert "ru-RU" not in repr(parsed)
 
 
 def test_envelope_repr_redacts_transport_message_and_chat() -> None:

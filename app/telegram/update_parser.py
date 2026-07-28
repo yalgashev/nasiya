@@ -21,12 +21,13 @@ class ParsedTelegramUpdate:
     code: TelegramUpdateParseCode
     chat_identity: VerifiedPrivateTelegramChatIdentity | None = None
     raw_token: RawTelegramLinkToken | None = None
+    language_code: str | None = None
 
     def __repr__(self) -> str:
         return (
             "ParsedTelegramUpdate("
             f"code={self.code.value!r}, chat_identity=<redacted>, "
-            "raw_token=<redacted>)"
+            "raw_token=<redacted>, language_code=<redacted>)"
         )
 
 
@@ -66,4 +67,5 @@ def parse_telegram_update(
         code=TelegramUpdateParseCode.PRIVATE_START,
         chat_identity=chat_identity,
         raw_token=raw_token,
+        language_code=message.language_code,
     )

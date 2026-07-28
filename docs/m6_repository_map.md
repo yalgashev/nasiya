@@ -62,6 +62,8 @@ solutions from `docs/m6_decisions.md`.
 | B classifier | `app/telegram/update_processing.py` `classify_telegram_tx_failure`; exact SQLSTATE/context policy from `docs/m6_decisions.md` |
 | TX-B owner | `app/telegram/update_processing.py` `record_poison_failure_tx_b`; fresh transaction, stable failure code, attempt/quarantine/cursor protocol |
 | Per-update worker bridge | `app/telegram/update_processing.py` `TelegramUpdateProcessor`; default processor selected by `app/telegram/worker.py` `run_worker` |
+| Post-commit reply delivery | `app/telegram/bot_reply.py` `deliver_bot_reply_best_effort`; called by the default worker processor only after TX-A returns committed |
+| Narrow localization catalog | `app/telegram/bot_reply.py` `render_bot_reply`; Uzbek Latin default and Russian `ru*` mapping, with one privacy-safe failure group |
 
 ## 4. Shop Context Boundary
 
@@ -130,7 +132,7 @@ solutions from `docs/m6_decisions.md`.
 | Current-password re-auth | `TOPILMADI`; existing verifier is `app/auth/password_service.py:21` `verify_password` | Add a minimal current-user password verification dependency/service and session-freshness gate; no generic recovery framework. |
 | Runtime external HTTP client | `TOPILMADI` | Promote approved locked `httpx 0.28.1` to runtime at M6.12; use a narrow injected async transport adapter. |
 | QR encoder | `TOPILMADI` | Add approved `segno 1.6.6` at M6.56 and render in-memory PNG of the same one-time deep-link. |
-| i18n framework | `TOPILMADI` | Add a minimal explicit Uzbek-Latin/Russian message catalog for the narrow bot replies; no Babel/gettext framework. |
+| i18n framework | No generic framework was needed; implemented narrow immutable catalog in `app/telegram/bot_reply.py`. | Uzbek Latin and Russian bot replies only; no Babel/gettext subsystem. |
 | HTMX polling | `TOPILMADI` | Add a bounded account-scoped status fragment poller that stops on terminal/expiry; no WebSocket/SPA. |
 | Worker service | Implemented in `app/telegram/worker.py`: `main`, `run_worker`, `run_polling_loop`, and `ShutdownController`; `compose.yaml` service `telegram-worker` reuses the web image. | Dedicated command, one replica, process-owned engine/client, per-operation sessions, signal-aware cleanup, and no web-process thread. |
 | Worker healthcheck/restart policy | Implemented by `worker_health_is_fresh`, `run_healthcheck_command`, polling heartbeat task, and `compose.yaml` worker lifecycle values. | PostgreSQL readiness/heartbeat CLI; `unless-stopped`, stop grace `45s`, heartbeat `10s`, freshness `60s`. |

@@ -227,11 +227,17 @@ async def run_worker(
             _initialize_polling_state(session_factory)
             resolved_processor = processor
             if resolved_processor is None:
+                from app.telegram.bot_reply import deliver_bot_reply_best_effort
                 from app.telegram.update_processing import TelegramUpdateProcessor
 
                 resolved_processor = TelegramUpdateProcessor(
                     session_factory,
                     sleeper=shutdown.wait_async,
+                    reply_delivery=lambda intent: deliver_bot_reply_best_effort(
+                        client,
+                        intent=intent,
+                        sleeper=shutdown.wait_async,
+                    ),
                 )
             heartbeat_task = asyncio.create_task(
                 _heartbeat_loop(session_factory, shutdown=shutdown)

@@ -242,6 +242,7 @@ def test_get_updates_sends_exact_contract_and_preserves_batch_for_worker_sort() 
                         "update_id": 12,
                         "message": {
                             "chat": {"id": 9912, "type": "private"},
+                            "from": {"language_code": "ru-RU"},
                             "text": "/start safe_token",
                             "ignored": True,
                         },
@@ -265,6 +266,7 @@ def test_get_updates_sends_exact_contract_and_preserves_batch_for_worker_sort() 
     assert updates[0].message.chat_id == 9912
     assert updates[0].message.chat_type == "private"
     assert updates[0].message.text == "/start safe_token"
+    assert updates[0].message.language_code == "ru-RU"
     assert updates[1].message is None
     assert captured_payload == {
         "offset": 10,
