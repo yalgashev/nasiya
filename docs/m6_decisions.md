@@ -80,7 +80,8 @@ Approved production dependencies:
 - `getUpdates` long poll: `25s`; HTTP read timeout: `35s`.
 - Telegram transport retry: exponential base `1s`, cap `30s`; `429`
   `retry_after` is honored up to an explicit `60s` cap.
-- PostgreSQL advisory lock acquisition deadline: `60s`.
+- PostgreSQL advisory lock acquisition deadline: `60s`; bounded
+  `pg_try_advisory_lock` poll interval: `1s`.
 - Worker replica: `1`; restart: `unless-stopped`; stop grace: `45s`.
 - Migration ownership: one-shot Compose service after DB health; web and worker
   start only after successful migration.

@@ -20,6 +20,10 @@ class PollingCursorRegressionError(ValueError):
     pass
 
 
+class PollingStateMissingError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class TelegramPollingHealth:
     next_offset: int
@@ -99,7 +103,9 @@ def update_polling_heartbeat(
 
 
 def read_polling_health(session: Session) -> TelegramPollingHealth:
-    state = load_or_create_polling_state(session)
+    state = session.get(TelegramPollingState, TELEGRAM_POLLING_STATE_ID)
+    if state is None:
+        raise PollingStateMissingError("Telegram polling state is not initialized")
     return TelegramPollingHealth(
         next_offset=state.next_offset,
         heartbeat_at=state.heartbeat_at,

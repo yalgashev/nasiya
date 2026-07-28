@@ -47,7 +47,6 @@ FORBIDDEN_PRODUCTION_DEPENDENCIES = {
 }
 FORBIDDEN_APP_RUNTIME_MARKERS = (
     "setwebhook",
-    "telegram.polling",
     "telegram.bot(",
     "aiogram",
     "python-telegram-bot",
@@ -218,7 +217,7 @@ def test_no_production_telegram_route_webhook_callback_or_public_csrf_bypass(
     assert unprotected_unsafe_routes == []
 
 
-def test_m6_transport_keeps_unapproved_worker_qr_otp_and_scheduler_out() -> None:
+def test_m6_runtime_keeps_unapproved_sdk_qr_otp_and_scheduler_out() -> None:
     dependency_names = production_dependency_names()
     source_text = app_source_text().casefold()
     settings_fields = set(Settings.model_fields)
@@ -231,8 +230,10 @@ def test_m6_transport_keeps_unapproved_worker_qr_otp_and_scheduler_out() -> None
     assert "telegram_bot_token" in settings_fields
     assert "telegram_bot_token" not in main_env_keys
     assert {"client_ip_mode", "trusted_proxy_cidrs"}.issubset(settings_fields)
-    assert "TELEGRAM_BOT_TOKEN" not in env_example_text
-    assert "TELEGRAM_BOT_TOKEN" not in compose_text
+    assert "TELEGRAM_BOT_TOKEN=" in env_example_text
+    assert "TELEGRAM_BOT_TOKEN:" in compose_text
+    web_compose = compose_text.split("  web:", 1)[1].split("  telegram-worker:", 1)[0]
+    assert "TELEGRAM_BOT_TOKEN" not in web_compose
     assert "CLIENT_IP_MODE" not in env_example_text
     assert "TRUSTED_PROXY_CIDRS" not in env_example_text
 

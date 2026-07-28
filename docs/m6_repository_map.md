@@ -120,9 +120,10 @@ solutions from `docs/m6_decisions.md`.
 | QR encoder | `TOPILMADI` | Add approved `segno 1.6.6` at M6.56 and render in-memory PNG of the same one-time deep-link. |
 | i18n framework | `TOPILMADI` | Add a minimal explicit Uzbek-Latin/Russian message catalog for the narrow bot replies; no Babel/gettext framework. |
 | HTMX polling | `TOPILMADI` | Add a bounded account-scoped status fragment poller that stops on terminal/expiry; no WebSocket/SPA. |
-| Worker service | `TOPILMADI` | Reuse the image and `app/cli.py` transaction/command convention with a distinct worker command, one replica, and signal-aware loop. |
-| Worker healthcheck/restart policy | `TOPILMADI` | PostgreSQL heartbeat/readiness plus CLI; `unless-stopped`, stop grace `45s`, freshness threshold `60s`. |
-| Explicit downgrade/revision-by-revision migration walk | `TOPILMADI` | Add focused real-PostgreSQL upgrade/downgrade/re-upgrade tests for the single child of `a6b4c2d8e9f1`. |
+| Worker service | Implemented in `app/telegram/worker.py`: `main`, `run_worker`, `run_polling_loop`, and `ShutdownController`; `compose.yaml` service `telegram-worker` reuses the web image. | Dedicated command, one replica, process-owned engine/client, per-operation sessions, signal-aware cleanup, and no web-process thread. |
+| Worker healthcheck/restart policy | Implemented by `worker_health_is_fresh`, `run_healthcheck_command`, polling heartbeat task, and `compose.yaml` worker lifecycle values. | PostgreSQL readiness/heartbeat CLI; `unless-stopped`, stop grace `45s`, heartbeat `10s`, freshness `60s`. |
+| Advisory lock | Implemented in `app/telegram/worker_lock.py`: `TELEGRAM_POLLER_ADVISORY_LOCK_KEY`, `TelegramPollingLock`, and `acquire_telegram_polling_lock`. | Stable non-secret 64-bit key, dedicated connection, bounded `pg_try_advisory_lock` for `60s` at `1s` intervals. |
+| Explicit downgrade/revision-by-revision migration walk | Implemented in `tests/test_telegram_polling_migration.py`. | Real PostgreSQL exact M5 parent downgrade and M6 head re-upgrade. |
 
 ## 10. M6 Test Map
 
