@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.auth.csrf import get_csrf_token
 from app.auth.deps import get_current_time, validate_csrf
 from app.auth.error_codes import ErrorCode
-from app.auth.models import User
+from app.auth.models import AuthRateLimit, User
 from app.auth.service import create_user
 from app.auth.sessions import CreatedSession, create_authenticated_session
 from app.db import create_database_session_factory
@@ -47,16 +47,21 @@ def make_settings(
     engine: Engine,
     *,
     bot_username: str | None = TEST_BOT_USERNAME,
+    client_ip_mode: str = "direct",
+    trusted_proxy_cidrs: list[str] | None = None,
 ) -> Settings:
-    return Settings(
-        _env_file=None,
-        app_environment="testing",
-        debug=False,
-        database_url=engine.url.render_as_string(hide_password=False),
-        session_cookie_secure=False,
-        telegram_bot_username=bot_username,
-        rate_limit_hmac_key=TEST_RATE_LIMIT_HMAC_KEY,
-    )
+    values: dict[str, object] = {
+        "app_environment": "testing",
+        "debug": False,
+        "database_url": engine.url.render_as_string(hide_password=False),
+        "session_cookie_secure": False,
+        "telegram_bot_username": bot_username,
+        "rate_limit_hmac_key": TEST_RATE_LIMIT_HMAC_KEY,
+        "client_ip_mode": client_ip_mode,
+    }
+    if trusted_proxy_cidrs is not None:
+        values["trusted_proxy_cidrs"] = trusted_proxy_cidrs
+    return Settings(_env_file=None, **values)
 
 
 def make_client(
@@ -64,11 +69,19 @@ def make_client(
     now: datetime,
     *,
     bot_username: str | None = TEST_BOT_USERNAME,
+    client_host: str = TEST_CLIENT_HOST,
+    client_ip_mode: str = "direct",
+    trusted_proxy_cidrs: list[str] | None = None,
 ) -> tuple[TestClient, Settings]:
-    settings = make_settings(engine, bot_username=bot_username)
+    settings = make_settings(
+        engine,
+        bot_username=bot_username,
+        client_ip_mode=client_ip_mode,
+        trusted_proxy_cidrs=trusted_proxy_cidrs,
+    )
     application = create_app(settings=settings)
     application.dependency_overrides[get_current_time] = lambda: now
-    return TestClient(application, client=(TEST_CLIENT_HOST, 50_000)), settings
+    return TestClient(application, client=(client_host, 50_000)), settings
 
 
 def set_client_session_cookie(
@@ -116,8 +129,18 @@ def create_logged_in_client(
     *,
     phone: str = "+998901234567",
     bot_username: str | None = TEST_BOT_USERNAME,
+    client_host: str = TEST_CLIENT_HOST,
+    client_ip_mode: str = "direct",
+    trusted_proxy_cidrs: list[str] | None = None,
 ) -> tuple[TestClient, Settings, User, CreatedSession]:
-    client, settings = make_client(engine, now, bot_username=bot_username)
+    client, settings = make_client(
+        engine,
+        now,
+        bot_username=bot_username,
+        client_host=client_host,
+        client_ip_mode=client_ip_mode,
+        trusted_proxy_cidrs=trusted_proxy_cidrs,
+    )
     user = commit_user(db_session, phone)
     created = commit_authenticated_session(db_session, user, now, settings)
     set_client_session_cookie(
@@ -343,6 +366,59 @@ def test_link_token_without_bot_username_fails_closed_without_token(
     assert_auth_security_headers(response)
     assert "Telegram bot havolasi hali sozlanmagan." in unescape(response.text)
     assert count_table(db_session, TelegramLinkToken) == 0
+
+
+def test_trusted_proxy_link_issue_uses_one_x_real_ip(
+    m2_test_database: Engine,
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=UTC)
+    client, _settings, _user, created = create_logged_in_client(
+        m2_test_database,
+        db_session,
+        now,
+        client_host="10.10.1.2",
+        client_ip_mode="trusted_proxy",
+        trusted_proxy_cidrs=["10.0.0.0/8"],
+    )
+
+    response = client.post(
+        "/auth/telegram/link-token",
+        data={"csrf_token": csrf_token(created)},
+        headers={"HX-Request": "true", "X-Real-IP": "203.0.113.90"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["x-telegram-link-reveal"] == "one-time"
+    assert count_table(db_session, TelegramLinkToken) == 1
+
+
+def test_untrusted_proxy_link_issue_fails_before_rate_limit_or_token_mutation(
+    m2_test_database: Engine,
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=UTC)
+    client, _settings, _user, created = create_logged_in_client(
+        m2_test_database,
+        db_session,
+        now,
+        client_host="192.0.2.40",
+        client_ip_mode="trusted_proxy",
+        trusted_proxy_cidrs=["10.0.0.0/8"],
+    )
+
+    response = client.post(
+        "/auth/telegram/link-token",
+        data={"csrf_token": csrf_token(created)},
+        headers={"HX-Request": "true", "X-Real-IP": "203.0.113.91"},
+    )
+
+    assert response.status_code == 422
+    assert response.headers["x-error-code"] == ErrorCode.VALIDATION_ERROR.value
+    assert "203.0.113.91" not in response.text
+    assert "192.0.2.40" not in response.text
+    assert count_table(db_session, TelegramLinkToken) == 0
+    assert count_table(db_session, AuthRateLimit) == 0
 
 
 def test_telegram_posts_require_csrf_and_do_not_mutate_on_failure(

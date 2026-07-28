@@ -5,7 +5,6 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
-from starlette.requests import Request
 
 from app.auth.error_codes import ErrorCode
 from app.auth.login_rate_limit import (
@@ -13,11 +12,11 @@ from app.auth.login_rate_limit import (
     LOGIN_PHONE_SCOPE,
     LoginRateLimitPolicy,
     clear_login_phone_failures,
-    get_login_client_host,
 )
 from app.auth.models import AuthRateLimit
 from app.db import create_database_session_factory
 from app.settings import Settings
+from app.telegram.client_ip import ResolvedClientIp
 
 TEST_RATE_LIMIT_HMAC_KEY = "test-rate-limit-hmac-key-for-login-policy"
 
@@ -65,19 +64,8 @@ def get_scope_counts(db_session: Session) -> dict[str, int]:
     }
 
 
-def make_request(client_host: str, x_forwarded_for: str) -> Request:
-    return Request(
-        {
-            "type": "http",
-            "method": "POST",
-            "path": "/login",
-            "query_string": b"",
-            "headers": [(b"x-forwarded-for", x_forwarded_for.encode("ascii"))],
-            "client": (client_host, 12345),
-            "server": ("testserver", 80),
-            "scheme": "http",
-        }
-    )
+def resolved_ip(value: str) -> ResolvedClientIp:
+    return ResolvedClientIp(value)
 
 
 def test_login_phone_threshold_blocks_with_safe_rate_limited_result(
@@ -89,14 +77,20 @@ def test_login_phone_threshold_blocks_with_safe_rate_limited_result(
     now = datetime(2026, 7, 19, 10, 30, tzinfo=UTC)
     phone = "+998901234567"
 
-    assert policy.record_failure(phone, "203.0.113.10", now).allowed is True
+    assert (
+        policy.record_failure(phone, resolved_ip("203.0.113.10"), now).allowed is True
+    )
 
     blocked = policy.record_failure(
         phone,
-        "203.0.113.10",
+        resolved_ip("203.0.113.10"),
         now + timedelta(seconds=1),
     )
-    later_check = policy.check(phone, "203.0.113.10", now + timedelta(seconds=2))
+    later_check = policy.check(
+        phone,
+        resolved_ip("203.0.113.10"),
+        now + timedelta(seconds=2),
+    )
 
     assert blocked.allowed is False
     assert blocked.error_code is ErrorCode.RATE_LIMITED
@@ -116,13 +110,13 @@ def test_login_ip_threshold_blocks_independent_of_phone(
     settings = make_settings(m2_test_database, phone_attempts=20, ip_attempts=2)
     policy = make_policy(db_session, settings)
     now = datetime(2026, 7, 19, 10, 30, tzinfo=UTC)
-    client_host = "203.0.113.10"
+    client_ip = resolved_ip("203.0.113.10")
 
-    assert policy.record_failure("+998901234567", client_host, now).allowed is True
+    assert policy.record_failure("+998901234567", client_ip, now).allowed is True
 
     blocked = policy.record_failure(
         "+998901234568",
-        client_host,
+        client_ip,
         now + timedelta(seconds=1),
     )
 
@@ -131,7 +125,7 @@ def test_login_ip_threshold_blocks_independent_of_phone(
     assert (
         policy.check(
             "+998901234569",
-            client_host,
+            client_ip,
             now + timedelta(seconds=2),
         ).allowed
         is False
@@ -146,15 +140,15 @@ def test_login_phone_buckets_are_isolated_by_normalized_phone(
     policy = make_policy(db_session, settings)
     now = datetime(2026, 7, 19, 10, 30, tzinfo=UTC)
 
-    policy.record_failure("901234567", "203.0.113.10", now)
+    policy.record_failure("901234567", resolved_ip("203.0.113.10"), now)
     blocked_phone = policy.record_failure(
         "+998901234567",
-        "203.0.113.11",
+        resolved_ip("203.0.113.11"),
         now + timedelta(seconds=1),
     )
     other_phone = policy.check(
         "+998901234568",
-        "203.0.113.12",
+        resolved_ip("203.0.113.12"),
         now + timedelta(seconds=2),
     )
 
@@ -171,8 +165,16 @@ def test_login_limited_result_does_not_reveal_user_existence(
     policy = make_policy(db_session, settings)
     now = datetime(2026, 7, 19, 10, 30, tzinfo=UTC)
 
-    first_phone = policy.record_failure("+998901234567", "203.0.113.10", now)
-    second_phone = policy.record_failure("+998901234568", "203.0.113.11", now)
+    first_phone = policy.record_failure(
+        "+998901234567",
+        resolved_ip("203.0.113.10"),
+        now,
+    )
+    second_phone = policy.record_failure(
+        "+998901234568",
+        resolved_ip("203.0.113.11"),
+        now,
+    )
 
     assert first_phone.allowed is False
     assert second_phone.allowed is False
@@ -190,12 +192,12 @@ def test_invalid_phone_is_counted_against_ip_only(
     policy = make_policy(db_session, settings)
     now = datetime(2026, 7, 19, 10, 30, tzinfo=UTC)
     invalid_phone = "+99890abc4567"
-    client_host = "203.0.113.10"
+    client_ip = resolved_ip("203.0.113.10")
 
-    first = policy.record_failure(invalid_phone, client_host, now)
+    first = policy.record_failure(invalid_phone, client_ip, now)
     second = policy.record_failure(
         invalid_phone,
-        client_host,
+        client_ip,
         now + timedelta(seconds=1),
     )
 
@@ -214,12 +216,13 @@ def test_successful_login_clears_phone_bucket_but_keeps_ip_bucket(
     now = datetime(2026, 7, 19, 10, 30, tzinfo=UTC)
     phone = "+998901234567"
 
-    policy.record_failure(phone, "203.0.113.10", now)
-    policy.record_failure(phone, "203.0.113.10", now + timedelta(seconds=1))
+    client_ip = resolved_ip("203.0.113.10")
+    policy.record_failure(phone, client_ip, now)
+    policy.record_failure(phone, client_ip, now + timedelta(seconds=1))
 
     blocked_check = policy.check(
         phone,
-        "203.0.113.10",
+        client_ip,
         now + timedelta(seconds=2),
     )
     assert blocked_check.allowed is False
@@ -227,20 +230,11 @@ def test_successful_login_clears_phone_bucket_but_keeps_ip_bucket(
 
     cleared_check = policy.check(
         phone,
-        "203.0.113.10",
+        client_ip,
         now + timedelta(seconds=3),
     )
     assert cleared_check.allowed is True
     assert get_scope_counts(db_session) == {LOGIN_IP_SCOPE: 1}
-
-
-def test_login_policy_uses_request_client_host_and_ignores_x_forwarded_for() -> None:
-    request = make_request(
-        client_host="203.0.113.10",
-        x_forwarded_for="198.51.100.77",
-    )
-
-    assert get_login_client_host(request) == "203.0.113.10"
 
 
 def test_login_policy_does_not_store_raw_phone_or_ip(
@@ -253,8 +247,9 @@ def test_login_policy_does_not_store_raw_phone_or_ip(
     raw_phone = "901234567"
     canonical_phone = "+998901234567"
     client_host = "203.0.113.10"
+    client_ip = resolved_ip(client_host)
 
-    policy.record_failure(raw_phone, client_host, now)
+    policy.record_failure(raw_phone, client_ip, now)
     stored_values = db_session.execute(
         text(
             "SELECT scope, key_hash, window_started_at::text, "

@@ -53,7 +53,7 @@ def make_application(engine: Engine, now: datetime):
 
 
 def make_client(application) -> TestClient:
-    return TestClient(application)
+    return TestClient(application, client=("203.0.113.20", 50_000))
 
 
 def commit_user(db_session: Session) -> User:

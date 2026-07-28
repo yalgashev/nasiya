@@ -58,8 +58,8 @@ def unique_phone() -> str:
     return f"+998{uuid4().int % 1_000_000_000:09d}"
 
 
-def add_user(db_session: Session) -> User:
-    user = User(phone=unique_phone())
+def add_user(db_session: Session, phone: str | None = None) -> User:
+    user = User(phone=phone or unique_phone())
     db_session.add(user)
     db_session.flush()
     return user
@@ -401,8 +401,8 @@ def test_owner_can_revoke_staff_with_prg(
 ) -> None:
     now = datetime(2026, 7, 27, 18, 20, tzinfo=UTC)
     client, settings = make_client(m2_test_database, now)
-    owner = add_user(db_session)
-    cashier = add_user(db_session)
+    owner = add_user(db_session, "+998901234511")
+    cashier = add_user(db_session, "+998901234522")
     shop = add_shop(db_session)
     add_staff_row(db_session, shop=shop, user=owner, role=ShopRole.OWNER.value)
     cashier_staff = add_staff_row(

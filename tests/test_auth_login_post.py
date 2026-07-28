@@ -45,17 +45,22 @@ def make_settings(
     ip_attempts: int = 20,
     app_environment: str = "testing",
     session_cookie_secure: bool = False,
+    client_ip_mode: str = "direct",
+    trusted_proxy_cidrs: list[str] | None = None,
 ) -> Settings:
-    return Settings(
-        _env_file=None,
-        app_environment=app_environment,
-        debug=False,
-        database_url=engine.url.render_as_string(hide_password=False),
-        session_cookie_secure=session_cookie_secure,
-        login_rate_limit_phone_attempts=phone_attempts,
-        login_rate_limit_ip_attempts=ip_attempts,
-        rate_limit_hmac_key=TEST_RATE_LIMIT_HMAC_KEY,
-    )
+    values: dict[str, object] = {
+        "app_environment": app_environment,
+        "debug": False,
+        "database_url": engine.url.render_as_string(hide_password=False),
+        "session_cookie_secure": session_cookie_secure,
+        "login_rate_limit_phone_attempts": phone_attempts,
+        "login_rate_limit_ip_attempts": ip_attempts,
+        "rate_limit_hmac_key": TEST_RATE_LIMIT_HMAC_KEY,
+        "client_ip_mode": client_ip_mode,
+    }
+    if trusted_proxy_cidrs is not None:
+        values["trusted_proxy_cidrs"] = trusted_proxy_cidrs
+    return Settings(_env_file=None, **values)
 
 
 def make_client(
@@ -67,6 +72,9 @@ def make_client(
     app_environment: str = "testing",
     session_cookie_secure: bool = False,
     base_url: str = "http://testserver",
+    client_host: str = "203.0.113.10",
+    client_ip_mode: str = "direct",
+    trusted_proxy_cidrs: list[str] | None = None,
 ) -> tuple[TestClient, Settings]:
     settings = make_settings(
         engine,
@@ -74,10 +82,19 @@ def make_client(
         ip_attempts=ip_attempts,
         app_environment=app_environment,
         session_cookie_secure=session_cookie_secure,
+        client_ip_mode=client_ip_mode,
+        trusted_proxy_cidrs=trusted_proxy_cidrs,
     )
     application = create_app(settings=settings)
     application.dependency_overrides[get_current_time] = lambda: now
-    return TestClient(application, base_url=base_url), settings
+    return (
+        TestClient(
+            application,
+            base_url=base_url,
+            client=(client_host, 50_000),
+        ),
+        settings,
+    )
 
 
 def commit_user(
@@ -116,6 +133,7 @@ def post_login(
     phone: str = "901234567",
     password: str = "Password123",
     next_url: str | None = None,
+    headers=None,
 ):
     data = {
         "csrf_token": csrf_token,
@@ -124,7 +142,12 @@ def post_login(
     }
     if next_url is not None:
         data["next"] = next_url
-    return client.post("/auth/login", data=data, follow_redirects=False)
+    return client.post(
+        "/auth/login",
+        data=data,
+        headers=headers,
+        follow_redirects=False,
+    )
 
 
 def extract_hidden_csrf_token(html: str) -> str:
@@ -395,7 +418,7 @@ def test_post_login_invalid_phone_records_ip_only_and_does_not_store_raw_values(
     stored_text = "|".join(str(value) for row in stored_values for value in row)
     assert raw_phone not in stored_text
     assert raw_password not in stored_text
-    assert "testclient" not in stored_text
+    assert "203.0.113.10" not in stored_text
 
 
 def test_post_login_missing_fields_are_safe_validation_failure(
@@ -473,8 +496,103 @@ def test_post_login_ip_rate_limited_response_is_safe_and_stores_no_raw_ip(
         )
     ).all()
     stored_text = "|".join(str(value) for row in stored_values for value in row)
-    assert "testclient" not in stored_text
+    assert "203.0.113.10" not in stored_text
     assert "+99890abc4567" not in stored_text
+
+
+def test_post_login_direct_mode_ignores_spoofed_proxy_headers(
+    m2_test_database: Engine,
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 7, 19, 10, 30, tzinfo=UTC)
+    client, settings = make_client(m2_test_database, now, ip_attempts=2)
+    csrf_token, _old_cookie = get_login_form(client, settings)
+
+    first = post_login(
+        client,
+        csrf_token=csrf_token,
+        phone="invalid-one",
+        headers={"X-Real-IP": "198.51.100.10"},
+    )
+    second_csrf = extract_hidden_csrf_token(first.text)
+    second = post_login(
+        client,
+        csrf_token=second_csrf,
+        phone="invalid-two",
+        headers={
+            "X-Real-IP": "198.51.100.11",
+            "X-Forwarded-For": "198.51.100.12",
+            "Forwarded": "for=198.51.100.13",
+        },
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert second.headers["x-error-code"] == ErrorCode.RATE_LIMITED.value
+    assert len(get_rate_limit_records(db_session)) == 1
+
+
+def test_post_login_trusted_proxy_uses_x_real_ip(
+    m2_test_database: Engine,
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 7, 19, 10, 30, tzinfo=UTC)
+    client, settings = make_client(
+        m2_test_database,
+        now,
+        ip_attempts=1,
+        client_host="10.10.1.2",
+        client_ip_mode="trusted_proxy",
+        trusted_proxy_cidrs=["10.0.0.0/8"],
+    )
+    csrf_token, _old_cookie = get_login_form(client, settings)
+
+    response = post_login(
+        client,
+        csrf_token=csrf_token,
+        phone="invalid-phone",
+        headers={"X-Real-IP": "203.0.113.88"},
+    )
+
+    assert response.status_code == 429
+    assert response.headers["x-error-code"] == ErrorCode.RATE_LIMITED.value
+    stored_text = "|".join(
+        str(value)
+        for row in db_session.execute(
+            text("SELECT scope, key_hash FROM auth_rate_limits")
+        ).all()
+        for value in row
+    )
+    assert "203.0.113.88" not in stored_text
+    assert "10.10.1.2" not in stored_text
+
+
+def test_post_login_untrusted_proxy_fails_before_rate_limit_mutation(
+    m2_test_database: Engine,
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 7, 19, 10, 30, tzinfo=UTC)
+    client, settings = make_client(
+        m2_test_database,
+        now,
+        client_host="192.0.2.50",
+        client_ip_mode="trusted_proxy",
+        trusted_proxy_cidrs=["10.0.0.0/8"],
+    )
+    csrf_token, _old_cookie = get_login_form(client, settings)
+
+    response = post_login(
+        client,
+        csrf_token=csrf_token,
+        phone="+99890abc4567",
+        headers={"X-Real-IP": "203.0.113.99"},
+    )
+
+    assert response.status_code == 400
+    assert response.headers["x-error-code"] == ErrorCode.VALIDATION_ERROR.value
+    assert "203.0.113.99" not in response.text
+    assert "192.0.2.50" not in response.text
+    assert get_rate_limit_records(db_session) == []
 
 
 def test_post_login_missing_csrf_fails_before_credentials_are_processed(

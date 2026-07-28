@@ -51,7 +51,7 @@ def make_client(engine: Engine, now: datetime) -> TestClient:
     settings = make_settings(engine)
     application = create_app(settings=settings)
     application.dependency_overrides[get_current_time] = lambda: now
-    return TestClient(application)
+    return TestClient(application, client=("203.0.113.30", 50_000))
 
 
 def commit_user(db_session: Session, phone: str) -> User:

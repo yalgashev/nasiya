@@ -2,7 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.main import create_app
-from app.settings import Settings
+from app.settings import ClientIpMode, Settings
 from app.telegram.bot import TelegramBotUsername
 
 TEST_RATE_LIMIT_HMAC_KEY = "test-rate-limit-hmac-key-for-settings-only"
@@ -27,6 +27,8 @@ SETTINGS_ENV_KEYS = (
     "TELEGRAM_LINK_RATE_LIMIT_IP_ATTEMPTS",
     "RATE_LIMIT_HMAC_KEY",
     "TELEGRAM_BOT_USERNAME",
+    "CLIENT_IP_MODE",
+    "TRUSTED_PROXY_CIDRS",
 )
 
 
@@ -80,6 +82,8 @@ def test_settings_created_with_required_values() -> None:
     assert settings.telegram_link_rate_limit_phone_attempts == 3
     assert settings.telegram_link_rate_limit_ip_attempts == 20
     assert settings.telegram_bot_username is None
+    assert settings.client_ip_mode is ClientIpMode.DIRECT
+    assert settings.trusted_proxy_cidrs == ()
 
 
 def test_settings_requires_database_url() -> None:
@@ -282,12 +286,109 @@ def test_telegram_link_rate_limit_settings_do_not_add_out_of_scope_secrets() -> 
         "telegram_link_token_ttl_seconds",
         "telegram_link_token_retention_days",
         "telegram_link_token_retention_seconds",
-        "client_ip_mode",
-        "trusted_proxy_cidrs",
     }
 
     assert "rate_limit_hmac_key" in Settings.model_fields
     assert forbidden_fields.isdisjoint(Settings.model_fields)
+
+
+def test_client_ip_settings_default_to_direct_without_proxy_allowlist() -> None:
+    settings = make_settings()
+
+    assert settings.client_ip_mode is ClientIpMode.DIRECT
+    assert settings.trusted_proxy_cidrs == ()
+
+
+def test_trusted_proxy_settings_parse_canonical_ipv4_and_ipv6_cidrs() -> None:
+    settings = make_settings(
+        client_ip_mode="trusted_proxy",
+        trusted_proxy_cidrs=[
+            "10.20.30.40/24",
+            "2001:0DB8:0001::1/48",
+            "10.20.30.0/24",
+        ],
+    )
+
+    assert settings.client_ip_mode is ClientIpMode.TRUSTED_PROXY
+    assert tuple(str(network) for network in settings.trusted_proxy_cidrs) == (
+        "10.20.30.0/24",
+        "2001:db8:1::/48",
+    )
+
+
+def test_trusted_proxy_settings_parse_comma_separated_env_value(monkeypatch) -> None:
+    set_required_settings_env(monkeypatch)
+    monkeypatch.setenv("CLIENT_IP_MODE", "trusted_proxy")
+    monkeypatch.setenv(
+        "TRUSTED_PROXY_CIDRS",
+        "10.0.0.1/8, 2001:db8::1/32",
+    )
+
+    settings = Settings(_env_file=None)
+
+    assert settings.client_ip_mode is ClientIpMode.TRUSTED_PROXY
+    assert tuple(str(network) for network in settings.trusted_proxy_cidrs) == (
+        "10.0.0.0/8",
+        "2001:db8::/32",
+    )
+
+
+@pytest.mark.parametrize("mode", ["proxy", "trusted", "DIRECT", ""])
+def test_client_ip_settings_reject_unknown_mode(mode: str) -> None:
+    with pytest.raises(ValidationError):
+        make_settings(client_ip_mode=mode)
+
+
+def test_trusted_proxy_mode_rejects_empty_allowlist() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="trusted_proxy mode requires a non-empty trusted_proxy_cidrs",
+    ):
+        make_settings(client_ip_mode="trusted_proxy")
+
+
+def test_direct_mode_rejects_unused_proxy_allowlist() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="trusted_proxy_cidrs requires client_ip_mode=trusted_proxy",
+    ):
+        make_settings(
+            client_ip_mode="direct",
+            trusted_proxy_cidrs=["10.0.0.0/8"],
+        )
+
+
+@pytest.mark.parametrize(
+    "cidrs",
+    [
+        ["0.0.0.0/0"],
+        ["::/0"],
+        ["not-a-cidr"],
+        ["203.0.113.10"],
+        [""],
+        [123],
+    ],
+)
+def test_trusted_proxy_settings_reject_invalid_or_wildcard_cidrs(
+    cidrs: list[object],
+) -> None:
+    with pytest.raises(ValidationError):
+        make_settings(
+            client_ip_mode="trusted_proxy",
+            trusted_proxy_cidrs=cidrs,
+        )
+
+
+def test_trusted_proxy_settings_error_hides_invalid_input() -> None:
+    raw_cidr = "sensitive.invalid.proxy/24"
+
+    with pytest.raises(ValidationError) as exc_info:
+        make_settings(
+            client_ip_mode="trusted_proxy",
+            trusted_proxy_cidrs=[raw_cidr],
+        )
+
+    assert raw_cidr not in str(exc_info.value)
 
 
 def test_create_app_accepts_explicit_settings() -> None:

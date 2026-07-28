@@ -1,11 +1,19 @@
-from typing import Self
+from enum import StrEnum
+from ipaddress import IPv4Network, IPv6Network, ip_network
+from typing import Annotated, Self
 
 from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from app.telegram.bot import TelegramBotUsername
 
 MIN_RATE_LIMIT_HMAC_KEY_LENGTH = 32
+ClientIpNetwork = IPv4Network | IPv6Network
+
+
+class ClientIpMode(StrEnum):
+    DIRECT = "direct"
+    TRUSTED_PROXY = "trusted_proxy"
 
 
 class Settings(BaseSettings):
@@ -28,6 +36,8 @@ class Settings(BaseSettings):
     telegram_link_rate_limit_ip_attempts: int = Field(default=20, gt=0)
     rate_limit_hmac_key: SecretStr
     telegram_bot_username: TelegramBotUsername | None = None
+    client_ip_mode: ClientIpMode = ClientIpMode.DIRECT
+    trusted_proxy_cidrs: Annotated[tuple[ClientIpNetwork, ...], NoDecode] = ()
 
     model_config = SettingsConfigDict(
         env_prefix="",
@@ -71,6 +81,49 @@ class Settings(BaseSettings):
             return TelegramBotUsername(value)
         raise ValueError("telegram_bot_username must be a string")
 
+    @field_validator("trusted_proxy_cidrs", mode="before")
+    @classmethod
+    def validate_trusted_proxy_cidrs(
+        cls,
+        value: object,
+    ) -> tuple[ClientIpNetwork, ...]:
+        if value is None or value == "":
+            return ()
+        if isinstance(value, str):
+            raw_cidrs: tuple[object, ...] = tuple(value.split(","))
+        elif isinstance(value, (list, tuple)):
+            raw_cidrs = tuple(value)
+        else:
+            raise ValueError("trusted_proxy_cidrs must be a CIDR list")
+
+        networks: list[ClientIpNetwork] = []
+        for raw_cidr in raw_cidrs:
+            if isinstance(raw_cidr, (IPv4Network, IPv6Network)):
+                network = raw_cidr
+            elif isinstance(raw_cidr, str):
+                candidate = raw_cidr.strip()
+                if not candidate or "/" not in candidate:
+                    raise ValueError(
+                        "trusted_proxy_cidrs must contain explicit valid CIDRs"
+                    )
+                try:
+                    network = ip_network(candidate, strict=False)
+                except ValueError as exc:
+                    raise ValueError(
+                        "trusted_proxy_cidrs must contain explicit valid CIDRs"
+                    ) from exc
+            else:
+                raise ValueError(
+                    "trusted_proxy_cidrs must contain explicit valid CIDRs"
+                )
+
+            if network.prefixlen == 0:
+                raise ValueError("trusted_proxy_cidrs must not trust all addresses")
+            if network not in networks:
+                networks.append(network)
+
+        return tuple(networks)
+
     @model_validator(mode="after")
     def validate_settings(self) -> Self:
         if self.password_max_length < self.password_min_length:
@@ -84,5 +137,16 @@ class Settings(BaseSettings):
         ):
             raise ValueError(
                 "session_cookie_secure must be true in production environment"
+            )
+        if (
+            self.client_ip_mode is ClientIpMode.TRUSTED_PROXY
+            and not self.trusted_proxy_cidrs
+        ):
+            raise ValueError(
+                "trusted_proxy mode requires a non-empty trusted_proxy_cidrs"
+            )
+        if self.client_ip_mode is ClientIpMode.DIRECT and self.trusted_proxy_cidrs:
+            raise ValueError(
+                "trusted_proxy_cidrs requires client_ip_mode=trusted_proxy"
             )
         return self

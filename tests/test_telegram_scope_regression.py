@@ -62,8 +62,6 @@ FORBIDDEN_APP_RUNTIME_MARKERS = (
     "otpdeliveryprovider",
     "otp_challenge",
     "otp_code",
-    "client_ip_mode",
-    "trusted_proxy_cidrs",
     "x-forwarded-for",
     "proxy_middleware",
     "current_password",
@@ -222,7 +220,7 @@ def test_no_production_telegram_route_webhook_callback_or_public_csrf_bypass(
     assert unprotected_unsafe_routes == []
 
 
-def test_no_bot_credential_transport_worker_qr_otp_proxy_or_scheduler_runtime() -> None:
+def test_no_bot_credential_transport_worker_qr_otp_or_scheduler_runtime() -> None:
     dependency_names = production_dependency_names()
     source_text = app_source_text().casefold()
     settings_fields = set(Settings.model_fields)
@@ -233,6 +231,7 @@ def test_no_bot_credential_transport_worker_qr_otp_proxy_or_scheduler_runtime() 
     assert dependency_names.isdisjoint(FORBIDDEN_PRODUCTION_DEPENDENCIES)
     assert "telegram_bot_token" not in settings_fields
     assert "telegram_bot_token" not in main_env_keys
+    assert {"client_ip_mode", "trusted_proxy_cidrs"}.issubset(settings_fields)
     assert "TELEGRAM_BOT_TOKEN" not in env_example_text
     assert "TELEGRAM_BOT_TOKEN" not in compose_text
     assert "CLIENT_IP_MODE" not in env_example_text

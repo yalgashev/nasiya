@@ -2,13 +2,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
 
-from fastapi import Request
 from sqlalchemy.orm import Session as DatabaseSession
 
 from app.auth.error_codes import ErrorCode, get_public_error_body
 from app.auth.phone import PhoneNormalizationError, normalize_uzbekistan_phone
 from app.auth.rate_limit import AuthRateLimiter, RateLimitResult
 from app.settings import Settings
+from app.telegram.client_ip import ResolvedClientIp
 
 LOGIN_PHONE_SCOPE: Final = "login_phone"
 LOGIN_IP_SCOPE: Final = "login_ip"
@@ -36,28 +36,28 @@ class LoginRateLimitPolicy:
     def check(
         self,
         phone_input: str,
-        client_host: str,
+        client_ip: ResolvedClientIp,
         now: datetime,
     ) -> LoginRateLimitResult:
         return check_login_rate_limit(
             self.db,
             self.settings,
             phone_input,
-            client_host,
+            client_ip,
             now,
         )
 
     def record_failure(
         self,
         phone_input: str,
-        client_host: str,
+        client_ip: ResolvedClientIp,
         now: datetime,
     ) -> LoginRateLimitResult:
         return record_login_failure(
             self.db,
             self.settings,
             phone_input,
-            client_host,
+            client_ip,
             now,
         )
 
@@ -65,24 +65,17 @@ class LoginRateLimitPolicy:
         return clear_login_phone_failures(self.db, self.settings, phone_input)
 
 
-def get_login_client_host(request: Request) -> str:
-    client = request.client
-    if client is None or not client.host.strip():
-        raise ValueError("login client host is required")
-    return client.host
-
-
 def check_login_rate_limit(
     db: DatabaseSession,
     settings: Settings,
     phone_input: str,
-    client_host: str,
+    client_ip: ResolvedClientIp,
     now: datetime,
 ) -> LoginRateLimitResult:
     limiter = AuthRateLimiter(db=db, settings=settings)
     ip_result = limiter.check(
         LOGIN_IP_SCOPE,
-        _normalize_client_host(client_host),
+        client_ip.as_hmac_input(),
         now,
         settings.login_rate_limit_ip_attempts,
         settings.login_rate_limit_window_seconds,
@@ -108,13 +101,13 @@ def record_login_failure(
     db: DatabaseSession,
     settings: Settings,
     phone_input: str,
-    client_host: str,
+    client_ip: ResolvedClientIp,
     now: datetime,
 ) -> LoginRateLimitResult:
     limiter = AuthRateLimiter(db=db, settings=settings)
     ip_result = limiter.record_failure(
         LOGIN_IP_SCOPE,
-        _normalize_client_host(client_host),
+        client_ip.as_hmac_input(),
         now,
         settings.login_rate_limit_ip_attempts,
         settings.login_rate_limit_window_seconds,
@@ -175,10 +168,3 @@ def _normalize_phone_or_none(phone_input: str) -> str | None:
         return normalize_uzbekistan_phone(phone_input)
     except PhoneNormalizationError:
         return None
-
-
-def _normalize_client_host(client_host: str) -> str:
-    normalized_host = client_host.strip()
-    if not normalized_host:
-        raise ValueError("login client host is required")
-    return normalized_host

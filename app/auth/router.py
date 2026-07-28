@@ -23,7 +23,7 @@ from app.auth.deps import (
     validate_csrf,
 )
 from app.auth.error_codes import ErrorCode, get_error_http_status, get_public_error_body
-from app.auth.login_rate_limit import LoginRateLimitPolicy, get_login_client_host
+from app.auth.login_rate_limit import LoginRateLimitPolicy
 from app.auth.phone import (
     PhoneNormalizationError,
     mask_phone_for_display,
@@ -43,9 +43,9 @@ from app.auth.sessions import (
     rotate_session,
 )
 from app.auth.template_context import with_csrf_context
+from app.request_client_ip import ClientIpResolutionError, resolve_client_ip
 from app.security_headers import mark_auth_response_no_store
 from app.settings import Settings
-from app.telegram.client_ip import ResolvedClientIp
 from app.telegram.service import (
     TelegramLinkLifecycleInternalError,
     TelegramLinkStatus,
@@ -124,12 +124,21 @@ def submit_login(
     next_url: Annotated[str | None, Form(alias="next")] = None,
 ) -> Response:
     _ = _csrf
-    client_host = get_login_client_host(request)
+    try:
+        client_ip = resolve_client_ip(request, settings)
+    except ClientIpResolutionError:
+        return _render_login_failure(
+            request=request,
+            context=context,
+            message=LOGIN_FAILED_MESSAGE,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code=ErrorCode.VALIDATION_ERROR,
+        )
     rate_limit_policy = LoginRateLimitPolicy(db=db, settings=settings)
     if not _is_login_input_valid(phone, password):
         validation_rate_limit_result = rate_limit_policy.record_failure(
             phone,
-            client_host,
+            client_ip,
             now,
         )
         if not validation_rate_limit_result.allowed:
@@ -150,7 +159,7 @@ def submit_login(
             error_code=ErrorCode.VALIDATION_ERROR,
         )
 
-    rate_limit_result = rate_limit_policy.check(phone, client_host, now)
+    rate_limit_result = rate_limit_policy.check(phone, client_ip, now)
     if not rate_limit_result.allowed:
         return _render_login_failure(
             request=request,
@@ -166,7 +175,7 @@ def submit_login(
     if user is None:
         failure_rate_limit_result = rate_limit_policy.record_failure(
             phone,
-            client_host,
+            client_ip,
             now,
         )
         if not failure_rate_limit_result.allowed:
@@ -303,8 +312,9 @@ def issue_telegram_link_token(
     except LoginRequired:
         return _redirect_auth_login(context, settings)
 
-    client_ip = _resolve_telegram_client_ip(request)
-    if client_ip is None:
+    try:
+        client_ip = resolve_client_ip(request, settings)
+    except ClientIpResolutionError:
         return _render_telegram_public_error(
             request,
             ErrorCode.VALIDATION_ERROR,
@@ -356,8 +366,9 @@ def issue_telegram_relink_token(
     except LoginRequired:
         return _redirect_auth_login(context, settings)
 
-    client_ip = _resolve_telegram_client_ip(request)
-    if client_ip is None:
+    try:
+        client_ip = resolve_client_ip(request, settings)
+    except ClientIpResolutionError:
         return _render_telegram_public_error(
             request,
             ErrorCode.VALIDATION_ERROR,
@@ -736,16 +747,6 @@ def _render_telegram_public_error(
 
 def _render_telegram_error_fragment(message: str) -> str:
     return f'<div role="alert">{escape(message)}</div>'
-
-
-def _resolve_telegram_client_ip(request: Request) -> ResolvedClientIp | None:
-    client = request.client
-    if client is None:
-        return None
-    try:
-        return ResolvedClientIp(client.host)
-    except ValueError:
-        return None
 
 
 def _telegram_status_label(link_status: TelegramLinkStatus) -> str:
