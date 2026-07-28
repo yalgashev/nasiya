@@ -25,47 +25,48 @@ the dependency/license/maintenance decision record for the current M6 scope.
 | ID | Decision | Implementation rule |
 | --- | --- | --- |
 | PO-M6-1 | `/auth/telegram/*` is account-scoped. | Use `get_current_session_context`, `require_user`, CSRF, no-store, and `get_database_session`. Do not use `require_shop_staff`, `resolve_current_shop`, `active_shop_id`, shop membership, or shop status gates. |
-| PO-M6-2 | A/B/C policy is fixed. | A: account web issue/reveal/status/unlink. B: domain consume/relink/unlink mutation. C: future bot reply/delivery. A and B are current M6 implementation categories; C stays contract-only until transport is approved. |
-| PO-M6-3 | Exact limits/timeouts are fixed. | Telegram attempt window `900s`; attempts: user `3`, phone `3`, IP `20`. DB test lock timeout `5000ms`, statement timeout `10000ms`. Compose db health interval `10s`, timeout `5s`, retries `5`, start_period `10s`. CI Postgres health interval `10s`, timeout `5s`, retries `5`. |
-| PO-M6-4 | Bot reply is post-commit and private. | If a future worker sends a bot message, it sends only after DB commit. Rollback means no success reply. Reply text is Uzbek by default and never includes token, token hash, phone, user id, shop data, debt/customer data, or raw update payload. |
-| PO-M6-5 | Dependency default is no new runtime package in current M6. | Runtime HTTP client is not added. `httpx` is the only approved future HTTP client package if worker transport is approved. QR encoder and QR image format are not approved in current M6; current reveal is a plain Telegram HTTPS start link. |
+| PO-M6-2 | Poison update A/B/C policy is fixed. | A expected terminal: cursor advance/no retry. B explicit transient allowlist: no cursor advance/no poison count. C unknown TX-A handler failure: durable count; attempt 5 quarantines and advances cursor atomically in TX-B. Successful retry deletes a non-quarantined row. Unknown TX-B failure is fatal. |
+| PO-M6-3 | Worker lifecycle/deployment values are fixed. | Long poll `25s`; HTTP read timeout `35s`; advisory lock deadline `60s`; stop grace `45s`; replica `1`; restart `unless-stopped`. Migrate one-shot before web/worker. PostgreSQL heartbeat target `10s`, stale `60s`; healthcheck interval `15s`, timeout `5s`, retries `3`, start period `20s`. Web `/health` stays worker-independent. |
+| PO-M6-4 | One-time reveal is a narrow PRG exception. | Authenticated HTMX POST returns raw deep-link once in a `no-store`, `hx-history=false` fragment; no push URL/storage. Non-HTMX/JS-off POST does not mutate and returns `303` to safe GET. `HX-Request` is not a security boundary. |
+| PO-M6-5 | Bot reply, language, privacy, and dependencies are fixed. | Reply only after TX-A commit and outside DB transactions; failure does not roll back or poison-count. Web status is canonical. Uzbek Latin and Russian safe text reveals no account/collision detail. Approve runtime `httpx>=0.28.1,<0.29` and local QR `segno>=1.6.6,<2`, in-memory PNG. |
 
 ## 3. A/B/C Policy Detail
 
-| Policy | Owner | Allowed work | Disallowed work |
+| Policy | Meaning | Cursor/ledger behavior | Examples |
 | --- | --- | --- | --- |
-| A | Account web route | Authenticated current user status, issue link token, issue relink token, unlink, one-time HTMX reveal. | Shop context, real Bot API, QR image, current-password re-auth, raw IDs in HTML. |
-| B | Domain service | Token consume, relink, unlink, expected collision recovery, event append, token invalidation. | Commit/rollback/close, HTTP calls, Telegram update parsing, raw token persistence. |
-| C | Future delivery | Post-commit generic Uzbek bot reply after future transport approval. | Pre-commit reply, reply with PII, CI real Telegram network, worker without fail-closed token policy. |
+| A | Expected terminal update/domain outcome. | TX-A advances cursor; no retry or poison count. | Irrelevant/non-private/malformed start, invalid/expired/replayed token, idempotent same chat, collision/no takeover. |
+| B | Explicit transient infrastructure failure. | Roll back; cursor and failure ledger unchanged; retry with bounded policy. | Approved SQLSTATEs, connection invalidation, pool timeout, transport 429/5xx/network timeout. |
+| C | Unknown or unexpected TX-A handler failure. | TX-A rolls back; fresh TX-B increments durable count. Attempt 5 writes quarantine and advances cursor atomically. | Unknown application/handler defect with sanitized stable failure code. |
 
 ## 4. SQLSTATE Allowlist
 
 | SQLSTATE | Name | Decision |
 | --- | --- | --- |
-| `23505` | unique_violation | Expected collision/race category. |
-| `23503` | foreign_key_violation | Constraint test category only. |
-| `23514` | check_violation | Constraint test category only. |
-| `40001` | serialization_failure | Safe retry or fail-closed race category. |
-| `40P01` | deadlock_detected | Safe retry or fail-closed race category. |
-| `55P03` | lock_not_available | Safe retry or fail-closed lock category. |
-| `57014` | query_canceled | Test statement-timeout category. |
+| `40001` | serialization_failure | B transient. |
+| `40P01` | deadlock_detected | B transient. |
+| `55P03` | lock_not_available | B transient. |
+| class `08` | connection exception | B transient. |
+| `57P01`, `57P02`, `57P03` | operator intervention | B transient. |
+| `53300` | too_many_connections | B transient. |
+| `57014` | query_canceled | B only for known statement timeout; controlled shutdown is not A/B/C. |
 
-All other SQLSTATE values are unapproved for public branching.
+`connection_invalidated` and pool checkout timeout are also B. Exception class
+alone is not enough. Unknown TX-A failure defaults to C; unknown TX-B failure
+is fatal.
 
 ## 5. Dependency License And Maintenance
 
-No new runtime dependency is approved for current M6, so no new package license
-or maintenance review is required for M6.05.
+Approved production dependencies:
 
-Future dependency rule:
-
-- HTTP client: `httpx` only, because it already exists as a dev dependency for
-  Starlette/FastAPI TestClient support. Moving it to runtime requires a lockfile
-  change and this file must record the license/maintenance review in the same
-  change.
-- QR encoder: no encoder is approved. Any future QR work must first name the
-  package, output format, license, maintenance status, and whether it requires
-  image libraries such as Pillow.
+- HTTP client: `httpx>=0.28.1,<0.29`; exact current lock `0.28.1`. It is
+  BSD-3-Clause, maintained by Encode, supports async clients and injected
+  transports, and is already locked for dev TestClient usage. M6.12 promotes
+  it to a direct runtime dependency; the M5 deprecation warning is not the
+  approval evidence.
+- QR encoder: `segno>=1.6.6,<2`; approved lock target `1.6.6`. It is
+  production/stable, BSD licensed, pure Python, dependency-free, and supports
+  local in-memory PNG generation. M6 uses PNG only, with no external QR API,
+  temp file, Pillow, SVG active content, or JavaScript encoder.
 
 ## 6. CI And Deployment Decisions
 
@@ -76,5 +77,12 @@ Future dependency rule:
 - Keep Alembic head assertion, but update its expected revision only after the
   M6 migration exists.
 - Do not add Telegram credentials or real network to CI.
-- Do not add worker service, restart policy, stop grace period, or worker
-  healthcheck until PO-M6 explicitly approves real transport.
+- `getUpdates` long poll: `25s`; HTTP read timeout: `35s`.
+- PostgreSQL advisory lock acquisition deadline: `60s`.
+- Worker replica: `1`; restart: `unless-stopped`; stop grace: `45s`.
+- Migration ownership: one-shot Compose service after DB health; web and worker
+  start only after successful migration.
+- Worker heartbeat target: `10s`; stale threshold: `60s`. Healthcheck CLI
+  interval `15s`, timeout `5s`, retries `3`, start period `20s`.
+- Web `/health` remains independent of worker health and web starts without the
+  bot token. Worker fails closed when the token is absent or empty.

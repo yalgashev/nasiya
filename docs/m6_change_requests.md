@@ -16,16 +16,19 @@ semantik o'zgartirilmaydi; M6 implementation tafsilotlari ushbu hujjat va
 | CR-M6-02 | Yopildi | Qoldiqdan katta to'lov qat'iy rad etiladi. | `PAYMENT_EXCEEDS_BALANCE` M6 debt/payment scopeida stable error sifatida kiritiladi; customer credit/wallet subsystemi qo'shilmaydi. |
 | CR-M6-03 | Yopildi | Clawback reversal faqat shop owneri yoki platforma admini tomonidan, sabab bilan, auditlangan holda bajariladi. | Cashier/manager reversal qilmaydi; reversal faqat `overdue` holatda va `written_off`dan oldin ruxsat etiladi. |
 
-## M6.01 uchun disposition
+## Joriy M6 disposition
 
-M6.01 debt/payment implementatsiyasini boshlamaydi. M6.01 faqat shop settings
-foundation:
+CR-M6-01...03 product qarorlari saqlanadi, ammo ular joriy M6 capability'sini
+kengaytirmaydi. Product Ownerning `defaul qarorlar bilan yopilsin` qarori va
+v0.9 execution authorizationiga ko'ra joriy M6 faqat **Production Telegram
+Linking**:
 
-- `default_discount_percent`
-- `default_due_days`
-- `default_credit_limit`
-- `default_max_open_debts`
-- `shop_news_daily_limit`
+- authenticated account deep-link/QR va HTMX status;
+- dedicated long-polling worker;
+- M4 linking domainiga atomic consume bridge;
+- cursor, heartbeat, quarantine va post-commit private bot reply;
+- current-password protected unlink/relink.
 
-Debt/payment, badal, overpayment va clawback reversal implementatsiyasi shop
-settings foundationdan keyingi M6 milestonelariga qoladi.
+Shop settings, debt/payment, badal, overpayment va clawback keyingi alohida
+milestonega qoldiriladi. Ular M6.01 yoki boshqa M6 mikro-vazifasiga yashirincha
+kiritilmaydi.

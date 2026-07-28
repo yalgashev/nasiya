@@ -105,33 +105,35 @@ solutions from `docs/m6_decisions.md`.
 
 | Need | Evidence | M6 rule |
 | --- | --- | --- |
-| Runtime dependencies | `pyproject.toml:7`; `uv.lock:429` | No runtime HTTP client or QR encoder in current M6. |
-| Dev `httpx` | `pyproject.toml:21`; `uv.lock:441` | TestClient/dev only; not runtime approval by itself. |
+| Runtime dependencies | `pyproject.toml:7`; `uv.lock:429` | M6.12 promotes approved `httpx>=0.28.1,<0.29`; M6.56 adds approved `segno>=1.6.6,<2`. |
+| Dev `httpx` | `pyproject.toml:21`; `uv.lock:306` exact `0.28.1` | Existing TestClient/dev presence is not runtime approval by itself; `docs/m6_decisions.md` is approval. |
 | Starlette/httpx warning | `docs/m5_final_report.md:127` | Existing warning, not application runtime client approval. |
-| QR encoder | `tests/test_telegram_scope_regression.py:29` forbids `qrcode` production dependency | No QR image generation in current M6. |
-| Real Telegram credential | `README.md:58`; `.env.example` has no `TELEGRAM_BOT_TOKEN`; CI has no bot token | No real Telegram credential or network in CI. |
+| QR encoder | `TOPILMADI`; existing M4 containment test forbids unapproved `qrcode` | Add approved `segno` only at M6.56 and update the M4 containment expectation narrowly for M6 production scope. |
+| Real Telegram credential | `.env.example` has no `TELEGRAM_BOT_TOKEN`; CI has no bot token | Web remains credential-free; worker secret is untracked; no real credential/network in CI. |
 
 ## 9. TOPILMADI Minimal Solutions
 
 | Primitive | Audit result | Approved minimal solution |
 | --- | --- | --- |
-| Current-password re-auth | `TOPILMADI`; unlink signature has no password parameter at `tests/test_telegram_unlink_service.py:218` | Do not add for M6. Use authenticated account session plus CSRF. |
-| Runtime external HTTP client | `TOPILMADI` | Do not add. Future worker may use `httpx` only after dependency decision. |
-| QR encoder | `TOPILMADI` | Do not add. Reveal plain Telegram HTTPS start link only. |
-| i18n framework | `TOPILMADI` | Uzbek default strings only for M6; no gettext/Babel. |
-| HTMX polling | `TOPILMADI` | One-time HTMX reveal only; no polling loop. |
-| Worker service | `TOPILMADI` | No worker in current M6; future worker needs token fail-closed, restart, stop_grace_period, healthcheck decision. |
-| Worker healthcheck/restart policy | `TOPILMADI` | Not applicable until worker is approved. |
-| Explicit downgrade/revision-by-revision migration walk | `TOPILMADI` | Keep existing `alembic upgrade head` and head assertion; add focused migration tests. |
+| Current-password re-auth | `TOPILMADI`; existing verifier is `app/auth/password_service.py:21` `verify_password` | Add a minimal current-user password verification dependency/service and session-freshness gate; no generic recovery framework. |
+| Runtime external HTTP client | `TOPILMADI` | Promote approved locked `httpx 0.28.1` to runtime at M6.12; use a narrow injected async transport adapter. |
+| QR encoder | `TOPILMADI` | Add approved `segno 1.6.6` at M6.56 and render in-memory PNG of the same one-time deep-link. |
+| i18n framework | `TOPILMADI` | Add a minimal explicit Uzbek-Latin/Russian message catalog for the narrow bot replies; no Babel/gettext framework. |
+| HTMX polling | `TOPILMADI` | Add a bounded account-scoped status fragment poller that stops on terminal/expiry; no WebSocket/SPA. |
+| Worker service | `TOPILMADI` | Reuse the image and `app/cli.py` transaction/command convention with a distinct worker command, one replica, and signal-aware loop. |
+| Worker healthcheck/restart policy | `TOPILMADI` | PostgreSQL heartbeat/readiness plus CLI; `unless-stopped`, stop grace `45s`, freshness threshold `60s`. |
+| Explicit downgrade/revision-by-revision migration walk | `TOPILMADI` | Add focused real-PostgreSQL upgrade/downgrade/re-upgrade tests for the single child of `a6b4c2d8e9f1`. |
 
 ## 10. M6 Test Map
 
 When implementation starts, tests should cover:
 
-- account route auth/session/CSRF/no-store;
-- `/auth/telegram/*` independence from `active_shop_id` and shop membership;
-- link/relink/unlink status transitions through current user only;
-- one-time HTMX reveal with no raw token in URL, logs, or later GET;
-- rate-limit attempts at user/phone/IP buckets;
-- expected SQLSTATE/constraint handling without raw DB detail leaks;
-- CI compatibility with M5 containment guard and full pytest.
+- trusted/direct client-IP settings, resolver, login and issuance integration;
+- fake Bot API transport, preflight, exact timeout/error/backoff semantics;
+- real-PostgreSQL cursor/heartbeat/failure ledger, advisory lock, TX-A/TX-B,
+  quarantine, restart, ordering, and signal cleanup;
+- account route auth/session/CSRF/no-store and independence from shop context;
+- one-time HTMX reveal/polling, same-link QR, password-protected unlink/relink,
+  and no raw token/identity in URL, logs, DB, or later GET;
+- Compose migration ordering, worker health, web independence, and CI
+  compatibility with the M5 containment guard and full pytest.

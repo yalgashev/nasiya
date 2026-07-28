@@ -5,29 +5,36 @@ Date: 2026-07-27
 
 ## KL-M6-01
 
-Title: Real Telegram transport, worker, and QR image generation are not approved
-for current M6.
+Title: Real-bot acceptance requires separate PRE-PRODUCTION credentials and
+operational verification.
 
 Decision:
 
-- Current M6 may document and later implement account-scoped
-  `/auth/telegram/*` web/domain integration.
-- Current M6 must not add real Telegram Bot API calls, `TELEGRAM_BOT_TOKEN`,
-  webhook, polling worker, scheduler, queue, Redis, external network CI, QR
-  encoder dependency, or QR image output.
-- The approved current reveal artifact is a plain HTTPS Telegram start link
-  returned once through an HTMX no-store fragment.
+- M6 implements the production Telegram Bot API adapter, long-polling worker,
+  persisted cursor/quarantine, account web flow, local QR, and protected
+  unlink/relink.
+- All automated tests and CI use injected fake transport with no Telegram
+  credential or real network.
+- A real dev/test bot token and matching strict bot username are accepted only
+  from untracked runtime secret configuration for the explicit M6.72
+  acceptance task.
+- Web startup and `/health` never require the bot token. Worker startup fails
+  closed when the token is missing or empty.
 
 Impact:
 
-- Production bot delivery/reply is contract-only until a later PO decision.
-- QR scanning UX is unavailable in current M6.
-- CI remains zero-credential and zero-real-Telegram-network.
+- M6.01-M6.71 and CI are not blocked by an unavailable real bot.
+- M6.72 must report `BLOCKED: REAL TELEGRAM BOT NOT READY` unless the separate
+  dev bot, username, secret handling, webhook-off state, private `/start`
+  round trip, and no-leak checks can be verified honestly.
+- `M6 TECHNICAL GREEN` may be established with fake transport; production
+  rollout remains gated by this acceptance and the final remote closeout.
 
 Mitigation:
 
-- Keep domain services pure and caller-transaction-owned.
-- Keep fake verified-private Telegram adapter tests.
-- If real transport is later approved, update `docs/m6_decisions.md` first with
-  HTTP client, QR package/format, license/maintenance, worker fail-closed token
-  behavior, restart policy, stop grace period, and healthcheck.
+- Keep the bot token outside tracked files, docs, fixtures, logs, URLs, and
+  exception text.
+- Run M6.72 only with an explicitly prepared dev bot; never improvise a token
+  or convert fake transport evidence into a real acceptance PASS.
+- Keep web health independent so a stopped/unhealthy worker does not break
+  login or M2-M5 web flows.

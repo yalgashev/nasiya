@@ -3,10 +3,11 @@
 Status: PO-M6 DEFAULT DECISIONS CLOSED
 Date: 2026-07-27
 
-This document is the M6 implementation contract after PO approval in chat:
-`defaul qarorlar bilan yopilsin`. It supersedes unclear PRE-M6 options for
-the current M6 Telegram-linking slice without changing TT text, product code,
-dependencies, CI, or migrations.
+This document is the executable M6 implementation contract after PO approval
+in chat: `defaul qarorlar bilan yopilsin`, followed by authorization to execute
+the v0.9 guide from M6.06 onward. The single M6 capability is Production
+Telegram Linking for an existing authenticated account. This freeze does not
+change the TT text.
 
 ## 1. Baseline
 
@@ -27,58 +28,68 @@ the report.
 | ID | Source | Decision | M6 impact |
 | --- | --- | --- | --- |
 | M4-I01 | `app/telegram/service.py` | Telegram link lifecycle is server-side domain logic: issue, consume, status, unlink, relink. | M6 must reuse caller-owned transaction services and must not add real Bot API transport to domain code. |
-| M4-I02 | `app/telegram/inbound.py` | Inbound identity is a typed verified private chat id; fake adapter is zero-network. | M6 tests use fake transport only; no CI Telegram credential or network. |
-| M4-I03 | `app/telegram/client_ip.py` | Client IP is `ResolvedClientIp`, redacted and canonicalized. | M6 account routes must pass a resolved IP primitive without storing raw IP. |
+| M4-I02 | `app/telegram/inbound.py` | Inbound identity is a typed verified private chat id; fake adapter is zero-network. | Automated tests use fake transport. Only the explicit M6.72 acceptance may use a real dev bot; CI never does. |
+| M4-I03 | `app/telegram/client_ip.py` | Client IP is `ResolvedClientIp`, redacted and canonicalized. | Login and Telegram issuance adapters use one fail-closed `direct | trusted_proxy` resolver without storing raw IP. |
 | M4-I04 | `app/telegram/rate_limit.py` and settings | Telegram issuance rate limits are 900 seconds: 3 user attempts, 3 phone attempts, 20 IP attempts. | M6 reuses these exact attempt limits. |
 | M5-I01 | `app/db.py` and `app/cli.py` | Request and non-request DB work have caller-owned transaction boundaries. | M6 services do not commit, rollback, or close sessions. |
 | M5-I02 | `app/auth/models.py` | `sessions.active_shop_id` exists for shop context only. | `/auth/telegram/*` must not depend on selected shop state. |
 | M5-I03 | `.github/workflows/ci.yml` | CI is one job, with Alembic migration, head assertion, Ruff, M5 containment guard, and full pytest. | M6 keeps the single-job shape and only updates the hardcoded head when a new migration exists. |
 
-Earlier PRE-M6 debt/payment and shop-settings decisions remain recorded in
-`docs/m6_change_requests.md`. They do not expand the current
-`/auth/telegram/*` account-linking slice.
+Earlier debt/payment and shop-settings decisions remain recorded in
+`docs/m6_change_requests.md` for a later milestone. They do not expand or
+replace the current Production Telegram Linking capability.
 
 ## 3. New PO-M6 Decisions
 
 | ID | Decision |
 | --- | --- |
-| PO-M6-1 | Current M6 scope is account-scoped Telegram linking UI/foundation under `/auth/telegram/*`. It is independent of `active_shop_id`, shop membership, shop status, and `require_shop_staff`. |
-| PO-M6-2 | A/B/C policy is adopted for account linking: A = account web token issue/reveal/status/unlink; B = domain consume/relink/unlink state transition; C = future bot reply/delivery. A and B can be implemented in M6; C is contract-only unless a later PO decision adds real transport. |
-| PO-M6-3 | Exact concurrency/deployment values are fixed for M6 tests and docs: PostgreSQL `lock_timeout = '5000ms'`, `statement_timeout = '10000ms'`; Compose db healthcheck interval `10s`, timeout `5s`, retries `5`, start_period `10s`; CI Postgres health interval `10s`, timeout `5s`, retries `5`. |
-| PO-M6-4 | Bot reply contract is post-commit, private, generic, and Uzbek by default. It must not include raw token, token hash, phone, user id, shop id/name, debt/customer data, or Telegram update payload. |
-| PO-M6-5 | No new runtime HTTP client or QR encoder is added in current M6. If a future M6 worker needs HTTP, `httpx` is the only approved package and must be moved from dev to runtime with lock and license/maintenance evidence. QR encoder and image format are not approved in current M6; the approved current reveal is a plain HTTPS Telegram start link only. |
+| PO-M6-1 | M6 turns the M4 Telegram-linking domain foundation into a production long-polling adapter and authenticated account web flow. `/auth/telegram/*` remains independent of `active_shop_id`, shop membership/status, `resolve_current_shop`, and `require_shop_staff`. |
+| PO-M6-2 | A/B/C update policy is fixed: A = expected terminal, cursor advances and no retry; B = explicit transient infrastructure allowlist, no cursor advance and no poison count; C = unknown/unexpected TX-A handler failure, durable count, with attempt 5 quarantined and cursor advanced atomically in TX-B. Successful retry deletes a non-quarantined ledger row; unknown TX-B failure is fatal. |
+| PO-M6-3 | Worker values are fixed: `getUpdates` long poll `25s`, HTTP read timeout `35s`, advisory-lock acquisition deadline `60s`, Compose `stop_grace_period: 45s`, replica `1`, `restart: unless-stopped`. Migrations run in a one-shot service before web/worker. Worker health uses PostgreSQL readiness/heartbeat plus a CLI; heartbeat interval target `10s`, stale threshold `60s`, Compose healthcheck interval `15s`, timeout `5s`, retries `3`, start period `20s`. Web `/health` is independent of worker health. |
+| PO-M6-4 | The authenticated HTMX issue/relink POST may return the raw token only once in a `no-store`, `hx-history="false"` fragment without changing the top-level GET URL. Non-HTMX/JS-off POST does not mutate and redirects `303` to a safe GET. `HX-Request` is not an authorization boundary. |
+| PO-M6-5 | Bot reply is sent only after TX-A commit, outside every DB transaction. Failure never rolls back domain/cursor or enters poison accounting. Web status is canonical. Safe messages are available in Uzbek Latin and Russian and reveal no account/collision/token/update detail. Runtime dependencies are `httpx>=0.28.1,<0.29` (locked `0.28.1`, BSD-3-Clause) and local QR encoder `segno>=1.6.6,<2` (locked `1.6.6`, BSD, dependency-free), producing in-memory PNG only. |
 
 ## 4. IN Scope
 
-- Account-authenticated `/auth/telegram/*` route contract and future
-  implementation map.
-- Telegram link status, issue link token, issue relink token, unlink, and
-  safe public error handling for the current authenticated user.
-- One-time HTMX reveal for raw Telegram start link after successful issue or
-  relink token creation.
-- CSRF, no-store, security headers, XSS-safe fragments, and no token/PII leaks.
-- Existing rate limit settings: 900-second window, 3 user attempts, 3 phone
-  attempts, 20 IP attempts.
-- Caller-owned transaction pattern; account routes use request-scoped DB
-  dependency, while services keep commit/rollback/close outside.
-- CI preservation plan: one job, PostgreSQL service, Alembic upgrade/current,
-  head assertion, Ruff, M5 containment guard, full pytest.
-- Documentation-only baseline and repository map in M6.05.
+- Shared fail-closed `direct | trusted_proxy` client-IP resolver integrated
+  with login and Telegram token issuance.
+- Narrow Telegram Bot API client (`getMe`, `getWebhookInfo`, `getUpdates`, and
+  `sendMessage`) and credential-safe startup preflight.
+- Dedicated long-polling worker with one PostgreSQL advisory-lock owner,
+  persisted monotonic cursor, heartbeat/readiness, graceful shutdown, and
+  explicit retry/fatal transport classification.
+- TX-A domain/cursor atomic processing and TX-B durable poison bookkeeping,
+  fifth-attempt quarantine, and post-commit reply boundary.
+- Account-authenticated `/auth/telegram/*` status, one-time issue/relink
+  reveal, HTMX status polling, QR of the same deep-link, and current-password
+  protected unlink/relink.
+- CSRF, no-store, security headers, XSS-safe fragments, redacted secrets and
+  identifiers, and no raw update/token/chat/IP persistence or logging.
+- Existing rate limits: 600-second token TTL; 900-second issuance window;
+  3 user, 3 phone, and 20 IP attempts.
+- Caller-owned request, worker TX-A, and worker TX-B transactions. Services and
+  repositories never commit, fully roll back, or close caller sessions.
+- One-shot migration service, same-image worker command, healthcheck CLI, and
+  web operation independent of worker availability.
+- CI preservation: one `dependency-sync` job, PostgreSQL, Alembic
+  upgrade/current and exact head assertion, Ruff, M5 containment guard, and
+  full pytest without real Telegram credentials/network.
 
 ## 5. OUT Scope
 
-- Product code, migration, dependency, Compose, Dockerfile, or CI edits in
-  M6.05.
-- Real Telegram Bot API calls, `TELEGRAM_BOT_TOKEN`, webhook, polling worker,
-  scheduler, Redis/queue, external network CI, or production bot transport.
-- QR image generation, QR encoder dependency, PNG/SVG QR output, or camera
-  scanning assumptions.
-- Debt/payment, badal, overpayment, clawback reversal implementation, customer
-  activation, OTP, SMS, PWA/service worker, object storage, admin approval.
+- OTP challenge/delivery/hash/replay, SMS, phone+OTP login, public
+  registration, new-user creation, customer activation/status changes, and
+  forgotten-password/account recovery.
+- F.I.Sh., JSHSHIR, passport/document PII, object storage, oferta acceptance,
+  `shop_customer`, owner application, or admin approval UI.
+- Debt, payment, badal, overpayment, clawback, rating, eligibility, shop
+  settings, generic notification/outbox, scheduler, or generic monitoring UI.
+- Webhook/public Telegram callback, Redis/queue, WebSocket, SPA framework, or
+  admin-assisted Telegram unlink.
 - Shop-scoped authorization for `/auth/telegram/*`; no `require_shop_staff`,
   no `active_shop_id` requirement, no shop suspend gate for account routes.
-- Current-password re-auth for Telegram unlink; M6 uses current authenticated
-  account session plus CSRF.
+- Real Telegram credential/network in automated tests or CI. A separately
+  approved dev-bot acceptance is limited to M6.72.
 
 ## 6. Route And UX Contract
 
@@ -86,13 +97,15 @@ Earlier PRE-M6 debt/payment and shop-settings decisions remain recorded in
 | --- | --- | --- |
 | `GET /auth/telegram/status` | Account scoped | Returns current user's `LINKED` or `UNLINKED` state. No shop context. |
 | `POST /auth/telegram/link-token` | Account scoped | Issues first-link token only when user is unlinked. CSRF required. Rate-limited. |
-| `POST /auth/telegram/relink-token` | Account scoped | Issues relink token only when user is linked. CSRF required. Rate-limited. |
-| `POST /auth/telegram/unlink` | Account scoped | Unlinks current user's Telegram link. CSRF required. No password/current_password parameter. |
+| `POST /auth/telegram/relink-token` | Account scoped | Requires current-password re-auth, then issues a one-time relink token. CSRF required and rate-limited. |
+| `POST /auth/telegram/unlink` | Account scoped | Requires current-password re-auth, CSRF, and a fresh authenticated session before unlinking. |
 
-All state-changing routes use PRG except the HTMX one-time reveal response.
-The HTMX exception is allowed because the raw token/start link is not stored
-and cannot be safely reconstructed later. The reveal response must be
-`Cache-Control: no-store` and must not include raw DB identifiers.
+All state-changing routes use PRG except the narrowly approved authenticated
+HTMX one-time reveal response. Its top-level URL remains GET, history is
+disabled, no push URL or browser storage is used, and the response is
+`Cache-Control: no-store`. A non-HTMX/JS-off POST performs no mutation and
+returns `303` to a safe GET. `HX-Request` is never trusted as a security
+boundary.
 
 ## 7. Error And SQLSTATE Contract
 
@@ -102,26 +115,32 @@ Expected public error codes reuse existing stable codes where possible:
 `TELEGRAM_CHAT_ALREADY_LINKED`, `LINK_TOKEN_INVALID`, `FORBIDDEN`, and
 `VALIDATION_ERROR`.
 
-M6 expected PostgreSQL SQLSTATE allowlist:
+M6 transient infrastructure B-allowlist:
 
 | SQLSTATE | Meaning | Use |
 | --- | --- | --- |
-| `23505` | unique_violation | Expected race/collision on one outstanding token or active chat uniqueness. |
-| `23503` | foreign_key_violation | Expected only in migration/constraint tests. |
-| `23514` | check_violation | Expected only in migration/constraint tests. |
-| `40001` | serialization_failure | Safe retry/fail-closed race category. |
-| `40P01` | deadlock_detected | Safe retry/fail-closed race category. |
-| `55P03` | lock_not_available | Safe retry/fail-closed lock category. |
-| `57014` | query_canceled | Statement timeout category for concurrency tests. |
+| `40001` | serialization_failure | Transient, no cursor/ledger mutation. |
+| `40P01` | deadlock_detected | Transient, no cursor/ledger mutation. |
+| `55P03` | lock_not_available | Transient, no cursor/ledger mutation. |
+| class `08` | connection exception | Transient infrastructure failure. |
+| `57P01`, `57P02`, `57P03` | operator intervention | Transient infrastructure failure. |
+| `53300` | too_many_connections | Transient resource failure. |
+| `57014` | query_canceled | B only for known statement timeout; worker shutdown cancellation is control flow. |
 
-Any other SQLSTATE is not an expected M6 business outcome and must become an
-internal failure or test failure, not a new silent public branch.
+`connection_invalidated` and pool-checkout timeout are B. Exception class alone
+is insufficient. Unknown TX-A errors default to C; unknown TX-B failures are
+fatal and never recurse into poison handling.
 
 ## 8. Migration And CI Contract
 
 - M6 starts from Alembic head `a6b4c2d8e9f1`.
 - Any M6 migration must be a single linear child of `a6b4c2d8e9f1` unless a
   later PO/engineering decision says otherwise.
+- Compose runs migrations in one one-shot service after database health and
+  before both web and worker. Worker uses the same image and a distinct command.
+- Web starts without `TELEGRAM_BOT_TOKEN`; worker fails closed when it is
+  missing/empty. Worker replica count is one, restart policy is
+  `unless-stopped`, and stop grace is `45s`.
 - CI keeps `dependency-sync` as the single job.
 - CI keeps `uv sync --dev --frozen`, `uv run alembic upgrade head`,
   `uv run alembic current`, Ruff check/format, M5 containment guard, and full
