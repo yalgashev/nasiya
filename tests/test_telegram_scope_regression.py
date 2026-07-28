@@ -33,7 +33,6 @@ FORBIDDEN_PRODUCTION_DEPENDENCIES = {
     "celery",
     "dramatiq",
     "huey",
-    "httpx",
     "python-telegram-bot",
     "qrcode",
     "redis",
@@ -41,18 +40,12 @@ FORBIDDEN_PRODUCTION_DEPENDENCIES = {
     "rq",
 }
 FORBIDDEN_APP_RUNTIME_MARKERS = (
-    "telegram_bot_token",
-    "getupdates",
     "setwebhook",
-    "webhook",
-    "long_poll",
-    "long-poll",
     "polling_state",
     "telegram.polling",
     "telegram.bot(",
     "aiogram",
     "python-telegram-bot",
-    "botapi",
     "qrcode",
     "qr_code",
     "apscheduler",
@@ -220,7 +213,7 @@ def test_no_production_telegram_route_webhook_callback_or_public_csrf_bypass(
     assert unprotected_unsafe_routes == []
 
 
-def test_no_bot_credential_transport_worker_qr_otp_or_scheduler_runtime() -> None:
+def test_m6_transport_keeps_unapproved_worker_qr_otp_and_scheduler_out() -> None:
     dependency_names = production_dependency_names()
     source_text = app_source_text().casefold()
     settings_fields = set(Settings.model_fields)
@@ -229,7 +222,8 @@ def test_no_bot_credential_transport_worker_qr_otp_or_scheduler_runtime() -> Non
     compose_text = (PROJECT_ROOT / "compose.yaml").read_text(encoding="utf-8")
 
     assert dependency_names.isdisjoint(FORBIDDEN_PRODUCTION_DEPENDENCIES)
-    assert "telegram_bot_token" not in settings_fields
+    assert "httpx" in dependency_names
+    assert "telegram_bot_token" in settings_fields
     assert "telegram_bot_token" not in main_env_keys
     assert {"client_ip_mode", "trusted_proxy_cidrs"}.issubset(settings_fields)
     assert "TELEGRAM_BOT_TOKEN" not in env_example_text

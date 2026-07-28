@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from enum import StrEnum
 from ipaddress import IPv4Network, IPv6Network, ip_network
 from typing import Annotated, Self
@@ -14,6 +15,20 @@ ClientIpNetwork = IPv4Network | IPv6Network
 class ClientIpMode(StrEnum):
     DIRECT = "direct"
     TRUSTED_PROXY = "trusted_proxy"
+
+
+class TelegramWorkerSettingsError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("Telegram worker credentials are not configured")
+
+
+@dataclass(frozen=True, repr=False)
+class TelegramWorkerCredentials:
+    bot_token: SecretStr
+    bot_username: TelegramBotUsername
+
+    def __repr__(self) -> str:
+        return "TelegramWorkerCredentials(bot_token=<redacted>, bot_username=<set>)"
 
 
 class Settings(BaseSettings):
@@ -36,6 +51,7 @@ class Settings(BaseSettings):
     telegram_link_rate_limit_ip_attempts: int = Field(default=20, gt=0)
     rate_limit_hmac_key: SecretStr
     telegram_bot_username: TelegramBotUsername | None = None
+    telegram_bot_token: SecretStr | None = None
     client_ip_mode: ClientIpMode = ClientIpMode.DIRECT
     trusted_proxy_cidrs: Annotated[tuple[ClientIpNetwork, ...], NoDecode] = ()
 
@@ -80,6 +96,24 @@ class Settings(BaseSettings):
                 return None
             return TelegramBotUsername(value)
         raise ValueError("telegram_bot_username must be a string")
+
+    @field_validator("telegram_bot_token", mode="before")
+    @classmethod
+    def validate_telegram_bot_token(cls, value: object) -> SecretStr | None:
+        if value is None:
+            return None
+        if isinstance(value, SecretStr):
+            secret = value.get_secret_value()
+        elif isinstance(value, str):
+            secret = value
+        else:
+            raise ValueError("telegram_bot_token must be a secret string")
+
+        if secret == "":
+            return None
+        if secret != secret.strip():
+            raise ValueError("telegram_bot_token must not contain outer whitespace")
+        return SecretStr(secret)
 
     @field_validator("trusted_proxy_cidrs", mode="before")
     @classmethod
@@ -150,3 +184,11 @@ class Settings(BaseSettings):
                 "trusted_proxy_cidrs requires client_ip_mode=trusted_proxy"
             )
         return self
+
+    def require_telegram_worker_credentials(self) -> TelegramWorkerCredentials:
+        if self.telegram_bot_token is None or self.telegram_bot_username is None:
+            raise TelegramWorkerSettingsError()
+        return TelegramWorkerCredentials(
+            bot_token=self.telegram_bot_token,
+            bot_username=self.telegram_bot_username,
+        )

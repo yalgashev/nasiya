@@ -78,6 +78,8 @@ Approved production dependencies:
   M6 migration exists.
 - Do not add Telegram credentials or real network to CI.
 - `getUpdates` long poll: `25s`; HTTP read timeout: `35s`.
+- Telegram transport retry: exponential base `1s`, cap `30s`; `429`
+  `retry_after` is honored up to an explicit `60s` cap.
 - PostgreSQL advisory lock acquisition deadline: `60s`.
 - Worker replica: `1`; restart: `unless-stopped`; stop grace: `45s`.
 - Migration ownership: one-shot Compose service after DB health; web and worker

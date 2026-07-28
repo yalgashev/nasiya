@@ -2,7 +2,12 @@ import pytest
 from pydantic import ValidationError
 
 from app.main import create_app
-from app.settings import ClientIpMode, Settings
+from app.settings import (
+    ClientIpMode,
+    Settings,
+    TelegramWorkerCredentials,
+    TelegramWorkerSettingsError,
+)
 from app.telegram.bot import TelegramBotUsername
 
 TEST_RATE_LIMIT_HMAC_KEY = "test-rate-limit-hmac-key-for-settings-only"
@@ -27,6 +32,7 @@ SETTINGS_ENV_KEYS = (
     "TELEGRAM_LINK_RATE_LIMIT_IP_ATTEMPTS",
     "RATE_LIMIT_HMAC_KEY",
     "TELEGRAM_BOT_USERNAME",
+    "TELEGRAM_BOT_TOKEN",
     "CLIENT_IP_MODE",
     "TRUSTED_PROXY_CIDRS",
 )
@@ -279,9 +285,8 @@ def test_invalid_telegram_link_rate_limit_env_values_fail_fast(
         Settings(_env_file=None)
 
 
-def test_telegram_link_rate_limit_settings_do_not_add_out_of_scope_secrets() -> None:
+def test_telegram_settings_do_not_add_unapproved_rate_limit_secrets() -> None:
     forbidden_fields = {
-        "telegram_bot_token",
         "telegram_link_rate_limit_hmac_key",
         "telegram_link_token_ttl_seconds",
         "telegram_link_token_retention_days",
@@ -489,8 +494,83 @@ def test_settings_rejects_invalid_bot_username_without_echoing_raw_value() -> No
     assert "Telegram bot username" in error_text
 
 
-def test_settings_has_no_default_or_token_for_telegram_bot() -> None:
+def test_web_settings_have_no_default_telegram_bot_credentials() -> None:
     settings = make_settings(app_environment="production", session_cookie_secure=True)
 
     assert settings.telegram_bot_username is None
-    assert "telegram_bot_token" not in Settings.model_fields
+    assert settings.telegram_bot_token is None
+
+
+@pytest.mark.parametrize("raw_token", [None, ""])
+def test_web_settings_allow_unset_or_empty_telegram_bot_token(
+    raw_token: str | None,
+) -> None:
+    settings = (
+        make_settings()
+        if raw_token is None
+        else make_settings(telegram_bot_token=raw_token)
+    )
+
+    assert settings.telegram_bot_token is None
+    app = create_app(settings=settings)
+    assert app.state.settings is settings
+
+
+def test_telegram_bot_token_is_secret_and_worker_credentials_are_redacted() -> None:
+    raw_token = "123456789:SensitiveWorkerBotToken"
+    settings = make_settings(
+        telegram_bot_username="Nasiya_LinkBot",
+        telegram_bot_token=raw_token,
+    )
+
+    credentials = settings.require_telegram_worker_credentials()
+
+    assert isinstance(credentials, TelegramWorkerCredentials)
+    assert credentials.bot_token.get_secret_value() == raw_token
+    assert raw_token not in repr(settings)
+    assert raw_token not in str(settings)
+    assert raw_token not in repr(credentials)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"telegram_bot_username": "Nasiya_LinkBot"},
+        {"telegram_bot_token": "123456789:SensitiveWorkerBotToken"},
+        {"telegram_bot_username": "", "telegram_bot_token": ""},
+    ],
+)
+def test_worker_credentials_fail_closed_when_incomplete(
+    overrides: dict[str, str],
+) -> None:
+    settings = make_settings(**overrides)
+
+    with pytest.raises(TelegramWorkerSettingsError) as exc_info:
+        settings.require_telegram_worker_credentials()
+
+    rendered = f"{exc_info.value!s} {exc_info.value!r}"
+    assert "SensitiveWorkerBotToken" not in rendered
+
+
+def test_telegram_bot_token_reads_from_environment_and_stays_redacted(
+    monkeypatch,
+) -> None:
+    raw_token = "123456789:SensitiveEnvironmentBotToken"
+    set_required_settings_env(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_BOT_USERNAME", "Nasiya_LinkBot")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", raw_token)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.telegram_bot_token is not None
+    assert settings.telegram_bot_token.get_secret_value() == raw_token
+    assert raw_token not in repr(settings)
+
+
+def test_telegram_bot_token_validation_error_does_not_echo_secret() -> None:
+    raw_token = " 123456789:SensitiveInvalidBotToken "
+
+    with pytest.raises(ValidationError) as exc_info:
+        make_settings(telegram_bot_token=raw_token)
+
+    assert raw_token not in str(exc_info.value)
