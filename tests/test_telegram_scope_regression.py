@@ -20,7 +20,13 @@ from app.customer.models import CUSTOMER_ONBOARDING_STATUS_DRAFT, Customer
 from app.db import Base, create_database_session_factory
 from app.main import create_app
 from app.settings import Settings
-from app.telegram.models import TelegramLink, TelegramLinkEvent, TelegramLinkToken
+from app.telegram.models import (
+    TelegramLink,
+    TelegramLinkEvent,
+    TelegramLinkToken,
+    TelegramPollingState,
+    TelegramUpdateFailure,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -41,7 +47,6 @@ FORBIDDEN_PRODUCTION_DEPENDENCIES = {
 }
 FORBIDDEN_APP_RUNTIME_MARKERS = (
     "setwebhook",
-    "polling_state",
     "telegram.polling",
     "telegram.bot(",
     "aiogram",
@@ -314,7 +319,7 @@ def test_m3_customer_pages_render_no_telegram_otp_qr_or_activation_claims(
         assert marker not in rendered_text
 
 
-def test_customer_schema_remains_draft_only_and_m4_has_exactly_three_tables() -> None:
+def test_customer_schema_remains_draft_only_and_telegram_tables_stay_scoped() -> None:
     telegram_tables = {
         table_name
         for table_name in Base.metadata.tables
@@ -330,10 +335,19 @@ def test_customer_schema_remains_draft_only_and_m4_has_exactly_three_tables() ->
         "telegram_links",
         "telegram_link_tokens",
         "telegram_link_events",
+        "telegram_polling_state",
+        "telegram_update_failures",
     }
     assert Base.metadata.tables["telegram_links"] is TelegramLink.__table__
     assert Base.metadata.tables["telegram_link_tokens"] is TelegramLinkToken.__table__
     assert Base.metadata.tables["telegram_link_events"] is TelegramLinkEvent.__table__
+    assert (
+        Base.metadata.tables["telegram_polling_state"] is TelegramPollingState.__table__
+    )
+    assert (
+        Base.metadata.tables["telegram_update_failures"]
+        is TelegramUpdateFailure.__table__
+    )
     assert set(Customer.__table__.columns.keys()) == {
         "id",
         "user_id",

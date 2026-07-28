@@ -530,6 +530,8 @@ def test_no_active_chat_historical_blacklist_table_or_hash_column(
         "telegram_links",
         "telegram_link_tokens",
         "telegram_link_events",
+        "telegram_polling_state",
+        "telegram_update_failures",
     }
     assert not any("blacklist" in table or "history" in table for table in table_names)
     for table_name in telegram_tables:

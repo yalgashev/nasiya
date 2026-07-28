@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    SmallInteger,
     String,
     UniqueConstraint,
 )
@@ -153,4 +154,104 @@ class TelegramLinkEvent(Base):
         DateTime(timezone=True),
         nullable=False,
         default=utc_now,
+    )
+
+
+class TelegramPollingState(Base):
+    __tablename__ = "telegram_polling_state"
+    __table_args__ = (
+        CheckConstraint(
+            "id = 1",
+            name="ck_telegram_polling_state_singleton",
+        ),
+        CheckConstraint(
+            "next_offset >= 0",
+            name="ck_telegram_polling_state_next_offset_nonnegative",
+        ),
+        CheckConstraint(
+            "ready_at IS NULL OR heartbeat_at IS NOT NULL",
+            name="ck_telegram_polling_state_ready_requires_heartbeat",
+        ),
+        CheckConstraint(
+            "heartbeat_at IS NULL OR ready_at IS NULL OR heartbeat_at >= ready_at",
+            name="ck_telegram_polling_state_heartbeat_not_before_ready",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        SmallInteger,
+        primary_key=True,
+        default=1,
+    )
+    next_offset: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        default=0,
+        server_default=sqlalchemy_text("0"),
+    )
+    heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    ready_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=sqlalchemy_text("CURRENT_TIMESTAMP"),
+    )
+
+
+class TelegramUpdateFailure(Base):
+    __tablename__ = "telegram_update_failures"
+    __table_args__ = (
+        CheckConstraint(
+            "update_id >= 0",
+            name="ck_telegram_update_failures_update_id_nonnegative",
+        ),
+        CheckConstraint(
+            "attempt_count BETWEEN 1 AND 5",
+            name="ck_telegram_update_failures_attempt_count",
+        ),
+        CheckConstraint(
+            "failure_code ~ '^[A-Z][A-Z0-9_]{0,63}$'",
+            name="ck_telegram_update_failures_code_format",
+        ),
+        CheckConstraint(
+            "last_failed_at >= first_failed_at",
+            name="ck_telegram_update_failures_time_order",
+        ),
+        CheckConstraint(
+            "(attempt_count < 5 AND quarantined_at IS NULL) "
+            "OR (attempt_count = 5 AND quarantined_at IS NOT NULL)",
+            name="ck_telegram_update_failures_quarantine_state",
+        ),
+        CheckConstraint(
+            "quarantined_at IS NULL OR quarantined_at >= last_failed_at",
+            name="ck_telegram_update_failures_quarantine_time",
+        ),
+        Index(
+            "ix_telegram_update_failures_quarantined_at",
+            "quarantined_at",
+        ),
+    )
+
+    update_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    attempt_count: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    failure_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    first_failed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    last_failed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    quarantined_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )

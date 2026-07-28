@@ -158,3 +158,81 @@ M6 documentation gate is closed when:
   source or an explicit `TOPILMADI` minimal solution.
 - No product code, dependency, migration, Compose, Dockerfile, or CI file is
   changed by M6.05.
+
+## Appendix A: Operational Persistence Schema
+
+This appendix is the approved M6.19 schema contract. It uses two Telegram-only
+operational tables and does not create a generic job, outbox, notification, or
+audit subsystem.
+
+### A.1 `telegram_polling_state`
+
+Singleton key strategy: exactly one row with `id = 1`. The migration creates
+the empty table; `load_or_create` inserts the singleton deterministically.
+Absence and first creation both mean `next_offset = 0`, so startup never drops
+pending updates.
+
+| Column | PostgreSQL type | Null/default | Contract |
+| --- | --- | --- | --- |
+| `id` | `SMALLINT` | not null, PK | Fixed singleton value `1`; CHECK `id = 1`. |
+| `next_offset` | `BIGINT` | not null, default `0` | CHECK `next_offset >= 0`; repository locks the row and rejects regression. |
+| `heartbeat_at` | `TIMESTAMPTZ` | nullable | Last worker liveness write; independent of cursor movement. |
+| `ready_at` | `TIMESTAMPTZ` | nullable | Set only after startup preflight/state initialization; null means not ready. |
+| `updated_at` | `TIMESTAMPTZ` | not null, `CURRENT_TIMESTAMP` | Last repository mutation time. |
+
+Named constraints:
+
+- `pk_telegram_polling_state`;
+- `ck_telegram_polling_state_singleton`;
+- `ck_telegram_polling_state_next_offset_nonnegative`;
+- `ck_telegram_polling_state_ready_requires_heartbeat`;
+- `ck_telegram_polling_state_heartbeat_not_before_ready`.
+
+Readiness invariant: `ready_at` requires `heartbeat_at`; when both exist,
+`heartbeat_at >= ready_at`. Marking not-ready clears `ready_at` but may keep a
+fresh heartbeat for diagnostics. Health is ready only when `ready_at` exists
+and `heartbeat_at` is no older than the approved `60s` threshold.
+
+### A.2 `telegram_update_failures`
+
+One row exists per failed Telegram `update_id`. There is no FK because no user,
+chat, token, or domain identity is persisted.
+
+| Column | PostgreSQL type | Null/default | Contract |
+| --- | --- | --- | --- |
+| `update_id` | `BIGINT` | not null, PK | Telegram operational sequence id; CHECK `update_id >= 0`. |
+| `attempt_count` | `SMALLINT` | not null | CHECK `1 <= attempt_count <= 5`. |
+| `failure_code` | `VARCHAR(64)` | not null | Sanitized stable uppercase code; CHECK `^[A-Z][A-Z0-9_]{0,63}$`. |
+| `first_failed_at` | `TIMESTAMPTZ` | not null | First durable C-failure time. |
+| `last_failed_at` | `TIMESTAMPTZ` | not null | Latest durable C-failure time; not before first. |
+| `quarantined_at` | `TIMESTAMPTZ` | nullable | Null for attempts 1–4; non-null exactly at attempt 5. |
+
+Named constraints/indexes:
+
+- `pk_telegram_update_failures`;
+- `ck_telegram_update_failures_update_id_nonnegative`;
+- `ck_telegram_update_failures_attempt_count`;
+- `ck_telegram_update_failures_code_format`;
+- `ck_telegram_update_failures_time_order`;
+- `ck_telegram_update_failures_quarantine_state`;
+- `ck_telegram_update_failures_quarantine_time`;
+- non-unique `ix_telegram_update_failures_quarantined_at`.
+
+Atomic protocol:
+
+- C-failure uses PostgreSQL UPSERT to increment without lost updates.
+- Attempts 1–4 do not advance the cursor.
+- Attempt 5 sets `quarantined_at` and advances `next_offset` to
+  `update_id + 1` in the same caller-owned fresh TX-B.
+- Cursor failure rolls back both quarantine and attempt increment.
+- A later successful retry deletes a non-quarantined row in TX-A.
+- Ordinary success cleanup never deletes a quarantined row.
+
+Retention: non-quarantined rows are deleted on success. Quarantined rows are
+retained without automatic deletion during M6 for operator investigation; M6
+adds no scheduler or generic retention job.
+
+Forbidden columns/data in both tables: raw update/message/JSON, token or token
+hash, Telegram chat/user id, Nasiya user/shop/customer id, phone, client IP,
+bot credential, username, message text, exception text/traceback, HTTP body,
+SQL text/parameters, and arbitrary metadata.
