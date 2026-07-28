@@ -50,8 +50,6 @@ FORBIDDEN_APP_RUNTIME_MARKERS = (
     "telegram.bot(",
     "aiogram",
     "python-telegram-bot",
-    "qrcode",
-    "qr_code",
     "apscheduler",
     "scheduler",
     "cron",
@@ -61,9 +59,6 @@ FORBIDDEN_APP_RUNTIME_MARKERS = (
     "otp_code",
     "x-forwarded-for",
     "proxy_middleware",
-    "current_password",
-    "reauth",
-    "re-auth",
 )
 FORBIDDEN_CUSTOMER_FEATURE_TEXT = (
     "telegram",
@@ -218,7 +213,7 @@ def test_no_production_telegram_route_webhook_callback_or_public_csrf_bypass(
     assert unprotected_unsafe_routes == []
 
 
-def test_m6_runtime_keeps_unapproved_sdk_qr_otp_and_scheduler_out() -> None:
+def test_m6_runtime_keeps_unapproved_bot_sdk_otp_and_scheduler_out() -> None:
     dependency_names = production_dependency_names()
     source_text = app_source_text().casefold()
     settings_fields = set(Settings.model_fields)
@@ -228,6 +223,7 @@ def test_m6_runtime_keeps_unapproved_sdk_qr_otp_and_scheduler_out() -> None:
 
     assert dependency_names.isdisjoint(FORBIDDEN_PRODUCTION_DEPENDENCIES)
     assert "httpx" in dependency_names
+    assert "segno" in dependency_names
     assert "telegram_bot_token" in settings_fields
     assert "telegram_bot_token" not in main_env_keys
     assert {"client_ip_mode", "trusted_proxy_cidrs"}.issubset(settings_fields)
@@ -242,7 +238,7 @@ def test_m6_runtime_keeps_unapproved_sdk_qr_otp_and_scheduler_out() -> None:
         assert marker not in source_text
 
 
-def test_qr_otp_password_reauth_and_customer_activation_do_not_appear_in_ui() -> None:
+def test_otp_webhook_and_customer_activation_do_not_appear_in_ui() -> None:
     non_telegram_templates = template_text(
         "auth/login.html",
         "auth/sessions.html",
@@ -265,21 +261,13 @@ def test_qr_otp_password_reauth_and_customer_activation_do_not_appear_in_ui() ->
     assert "auth/telegram" in account_telegram_templates
     assert "telegram" in account_telegram_templates
     for marker in (
-        "telegram",
         "otp",
-        "qrcode",
-        "qr_code",
         "webhook",
-        "current_password",
-        "reauth",
-        "re-auth",
         "activation",
         "activated",
     ):
-        if marker == "telegram":
-            continue
         assert marker not in account_telegram_templates
-    assert not any("qr" in path or "telegram" in path for path in static_paths)
+    assert not any("qr" in path for path in static_paths)
 
 
 @pytest.mark.integration

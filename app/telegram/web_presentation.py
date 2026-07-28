@@ -45,6 +45,7 @@ _UZ_LATN_COPY: Final[Mapping[str, str]] = MappingProxyType(
         "bot_unavailable": "Telegram bog'lash havolasi sozlanmagan.",
         "bot_config_error": "Telegram bot havolasi hali sozlanmagan.",
         "back": "Hisobga qaytish",
+        "account_navigation": "Hisob navigatsiyasi",
         "privacy_guidance": (
             "Telegram hisobi boshqa Nasiya hisobiga bog'langan bo'lsa, "
             "xavfsizlik sababli bog'lash bajarilmaydi. Boshqa hisob "
@@ -57,6 +58,8 @@ _UZ_LATN_COPY: Final[Mapping[str, str]] = MappingProxyType(
         "link_hint": "Telegramda bog'lashni tasdiqlang.",
         "relink_hint": "Telegramda qayta bog'lashni tasdiqlang.",
         "open_telegram": "Telegramda ochish",
+        "qr_alt": "Telegram bog'lash havolasi uchun QR-kod",
+        "qr_help": "Kompyuterda bo'lsangiz, telefoningiz bilan QR-kodni skanerlang.",
         "waiting": "Telegramdagi tasdiq kutilmoqda.",
         "attempt_linked": "Telegram muvaffaqiyatli bog'landi.",
         "superseded": "Bu havola yangiroq havola bilan almashtirilgan.",
@@ -65,10 +68,13 @@ _UZ_LATN_COPY: Final[Mapping[str, str]] = MappingProxyType(
         "loading": "Holat tekshirilmoqda",
         "client_ip_error": "Telegram bog'lashni hozir boshlash mumkin emas.",
         "request_failed": "So'rov bajarilmadi.",
+        "current_password_label": "Joriy parol",
+        "current_password_error": "Joriy parol noto'g'ri.",
         "rate_limited": "Juda ko'p urinish. Birozdan keyin qayta urinib ko'ring.",
         "already_linked": "Telegram allaqachon bog'langan.",
         "not_linked": "Telegram bog'lanmagan.",
         "unlinked_notice": "Telegram bog'lanishi uzildi.",
+        "already_unlinked_notice": "Telegram allaqachon uzilgan.",
     }
 )
 
@@ -86,6 +92,7 @@ _RU_COPY: Final[Mapping[str, str]] = MappingProxyType(
         "bot_unavailable": "Ссылка подключения Telegram пока не настроена.",
         "bot_config_error": "Ссылка Telegram-бота пока не настроена.",
         "back": "Вернуться к аккаунту",
+        "account_navigation": "Навигация аккаунта",
         "privacy_guidance": (
             "Если Telegram уже подключен к другому аккаунту Nasiya, "
             "подключение не будет выполнено. Данные другого аккаунта не раскрываются."
@@ -97,6 +104,8 @@ _RU_COPY: Final[Mapping[str, str]] = MappingProxyType(
         "link_hint": "Подтвердите подключение в Telegram.",
         "relink_hint": "Подтвердите переподключение в Telegram.",
         "open_telegram": "Открыть в Telegram",
+        "qr_alt": "QR-код ссылки подключения Telegram",
+        "qr_help": "На компьютере отсканируйте QR-код телефоном.",
         "waiting": "Ожидаем подтверждение в Telegram.",
         "attempt_linked": "Telegram успешно подключен.",
         "superseded": "Эта ссылка заменена более новой.",
@@ -105,10 +114,13 @@ _RU_COPY: Final[Mapping[str, str]] = MappingProxyType(
         "loading": "Проверяем статус",
         "client_ip_error": "Сейчас нельзя начать подключение Telegram.",
         "request_failed": "Не удалось выполнить запрос.",
+        "current_password_label": "Текущий пароль",
+        "current_password_error": "Текущий пароль указан неверно.",
         "rate_limited": "Слишком много попыток. Повторите позже.",
         "already_linked": "Telegram уже подключен.",
         "not_linked": "Telegram не подключен.",
         "unlinked_notice": "Telegram отключен.",
+        "already_unlinked_notice": "Telegram уже отключен.",
     }
 )
 

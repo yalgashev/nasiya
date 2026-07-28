@@ -1,3 +1,4 @@
+import base64
 import re
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -12,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+import app.auth.router as auth_router_module
 from app.auth.csrf import get_csrf_token
 from app.auth.deps import get_current_time, validate_csrf
 from app.auth.error_codes import ErrorCode
@@ -19,6 +21,10 @@ from app.auth.models import AuthRateLimit, User
 from app.auth.models import Session as AuthSession
 from app.auth.service import create_user
 from app.auth.sessions import CreatedSession, create_authenticated_session
+from app.auth.telegram_reauth import (
+    TELEGRAM_REAUTH_IP_SCOPE,
+    TELEGRAM_REAUTH_USER_SCOPE,
+)
 from app.db import create_database_session_factory
 from app.main import create_app
 from app.security_headers import AUTH_NO_STORE_CACHE_CONTROL, CONTENT_SECURITY_POLICY
@@ -30,7 +36,11 @@ from app.shop.models import Shop, ShopStaff
 from app.telegram.bot_api import TelegramMessageEnvelope, TelegramUpdateEnvelope
 from app.telegram.models import TelegramLink, TelegramLinkEvent, TelegramLinkToken
 from app.telegram.polling_repository import load_or_create_polling_state
-from app.telegram.service import TELEGRAM_LINK_TOKEN_TTL_SECONDS
+from app.telegram.qr import TelegramQrRenderError
+from app.telegram.service import (
+    TELEGRAM_LINK_TOKEN_TTL_SECONDS,
+    TelegramLinkLifecycleInternalError,
+)
 from app.telegram.token import RawTelegramLinkToken, hash_telegram_link_token
 from app.telegram.update_processing import (
     TelegramUpdateOutcomeCode,
@@ -494,7 +504,10 @@ def test_relink_and_unlink_use_current_account_only(
 
     relink_response = client.post(
         "/auth/telegram/relink-token",
-        data={"csrf_token": csrf_token(created)},
+        data={
+            "csrf_token": csrf_token(created),
+            "current_password": "Password123",
+        },
         headers={"HX-Request": "true"},
     )
 
@@ -508,7 +521,10 @@ def test_relink_and_unlink_use_current_account_only(
 
     unlink_response = client.post(
         "/auth/telegram/unlink",
-        data={"csrf_token": csrf_token(created)},
+        data={
+            "csrf_token": csrf_token(created),
+            "current_password": "Password123",
+        },
         follow_redirects=False,
     )
 
@@ -557,6 +573,274 @@ def test_non_htmx_issue_is_repeatable_mutation_free_prg(
 
     assert count_table(db_session, TelegramLinkToken) == 0
     assert count_table(db_session, AuthRateLimit) == 0
+
+
+def test_wrong_password_changes_no_link_token_or_event(
+    m2_test_database: Engine,
+    db_session: Session,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    linked_at = datetime(2026, 7, 28, 10, 0, tzinfo=UTC)
+    now = linked_at + timedelta(minutes=5)
+    client, _settings, user, created = create_logged_in_client(
+        m2_test_database,
+        db_session,
+        now,
+    )
+    link = add_active_link(db_session, user, linked_at)
+    existing_token = TelegramLinkToken(
+        user_id=user.id,
+        token_hash="d" * 64,
+        created_at=linked_at,
+        expires_at=now + timedelta(minutes=5),
+    )
+    db_session.add(existing_token)
+    db_session.commit()
+    wrong_password = "WrongPassword123"
+
+    relink_response = client.post(
+        "/auth/telegram/relink-token",
+        data={
+            "csrf_token": csrf_token(created),
+            "current_password": wrong_password,
+        },
+        headers={"HX-Request": "true"},
+    )
+    unlink_response = client.post(
+        "/auth/telegram/unlink",
+        data={
+            "csrf_token": csrf_token(created),
+            "current_password": wrong_password,
+        },
+        follow_redirects=False,
+    )
+
+    assert relink_response.status_code == 403
+    assert relink_response.headers["x-error-code"] == ErrorCode.FORBIDDEN.value
+    assert "Joriy parol noto'g'ri." in unescape(relink_response.text)
+    assert unlink_response.status_code == 303
+    assert unlink_response.headers["location"] == (
+        "/auth/telegram?error=current_password"
+    )
+    assert unlink_response.headers["x-error-code"] == ErrorCode.FORBIDDEN.value
+    db_session.expire_all()
+    stored_link = db_session.get(TelegramLink, link.id)
+    stored_token = db_session.get(TelegramLinkToken, existing_token.id)
+    assert stored_link is not None
+    assert stored_link.telegram_chat_id == link.telegram_chat_id
+    assert stored_link.unlinked_at is None
+    assert stored_token is not None
+    assert stored_token.invalidated_at is None
+    assert count_table(db_session, TelegramLinkToken) == 1
+    assert count_table(db_session, TelegramLinkEvent) == 0
+    assert wrong_password not in relink_response.text
+    assert wrong_password not in unlink_response.text
+    assert wrong_password not in caplog.text
+
+
+def test_reauth_limiter_blocks_fifth_failure_and_keeps_session_usable(
+    m2_test_database: Engine,
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=UTC)
+    client, _settings, user, created = create_logged_in_client(
+        m2_test_database,
+        db_session,
+        now,
+    )
+    link = add_active_link(db_session, user, now)
+
+    responses = [
+        client.post(
+            "/auth/telegram/unlink",
+            data={
+                "csrf_token": csrf_token(created),
+                "current_password": "WrongPassword123",
+            },
+            follow_redirects=False,
+        )
+        for _attempt in range(5)
+    ]
+    blocked_correct_password = client.post(
+        "/auth/telegram/unlink",
+        data={
+            "csrf_token": csrf_token(created),
+            "current_password": "Password123",
+        },
+        follow_redirects=False,
+    )
+
+    assert all(response.status_code == 303 for response in responses)
+    assert all(
+        response.headers["x-error-code"] == ErrorCode.FORBIDDEN.value
+        for response in responses[:4]
+    )
+    assert responses[4].headers["x-error-code"] == ErrorCode.RATE_LIMITED.value
+    assert responses[4].headers["location"] == (
+        "/auth/telegram?error=reauth_rate_limit"
+    )
+    assert (
+        blocked_correct_password.headers["x-error-code"] == ErrorCode.RATE_LIMITED.value
+    )
+    db_session.expire_all()
+    stored_link = db_session.get(TelegramLink, link.id)
+    assert stored_link is not None
+    assert stored_link.telegram_chat_id is not None
+    assert count_table(db_session, TelegramLinkEvent) == 0
+    assert client.get("/auth/telegram").status_code == 200
+
+
+def test_successful_unlink_clears_user_reauth_bucket_only(
+    m2_test_database: Engine,
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=UTC)
+    client, _settings, user, created = create_logged_in_client(
+        m2_test_database,
+        db_session,
+        now,
+    )
+    add_active_link(db_session, user, now)
+    client.post(
+        "/auth/telegram/unlink",
+        data={
+            "csrf_token": csrf_token(created),
+            "current_password": "WrongPassword123",
+        },
+        follow_redirects=False,
+    )
+
+    response = client.post(
+        "/auth/telegram/unlink",
+        data={
+            "csrf_token": csrf_token(created),
+            "current_password": "Password123",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/auth/telegram?notice=unlinked"
+    records = list(db_session.scalars(select(AuthRateLimit)))
+    assert [record.scope for record in records] == [TELEGRAM_REAUTH_IP_SCOPE]
+    assert all(record.scope != TELEGRAM_REAUTH_USER_SCOPE for record in records)
+    assert count_table(db_session, TelegramLinkEvent) == 1
+
+
+def test_repeated_unlink_is_password_checked_safe_noop(
+    m2_test_database: Engine,
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=UTC)
+    client, _settings, _user, created = create_logged_in_client(
+        m2_test_database,
+        db_session,
+        now,
+    )
+
+    response = client.post(
+        "/auth/telegram/unlink",
+        data={
+            "csrf_token": csrf_token(created),
+            "current_password": "Password123",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == ("/auth/telegram?notice=already_unlinked")
+    assert count_table(db_session, TelegramLinkEvent) == 0
+
+
+def test_non_htmx_relink_does_not_verify_or_mutate(
+    m2_test_database: Engine,
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=UTC)
+    client, _settings, user, created = create_logged_in_client(
+        m2_test_database,
+        db_session,
+        now,
+    )
+    link = add_active_link(db_session, user, now)
+
+    for _attempt in range(2):
+        response = client.post(
+            "/auth/telegram/relink-token",
+            data={
+                "csrf_token": csrf_token(created),
+                "current_password": "WrongPassword123",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == (
+            "/auth/telegram?notice=javascript_required"
+        )
+
+    db_session.expire_all()
+    stored_link = db_session.get(TelegramLink, link.id)
+    assert stored_link is not None
+    assert stored_link.telegram_chat_id is not None
+    assert count_table(db_session, TelegramLinkToken) == 0
+    assert count_table(db_session, AuthRateLimit) == 0
+
+
+def test_unlink_transaction_rolls_back_domain_and_reauth_clear(
+    m2_test_database: Engine,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=UTC)
+    client, _settings, user, created = create_logged_in_client(
+        m2_test_database,
+        db_session,
+        now,
+    )
+    link = add_active_link(db_session, user, now)
+    client.post(
+        "/auth/telegram/unlink",
+        data={
+            "csrf_token": csrf_token(created),
+            "current_password": "WrongPassword123",
+        },
+        follow_redirects=False,
+    )
+
+    def fail_after_mutation(db, current_user, current_time) -> None:
+        stored_link = db.get(TelegramLink, link.id)
+        assert stored_link is not None
+        stored_link.telegram_chat_id = None
+        stored_link.unlinked_at = current_time
+        db.add(
+            TelegramLinkEvent(
+                user_id=current_user.id,
+                action="unlinked",
+                occurred_at=current_time,
+            )
+        )
+        db.flush()
+        raise TelegramLinkLifecycleInternalError("forced rollback")
+
+    monkeypatch.setattr(auth_router_module, "unlink_telegram", fail_after_mutation)
+
+    with pytest.raises(TelegramLinkLifecycleInternalError):
+        client.post(
+            "/auth/telegram/unlink",
+            data={
+                "csrf_token": csrf_token(created),
+                "current_password": "Password123",
+            },
+            follow_redirects=False,
+        )
+    db_session.expire_all()
+    stored_link = db_session.get(TelegramLink, link.id)
+    assert stored_link is not None
+    assert stored_link.telegram_chat_id is not None
+    assert stored_link.unlinked_at is None
+    assert count_table(db_session, TelegramLinkEvent) == 0
+    scopes = set(db_session.scalars(select(AuthRateLimit.scope)))
+    assert scopes == {TELEGRAM_REAUTH_USER_SCOPE, TELEGRAM_REAUTH_IP_SCOPE}
 
 
 def test_forged_htmx_header_does_not_bypass_auth_or_csrf(
@@ -622,6 +906,87 @@ def test_one_time_reveal_has_attempt_polling_and_history_fences(
     assert "<script" not in response.text
     assert raw_token not in str(response.request.url)
     assert "/static/vendor/htmx-2.0.4.min.js" in page_response.text
+
+
+def test_one_time_qr_encodes_the_exact_button_link(
+    m2_test_database: Engine,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=UTC)
+    client, _settings, _user, created = create_logged_in_client(
+        m2_test_database,
+        db_session,
+        now,
+    )
+    captured_links: list[str] = []
+    fake_png = b"\x89PNG\r\n\x1a\nsame-link-png"
+
+    def fake_qr_renderer(start_link: str) -> bytes:
+        captured_links.append(start_link)
+        return fake_png
+
+    monkeypatch.setattr(
+        auth_router_module,
+        "render_telegram_start_link_qr_png",
+        fake_qr_renderer,
+    )
+
+    response = client.post(
+        "/auth/telegram/link-token",
+        data={"csrf_token": csrf_token(created)},
+        headers={"HX-Request": "true"},
+    )
+
+    visible_html = unescape(response.text)
+    href_match = re.search(r'href="(?P<link>https://t\.me/[^"]+)"', visible_html)
+    image_match = re.search(
+        r'src="data:image/png;base64,(?P<png>[A-Za-z0-9+/=]+)"',
+        response.text,
+    )
+    assert href_match is not None
+    assert image_match is not None
+    assert captured_links == [href_match.group("link")]
+    assert base64.b64decode(image_match.group("png")) == fake_png
+    assert 'alt="Telegram bog&#x27;lash havolasi uchun QR-kod"' in response.text
+    assert "/auth/telegram/qr" not in response.text
+    assert_auth_security_headers(response)
+
+
+def test_qr_failure_keeps_button_and_does_not_reissue_token(
+    m2_test_database: Engine,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=UTC)
+    client, _settings, _user, created = create_logged_in_client(
+        m2_test_database,
+        db_session,
+        now,
+    )
+
+    def fail_qr_rendering(_start_link: str) -> bytes:
+        raise TelegramQrRenderError()
+
+    monkeypatch.setattr(
+        auth_router_module,
+        "render_telegram_start_link_qr_png",
+        fail_qr_rendering,
+    )
+
+    response = client.post(
+        "/auth/telegram/link-token",
+        data={"csrf_token": csrf_token(created)},
+        headers={"HX-Request": "true"},
+    )
+
+    raw_token = extract_start_token(response.text)
+    assert response.status_code == 200
+    assert "Telegramda ochish" in response.text
+    assert "data:image/png" not in response.text
+    assert count_table(db_session, TelegramLinkToken) == 1
+    assert raw_token not in caplog.text
 
 
 def test_attempt_polling_handles_supersession_link_and_foreign_uuid(
@@ -770,6 +1135,156 @@ def test_telegram_account_flow_ignores_active_suspended_and_revoked_shop(
     assert stored_session.active_shop_id == shop.id
 
 
+def test_protected_relink_and_unlink_ignore_suspended_and_revoked_shop(
+    m2_test_database: Engine,
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=UTC)
+    client, _settings, user, created = create_logged_in_client(
+        m2_test_database,
+        db_session,
+        now,
+    )
+    link = add_active_link(db_session, user, now, chat_id=9_900_300)
+    shop = Shop(
+        name="Protected Telegram Shop",
+        phone="+998907770002",
+        status=ShopStatus.SUSPENDED.value,
+    )
+    db_session.add(shop)
+    db_session.flush()
+    staff = ShopStaff(
+        shop_id=shop.id,
+        user_id=user.id,
+        role=ShopRole.CASHIER.value,
+    )
+    db_session.add(staff)
+    auth_session = db_session.get(AuthSession, created.session.id)
+    assert auth_session is not None
+    auth_session.active_shop_id = shop.id
+    db_session.commit()
+
+    first_relink = client.post(
+        "/auth/telegram/relink-token",
+        data={
+            "csrf_token": csrf_token(created),
+            "current_password": "Password123",
+        },
+        headers={"HX-Request": "true"},
+    )
+    assert first_relink.status_code == 200
+    first_attempt_id = extract_attempt_id(first_relink.text)
+
+    staff = db_session.get(ShopStaff, staff.id)
+    assert staff is not None
+    staff.is_active = False
+    staff.revoked_at = now
+    db_session.commit()
+
+    second_relink = client.post(
+        "/auth/telegram/relink-token",
+        data={
+            "csrf_token": csrf_token(created),
+            "current_password": "Password123",
+        },
+        headers={"HX-Request": "true"},
+    )
+    assert second_relink.status_code == 200
+    second_attempt_id = extract_attempt_id(second_relink.text)
+    assert second_attempt_id != first_attempt_id
+
+    db_session.expire_all()
+    stored_link = db_session.get(TelegramLink, link.id)
+    stored_session = db_session.get(AuthSession, created.session.id)
+    first_token = db_session.get(TelegramLinkToken, first_attempt_id)
+    assert stored_link is not None
+    assert stored_link.telegram_chat_id == 9_900_300
+    assert stored_link.unlinked_at is None
+    assert stored_session is not None
+    assert stored_session.active_shop_id == shop.id
+    assert first_token is not None
+    assert first_token.invalidated_at == now
+
+    unlink_response = client.post(
+        "/auth/telegram/unlink",
+        data={
+            "csrf_token": csrf_token(created),
+            "current_password": "Password123",
+        },
+        follow_redirects=False,
+    )
+
+    assert unlink_response.status_code == 303
+    db_session.expire_all()
+    stored_session = db_session.get(AuthSession, created.session.id)
+    stored_link = db_session.get(TelegramLink, link.id)
+    assert stored_session is not None
+    assert stored_session.active_shop_id == shop.id
+    assert stored_link is not None
+    assert stored_link.telegram_chat_id is None
+
+
+def test_password_protected_relink_is_atomic_through_fake_worker(
+    m2_test_database: Engine,
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=UTC)
+    client, _settings, user, created = create_logged_in_client(
+        m2_test_database,
+        db_session,
+        now,
+    )
+    link = add_active_link(db_session, user, now, chat_id=9_900_401)
+
+    issue_response = client.post(
+        "/auth/telegram/relink-token",
+        data={
+            "csrf_token": csrf_token(created),
+            "current_password": "Password123",
+        },
+        headers={"HX-Request": "true"},
+    )
+    raw_token = extract_start_token(issue_response.text)
+    attempt_id = extract_attempt_id(issue_response.text)
+
+    db_session.expire_all()
+    before_consume = db_session.get(TelegramLink, link.id)
+    assert before_consume is not None
+    assert before_consume.telegram_chat_id == 9_900_401
+    assert before_consume.unlinked_at is None
+
+    session_factory = create_database_session_factory(m2_test_database)
+    with session_factory.begin() as worker_session:
+        load_or_create_polling_state(worker_session)
+    worker_result = process_telegram_update_tx_a(
+        session_factory,
+        update=TelegramUpdateEnvelope(
+            update_id=800,
+            message=TelegramMessageEnvelope(
+                chat_id=9_900_402,
+                chat_type="private",
+                text=f"/start {raw_token}",
+                structurally_valid=True,
+            ),
+        ),
+        now=now,
+    )
+    assert worker_result.outcome is TelegramUpdateOutcomeCode.RELINKED
+
+    status_response = client.get(f"/auth/telegram/attempts/{attempt_id}/status")
+    assert 'data-telegram-attempt-status="LINKED"' in status_response.text
+    db_session.expire_all()
+    after_consume = db_session.get(TelegramLink, link.id)
+    assert after_consume is not None
+    assert after_consume.telegram_chat_id == 9_900_402
+    assert after_consume.unlinked_at is None
+    assert list(
+        db_session.scalars(
+            select(TelegramLinkEvent.action).where(TelegramLinkEvent.user_id == user.id)
+        )
+    ) == ["relinked"]
+
+
 def test_telegram_page_and_attempt_status_support_russian(
     m2_test_database: Engine,
     db_session: Session,
@@ -800,3 +1315,45 @@ def test_telegram_page_and_attempt_status_support_russian(
     assert "Ожидаем подтверждение в Telegram." in status_response.text
     for response in (page_response, issue_response, status_response):
         assert_auth_security_headers(response)
+
+
+def test_protected_account_controls_support_russian_messages(
+    m2_test_database: Engine,
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 7, 28, 10, 0, tzinfo=UTC)
+    client, _settings, user, created = create_logged_in_client(
+        m2_test_database,
+        db_session,
+        now,
+    )
+    add_active_link(db_session, user, now)
+    language_headers = {"Accept-Language": "ru-RU"}
+
+    page_response = client.get("/auth/telegram", headers=language_headers)
+    wrong_password_response = client.post(
+        "/auth/telegram/relink-token",
+        data={
+            "csrf_token": csrf_token(created),
+            "current_password": "WrongPassword123",
+        },
+        headers={**language_headers, "HX-Request": "true"},
+    )
+    unlink_response = client.post(
+        "/auth/telegram/unlink",
+        data={
+            "csrf_token": csrf_token(created),
+            "current_password": "Password123",
+        },
+        headers=language_headers,
+        follow_redirects=False,
+    )
+    notice_response = client.get(
+        unlink_response.headers["location"],
+        headers=language_headers,
+    )
+
+    assert "Текущий пароль" in page_response.text
+    assert "Текущий пароль указан неверно." in wrong_password_response.text
+    assert "Telegram отключен." in notice_response.text
+    assert "WrongPassword123" not in wrong_password_response.text

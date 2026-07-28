@@ -9,6 +9,7 @@ from app.auth.password_policy import PasswordPolicy, PasswordPolicyError
 from app.auth.phone import PhoneNormalizationError, normalize_uzbekistan_phone
 from app.auth.repository import add_user
 from app.auth.repository import get_by_phone as repository_get_by_phone
+from app.settings import Settings
 
 DEFAULT_PASSWORD_POLICY = PasswordPolicy(min_length=8, max_length=128)
 
@@ -98,3 +99,26 @@ def authenticate(
     if new_hash is not None:
         user.password_hash = new_hash
     return user
+
+
+def check_current_password(
+    session: Session,
+    current_user: User,
+    raw_password: str,
+    settings: Settings,
+) -> bool:
+    if not raw_password or len(raw_password) > settings.password_max_length:
+        return False
+
+    canonical_user = session.get(User, current_user.id)
+    if (
+        canonical_user is None
+        or not canonical_user.is_active
+        or canonical_user.password_hash is None
+    ):
+        password_service.verify_missing_user_password(raw_password)
+        return False
+    return password_service.verify_password(
+        raw_password,
+        canonical_user.password_hash,
+    )

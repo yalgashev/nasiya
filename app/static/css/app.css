@@ -224,6 +224,25 @@ dd {
     text-decoration: none;
 }
 
+.telegram-qr {
+    width: min(100%, 280px);
+    margin: 20px auto 0;
+    text-align: center;
+}
+
+.telegram-qr img {
+    display: block;
+    width: min(100%, 240px);
+    height: auto;
+    margin: 0 auto;
+}
+
+.telegram-qr figcaption {
+    margin-top: 8px;
+    color: #374151;
+    font-size: 0.875rem;
+}
+
 .telegram-privacy-guidance {
     margin-top: 20px;
     color: #374151;
@@ -398,6 +417,10 @@ dd {
 
     .telegram-page {
         width: min(100% - 24px, 640px);
+    }
+
+    .telegram-qr {
+        display: none;
     }
 
     .shop-workspace,

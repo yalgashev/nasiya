@@ -66,7 +66,12 @@ Approved production dependencies:
 - QR encoder: `segno>=1.6.6,<2`; approved lock target `1.6.6`. It is
   production/stable, BSD licensed, pure Python, dependency-free, and supports
   local in-memory PNG generation. M6 uses PNG only, with no external QR API,
-  temp file, Pillow, SVG active content, or JavaScript encoder.
+  temp file, Pillow, SVG active content, or JavaScript encoder. Rendering uses
+  standard QR only, error correction `M`, disabled error boosting, scale `5`,
+  and border `4`. The resulting PNG is embedded as a `data:image/png;base64`
+  source under the existing `img-src 'self' data:` CSP. The locked wheel is
+  `76,503` bytes and server-only, so it adds no app-shell JavaScript; generated
+  linking PNGs have an asserted `<8 KiB` budget.
 - Browser enhancement: locally vendored `htmx 2.0.4`, Zero-Clause BSD,
   checksum
   `e209dda5c8235479f3166defc7750e1dbcd5a5c1808b7792fc2e6733768fb447`.
@@ -97,3 +102,9 @@ Approved production dependencies:
 - Account-page attempt status uses a fixed `3s` HTMX polling interval. Only
   `WAITING` continues polling; every other presentation state is terminal and
   removes the one-time reveal container contents.
+- Unlink/relink password re-auth failures share dedicated scopes over a `900s`
+  fixed window: user limit `5`, resolved-IP limit `20`. Only failed password
+  verification records both dimensions. Successful verification clears the
+  current user's bucket; the shared IP bucket expires naturally and is not
+  reset by one user's success. These scopes are separate from login and token
+  issuance limits.

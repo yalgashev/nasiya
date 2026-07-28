@@ -1,3 +1,4 @@
+from base64 import b64encode
 from datetime import UTC, datetime
 from html import escape
 from pathlib import Path
@@ -29,7 +30,7 @@ from app.auth.phone import (
     mask_phone_for_display,
     normalize_uzbekistan_phone,
 )
-from app.auth.service import authenticate
+from app.auth.service import authenticate, check_current_password
 from app.auth.sessions import (
     CreatedSession,
     RawSessionToken,
@@ -42,10 +43,13 @@ from app.auth.sessions import (
     revoke_user_session,
     rotate_session,
 )
+from app.auth.telegram_reauth import TelegramReauthRateLimitPolicy
 from app.auth.template_context import with_csrf_context
 from app.request_client_ip import ClientIpResolutionError, resolve_client_ip
 from app.security_headers import mark_auth_response_no_store
 from app.settings import Settings
+from app.telegram.client_ip import ResolvedClientIp
+from app.telegram.qr import TelegramQrRenderError, render_telegram_start_link_qr_png
 from app.telegram.service import (
     TelegramLinkLifecycleInternalError,
     TelegramLinkStatus,
@@ -422,6 +426,7 @@ def issue_telegram_relink_token(
         Depends(get_current_session_context),
     ],
     _csrf: Annotated[None, Depends(validate_csrf)],
+    current_password: Annotated[str | None, Form()] = None,
 ) -> Response:
     _ = _csrf
     try:
@@ -432,14 +437,17 @@ def issue_telegram_relink_token(
     if not _is_htmx_request(request):
         return _redirect_telegram_javascript_required()
 
-    try:
-        client_ip = resolve_client_ip(request, settings)
-    except ClientIpResolutionError:
-        return _render_telegram_public_error(
-            request,
-            ErrorCode.VALIDATION_ERROR,
-            error_key="client_ip",
-        )
+    reauth_result = _verify_telegram_account_control_password(
+        request=request,
+        db=db,
+        settings=settings,
+        user=user,
+        raw_password=current_password,
+        now=now,
+    )
+    if isinstance(reauth_result, Response):
+        return reauth_result
+    client_ip = reauth_result
     if settings.telegram_bot_username is None:
         return _render_telegram_public_error(
             request,
@@ -468,6 +476,7 @@ def issue_telegram_relink_token(
 
 @router.post("/telegram/unlink", response_model=None)
 def unlink_telegram_account(
+    request: Request,
     db: Annotated[
         DatabaseSession,
         Depends(get_database_session, scope="function"),
@@ -479,6 +488,7 @@ def unlink_telegram_account(
         Depends(get_current_session_context),
     ],
     _csrf: Annotated[None, Depends(validate_csrf)],
+    current_password: Annotated[str | None, Form()] = None,
 ) -> Response:
     _ = _csrf
     try:
@@ -486,9 +496,26 @@ def unlink_telegram_account(
     except LoginRequired:
         return _redirect_auth_login(context, settings)
 
+    reauth_result = _verify_telegram_account_control_password(
+        request=request,
+        db=db,
+        settings=settings,
+        user=user,
+        raw_password=current_password,
+        now=now,
+    )
+    if isinstance(reauth_result, Response):
+        return reauth_result
+
     try:
         unlink_telegram(db, user, now)
     except TelegramLinkTokenIssueError as exc:
+        if exc.error_code is ErrorCode.TELEGRAM_NOT_LINKED:
+            response = RedirectResponse(
+                f"{TELEGRAM_PATH}?notice=already_unlinked",
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+            return mark_auth_response_no_store(response)
         response = RedirectResponse(
             f"{TELEGRAM_PATH}?error={_telegram_error_key(exc.error_code)}",
             status_code=status.HTTP_303_SEE_OTHER,
@@ -736,6 +763,7 @@ def _render_telegram_page(
                     language=language,
                 ),
                 "page_language": language.value,
+                "password_max_length": settings.password_max_length,
                 "status_label": _telegram_status_label(
                     link_status,
                     language=language,
@@ -770,11 +798,13 @@ def _render_telegram_reveal_response(
     action: str,
 ) -> Response:
     language = _telegram_web_language(request)
+    qr_data_uri = _render_telegram_qr_data_uri(start_link_url)
     fragment = _render_telegram_reveal_fragment(
         start_link_url,
         attempt_id=attempt_id,
         action=action,
         language=language,
+        qr_data_uri=qr_data_uri,
     )
     response = HTMLResponse(fragment)
     response.headers["X-Telegram-Link-Reveal"] = "one-time"
@@ -788,12 +818,23 @@ def _render_telegram_reveal_fragment(
     attempt_id: UUID,
     action: str,
     language: TelegramWebLanguage,
+    qr_data_uri: str | None,
 ) -> str:
     copy = get_telegram_web_copy(language)
     escaped_url = escape(start_link_url, quote=True)
     escaped_attempt_id = escape(str(attempt_id), quote=True)
     status_url = f"{TELEGRAM_PATH}/attempts/{escaped_attempt_id}/status"
     hint_key = "relink_hint" if action == "relink" else "link_hint"
+    qr_fragment = ""
+    if qr_data_uri is not None:
+        qr_fragment = (
+            '<figure class="telegram-qr">'
+            f'<img src="{escape(qr_data_uri, quote=True)}" '
+            f'alt="{escape(copy["qr_alt"], quote=True)}" '
+            'width="240" height="240">'
+            f"<figcaption>{escape(copy['qr_help'])}</figcaption>"
+            "</figure>"
+        )
     return (
         '<section aria-labelledby="telegram-reveal-heading" '
         'data-telegram-link-reveal="one-time" hx-history="false">'
@@ -802,6 +843,7 @@ def _render_telegram_reveal_fragment(
         'rel="noopener noreferrer">'
         f"{escape(copy['open_telegram'])}"
         "</a></p>"
+        f"{qr_fragment}"
         f"<p>{escape(copy[hint_key])}</p>"
         f'<div id="telegram-attempt-status-{escaped_attempt_id}" '
         'role="status" aria-live="polite" '
@@ -816,6 +858,69 @@ def _render_telegram_reveal_fragment(
         "</div>"
         "</section>"
     )
+
+
+def _render_telegram_qr_data_uri(start_link_url: str) -> str | None:
+    try:
+        png_bytes = render_telegram_start_link_qr_png(start_link_url)
+    except TelegramQrRenderError:
+        return None
+    encoded_png = b64encode(png_bytes).decode("ascii")
+    return f"data:image/png;base64,{encoded_png}"
+
+
+def _verify_telegram_account_control_password(
+    *,
+    request: Request,
+    db: DatabaseSession,
+    settings: Settings,
+    user,
+    raw_password: str | None,
+    now: datetime,
+) -> ResolvedClientIp | Response:
+    try:
+        client_ip = resolve_client_ip(request, settings)
+    except ClientIpResolutionError:
+        return _render_telegram_public_error(
+            request,
+            ErrorCode.VALIDATION_ERROR,
+            error_key="client_ip",
+        )
+
+    rate_limit_policy = TelegramReauthRateLimitPolicy(db, settings)
+    if not rate_limit_policy.check(user, client_ip, now).allowed:
+        return _render_telegram_public_error(
+            request,
+            ErrorCode.RATE_LIMITED,
+            error_key="reauth_rate_limit",
+        )
+
+    submitted_password = raw_password or ""
+    if not check_current_password(
+        db,
+        user,
+        submitted_password,
+        settings,
+    ):
+        failure_result = rate_limit_policy.record_failure(
+            user,
+            client_ip,
+            now,
+        )
+        if not failure_result.allowed:
+            return _render_telegram_public_error(
+                request,
+                ErrorCode.RATE_LIMITED,
+                error_key="reauth_rate_limit",
+            )
+        return _render_telegram_public_error(
+            request,
+            ErrorCode.FORBIDDEN,
+            error_key="current_password",
+        )
+
+    rate_limit_policy.clear_user_failures_after_success(user)
+    return client_ip
 
 
 def _render_telegram_attempt_status_fragment(
@@ -923,6 +1028,10 @@ def _telegram_error_message(
         return copy["bot_config_error"]
     if error_key == "client_ip":
         return copy["client_ip_error"]
+    if error_key == "current_password":
+        return copy["current_password_error"]
+    if error_key == "reauth_rate_limit":
+        return copy["rate_limited"]
     mapped_key = {
         ErrorCode.RATE_LIMITED.value.casefold(): "rate_limited",
         ErrorCode.TELEGRAM_ALREADY_LINKED.value.casefold(): "already_linked",
@@ -946,6 +1055,8 @@ def _telegram_notice_message(
         return copy["unlinked_notice"]
     if notice_key == "javascript_required":
         return copy["javascript_required"]
+    if notice_key == "already_unlinked":
+        return copy["already_unlinked_notice"]
     return None
 
 

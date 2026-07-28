@@ -68,6 +68,7 @@ solutions from `docs/m6_decisions.md`.
 | Attempt presentation | `app/telegram/web_presentation.py` `get_link_attempt_presentation`; owned UUID mapping to `WAITING`, `LINKED`, `SUPERSEDED`, `EXPIRED`, or `UNAVAILABLE` |
 | Web localization | `app/telegram/web_presentation.py` `resolve_telegram_web_language` and `get_telegram_web_copy`; bounded Uzbek Latin/Russian catalog |
 | One-time browser reveal | `app/templates/auth/telegram.html`, `app/static/vendor/htmx-2.0.4.min.js`, and router fragment renderers; local script, `hx-history=false`, no push URL/storage/CDN |
+| Password DOM cleanup | `app/static/js/telegram-account.js`; external CSP-safe listener clears relink password input after each HTMX request without storage/history/network access |
 
 ## 4. Shop Context Boundary
 
@@ -126,16 +127,16 @@ solutions from `docs/m6_decisions.md`.
 | Runtime dependencies | `pyproject.toml:7`; `uv.lock:429` | M6.12 promotes approved `httpx>=0.28.1,<0.29`; M6.56 adds approved `segno>=1.6.6,<2`. |
 | Dev `httpx` | `pyproject.toml:21`; `uv.lock:306` exact `0.28.1` | Existing TestClient/dev presence is not runtime approval by itself; `docs/m6_decisions.md` is approval. |
 | Starlette/httpx warning | `docs/m5_final_report.md:127` | Existing warning, not application runtime client approval. |
-| QR encoder | `TOPILMADI`; existing M4 containment test forbids unapproved `qrcode` | Add approved `segno` only at M6.56 and update the M4 containment expectation narrowly for M6 production scope. |
+| QR encoder | `pyproject.toml` / `uv.lock`: `segno 1.6.6`; `app/telegram/qr.py` `render_telegram_start_link_qr_png` | In-memory PNG data URI of the exact one-time deep-link; no file, DB, external request, or image route. |
 | Real Telegram credential | `.env.example` has an empty operator-supplied placeholder; `compose.yaml` passes it only to `telegram-worker`; CI has no bot token. | Web remains credential-free; deployed worker secret value is untracked; no real credential/network in CI. |
 
 ## 9. TOPILMADI Minimal Solutions
 
 | Primitive | Audit result | Approved minimal solution |
 | --- | --- | --- |
-| Current-password re-auth | `TOPILMADI`; existing verifier is `app/auth/password_service.py:21` `verify_password` | Add a minimal current-user password verification dependency/service and session-freshness gate; no generic recovery framework. |
-| Runtime external HTTP client | `TOPILMADI` | Promote approved locked `httpx 0.28.1` to runtime at M6.12; use a narrow injected async transport adapter. |
-| QR encoder | `TOPILMADI` | Add approved `segno 1.6.6` at M6.56 and render in-memory PNG of the same one-time deep-link. |
+| Current-password re-auth | Implemented by `app/auth/service.py` `check_current_password` and `app/auth/telegram_reauth.py` `TelegramReauthRateLimitPolicy`. | Canonical active-user hash verification plus dedicated 900s user/IP failure scopes; no generic step-up framework and no Telegram-domain password input. |
+| Runtime external HTTP client | Implemented in `app/telegram/bot_api.py` with direct runtime `httpx 0.28.1`. | Narrow injected async transport adapter; worker-only credentials and no real CI network. |
+| QR encoder | Implemented with locked `segno 1.6.6` in `app/telegram/qr.py`. | Standard QR M/scale 5/border 4, in-memory PNG, same-link data URI, and safe button fallback. |
 | i18n framework | No generic framework was needed; implemented narrow immutable catalog in `app/telegram/bot_reply.py`. | Uzbek Latin and Russian bot replies only; no Babel/gettext subsystem. |
 | HTMX polling | `app/static/vendor/htmx-2.0.4.min.js`; `app/auth/router.py` `telegram_attempt_status`; contract route `GET /auth/telegram/attempts/{attempt_id}/status` with a `3s` interval. | Account-owned status fragment polls only in `WAITING`, terminal responses retarget the reveal contents, and no WebSocket/SPA is used. |
 | Worker service | Implemented in `app/telegram/worker.py`: `main`, `run_worker`, `run_polling_loop`, and `ShutdownController`; `compose.yaml` service `telegram-worker` reuses the web image. | Dedicated command, one replica, process-owned engine/client, per-operation sessions, signal-aware cleanup, and no web-process thread. |
