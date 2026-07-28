@@ -162,7 +162,7 @@ def run_worker_command(
                 settings,
                 shutdown=controller,
                 transport=transport,
-                processor=processor or _reject_unconfigured_update,
+                processor=processor,
             )
         )
     except TelegramWorkerSettingsError:
@@ -189,7 +189,7 @@ async def run_worker(
     *,
     shutdown: ShutdownController,
     transport: httpx.AsyncBaseTransport | None,
-    processor: UpdateProcessor,
+    processor: UpdateProcessor | None,
     monotonic_clock: Callable[[], float] = monotonic,
 ) -> None:
     credentials = settings.require_telegram_worker_credentials()
@@ -225,6 +225,14 @@ async def run_worker(
                 return
 
             _initialize_polling_state(session_factory)
+            resolved_processor = processor
+            if resolved_processor is None:
+                from app.telegram.update_processing import TelegramUpdateProcessor
+
+                resolved_processor = TelegramUpdateProcessor(
+                    session_factory,
+                    sleeper=shutdown.wait_async,
+                )
             heartbeat_task = asyncio.create_task(
                 _heartbeat_loop(session_factory, shutdown=shutdown)
             )
@@ -232,7 +240,7 @@ async def run_worker(
                 await run_polling_loop(
                     client,
                     session_factory=session_factory,
-                    processor=processor,
+                    processor=resolved_processor,
                     shutdown=shutdown,
                     heartbeat_task=heartbeat_task,
                 )
@@ -431,12 +439,6 @@ def _raise_heartbeat_failure(task: asyncio.Task[None] | None) -> None:
     exception = task.exception()
     if exception is not None:
         raise exception
-
-
-async def _reject_unconfigured_update(
-    _update: TelegramUpdateEnvelope,
-) -> PollingUpdateOutcome:
-    raise TelegramWorkerFatalError("WORKER_PROCESSOR_NOT_CONFIGURED")
 
 
 def _install_signal_handlers(

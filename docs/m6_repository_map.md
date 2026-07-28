@@ -51,6 +51,18 @@ solutions from `docs/m6_decisions.md`.
 | Purge terminal tokens | `app/telegram/service.py:393` `purge_terminal_link_tokens` |
 | Issued result exposes DB token row | `app/telegram/service.py:65` `IssuedTelegramLinkToken`; tests use `result.token.id` at `tests/test_telegram_issue_link_token_service.py:1643` |
 
+### M6 Operational Integration
+
+| Need | File/symbol |
+| --- | --- |
+| Minimal Bot API update envelope | `app/telegram/bot_api.py` `TelegramUpdateEnvelope`, `TelegramMessageEnvelope`, `TelegramBotApiClient.get_updates` |
+| Private start parser | `app/telegram/update_parser.py` `parse_telegram_update`; exact private `/start <token>` grammar with redacted typed output |
+| TX-A owner | `app/telegram/update_processing.py` `process_telegram_update_tx_a`; M4 consume/event, non-quarantined cleanup, and cursor in one caller-owned transaction |
+| A outcome and reply intent map | `app/telegram/update_processing.py` `TelegramUpdateOutcomeCode`, `BotReplyIntent`, `_apply_terminal_update` |
+| B classifier | `app/telegram/update_processing.py` `classify_telegram_tx_failure`; exact SQLSTATE/context policy from `docs/m6_decisions.md` |
+| TX-B owner | `app/telegram/update_processing.py` `record_poison_failure_tx_b`; fresh transaction, stable failure code, attempt/quarantine/cursor protocol |
+| Per-update worker bridge | `app/telegram/update_processing.py` `TelegramUpdateProcessor`; default processor selected by `app/telegram/worker.py` `run_worker` |
+
 ## 4. Shop Context Boundary
 
 | Need | File/symbol | M6 rule |
@@ -109,7 +121,7 @@ solutions from `docs/m6_decisions.md`.
 | Dev `httpx` | `pyproject.toml:21`; `uv.lock:306` exact `0.28.1` | Existing TestClient/dev presence is not runtime approval by itself; `docs/m6_decisions.md` is approval. |
 | Starlette/httpx warning | `docs/m5_final_report.md:127` | Existing warning, not application runtime client approval. |
 | QR encoder | `TOPILMADI`; existing M4 containment test forbids unapproved `qrcode` | Add approved `segno` only at M6.56 and update the M4 containment expectation narrowly for M6 production scope. |
-| Real Telegram credential | `.env.example` has no `TELEGRAM_BOT_TOKEN`; CI has no bot token | Web remains credential-free; worker secret is untracked; no real credential/network in CI. |
+| Real Telegram credential | `.env.example` has an empty operator-supplied placeholder; `compose.yaml` passes it only to `telegram-worker`; CI has no bot token. | Web remains credential-free; deployed worker secret value is untracked; no real credential/network in CI. |
 
 ## 9. TOPILMADI Minimal Solutions
 

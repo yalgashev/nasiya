@@ -19,6 +19,7 @@ TELEGRAM_ALLOWED_UPDATES = ("message",)
 TELEGRAM_BACKOFF_BASE_SECONDS = 1.0
 TELEGRAM_BACKOFF_CAP_SECONDS = 30.0
 TELEGRAM_RETRY_AFTER_CAP_SECONDS = 60.0
+TELEGRAM_UPDATE_ID_MAX = (1 << 63) - 2
 
 
 class TelegramApiErrorCode(StrEnum):
@@ -77,9 +78,30 @@ class TelegramWebhookInfo:
     active: bool
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
+class TelegramMessageEnvelope:
+    chat_id: int | None
+    chat_type: str | None
+    text: str | None
+    structurally_valid: bool
+
+    def __repr__(self) -> str:
+        return (
+            "TelegramMessageEnvelope("
+            "chat_id=<redacted>, chat_type=<redacted>, text=<redacted>, "
+            f"structurally_valid={self.structurally_valid!r})"
+        )
+
+
+@dataclass(frozen=True, repr=False)
 class TelegramUpdateEnvelope:
     update_id: int
+    message: TelegramMessageEnvelope | None = None
+
+    def __repr__(self) -> str:
+        return (
+            f"TelegramUpdateEnvelope(update_id={self.update_id!r}, message=<redacted>)"
+        )
 
 
 class TelegramPreflightStatus(StrEnum):
@@ -192,9 +214,15 @@ class TelegramBotApiClient:
                 isinstance(update_id, bool)
                 or not isinstance(update_id, int)
                 or update_id < 0
+                or update_id > TELEGRAM_UPDATE_ID_MAX
             ):
                 raise _protocol_error()
-            updates.append(TelegramUpdateEnvelope(update_id=update_id))
+            updates.append(
+                TelegramUpdateEnvelope(
+                    update_id=update_id,
+                    message=_parse_message_envelope(raw_update),
+                )
+            )
         return tuple(updates)
 
     async def send_message(
@@ -428,6 +456,45 @@ def _parse_json_object(response: httpx.Response) -> Mapping[str, Any]:
     if not isinstance(body, Mapping):
         raise _protocol_error()
     return body
+
+
+def _parse_message_envelope(
+    raw_update: Mapping[str, Any],
+) -> TelegramMessageEnvelope | None:
+    if "message" not in raw_update:
+        return None
+    raw_message = raw_update.get("message")
+    if not isinstance(raw_message, Mapping):
+        return _malformed_message_envelope()
+    raw_chat = raw_message.get("chat")
+    if not isinstance(raw_chat, Mapping):
+        return _malformed_message_envelope()
+
+    chat_id = raw_chat.get("id")
+    chat_type = raw_chat.get("type")
+    text = raw_message.get("text")
+    if (
+        isinstance(chat_id, bool)
+        or not isinstance(chat_id, int)
+        or not isinstance(chat_type, str)
+        or (text is not None and not isinstance(text, str))
+    ):
+        return _malformed_message_envelope()
+    return TelegramMessageEnvelope(
+        chat_id=chat_id,
+        chat_type=chat_type,
+        text=text,
+        structurally_valid=True,
+    )
+
+
+def _malformed_message_envelope() -> TelegramMessageEnvelope:
+    return TelegramMessageEnvelope(
+        chat_id=None,
+        chat_type=None,
+        text=None,
+        structurally_valid=False,
+    )
 
 
 def _extract_retry_after(response: httpx.Response) -> float | None:

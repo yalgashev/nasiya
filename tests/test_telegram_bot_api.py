@@ -18,6 +18,7 @@ from app.telegram.bot_api import (
     TELEGRAM_HTTP_READ_TIMEOUT_SECONDS,
     TELEGRAM_LONG_POLL_SECONDS,
     TELEGRAM_RETRY_AFTER_CAP_SECONDS,
+    TELEGRAM_UPDATE_ID_MAX,
     TelegramApiError,
     TelegramApiErrorCode,
     TelegramBackoffPolicy,
@@ -237,7 +238,14 @@ def test_get_updates_sends_exact_contract_and_preserves_batch_for_worker_sort() 
             {
                 "ok": True,
                 "result": [
-                    {"update_id": 12, "message": {"ignored": True}},
+                    {
+                        "update_id": 12,
+                        "message": {
+                            "chat": {"id": 9912, "type": "private"},
+                            "text": "/start safe_token",
+                            "ignored": True,
+                        },
+                    },
                     {"update_id": 10},
                 ],
             },
@@ -253,6 +261,11 @@ def test_get_updates_sends_exact_contract_and_preserves_batch_for_worker_sort() 
     updates = run(with_client(handler, scenario))
 
     assert [update.update_id for update in updates] == [12, 10]
+    assert updates[0].message is not None
+    assert updates[0].message.chat_id == 9912
+    assert updates[0].message.chat_type == "private"
+    assert updates[0].message.text == "/start safe_token"
+    assert updates[1].message is None
     assert captured_payload == {
         "offset": 10,
         "timeout": 25,
@@ -282,6 +295,7 @@ def test_get_updates_accepts_empty_result() -> None:
         {"ok": True, "result": [{}]},
         {"ok": True, "result": [{"update_id": "1"}]},
         {"ok": True, "result": [{"update_id": -1}]},
+        {"ok": True, "result": [{"update_id": TELEGRAM_UPDATE_ID_MAX + 1}]},
     ],
 )
 def test_get_updates_rejects_malformed_envelopes(payload: object) -> None:
