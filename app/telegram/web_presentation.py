@@ -180,11 +180,11 @@ def get_link_attempt_presentation(
     if token is None:
         return TelegramLinkAttemptPresentation.UNAVAILABLE
 
-    if get_link_status(session, current_user) is TelegramLinkStatus.LINKED:
-        return TelegramLinkAttemptPresentation.LINKED
     if token.invalidated_at is not None:
         return TelegramLinkAttemptPresentation.SUPERSEDED
     if token.consumed_at is not None:
+        if get_link_status(session, current_user) is TelegramLinkStatus.LINKED:
+            return TelegramLinkAttemptPresentation.LINKED
         return TelegramLinkAttemptPresentation.UNAVAILABLE
     if _as_utc(token.expires_at) <= _as_utc(now):
         return TelegramLinkAttemptPresentation.EXPIRED

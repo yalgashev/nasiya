@@ -1,6 +1,6 @@
 # M6 Known Limitations
 
-Status: PRE-PRODUCTION GATE OPEN
+Status: PRE-PRODUCTION ACCEPTANCE CONDITION SATISFIED
 Date: 2026-07-28
 
 ## KL-M6-01
@@ -24,13 +24,13 @@ Decision:
 Impact:
 
 - M6.01-M6.71 and CI are not blocked by an unavailable real bot.
-- M6.72 currently reports `BLOCKED: REAL TELEGRAM BOT NOT READY` because no
-  runtime dev/test credential or strict bot username is configured.
-- M6.72 remains blocked unless the separate
-  dev bot, username, secret handling, webhook-off state, private `/start`
-  round trip, and no-leak checks can be verified honestly.
-- `M6 TECHNICAL GREEN` may be established with fake transport; production
-  rollout remains gated by this acceptance and the final remote closeout.
+- M6.72 used an explicitly configured untracked dev/test credential and
+  completed the real bot, language, expiry, mobile/desktop handoff, restart
+  recovery and no-leak checks.
+- The REAL-BOT gate is `M6 ACCEPTANCE GREEN`; no fake-transport result was
+  classified as real acceptance.
+- Production rollout remains gated by the final exact-SHA remote CI closeout
+  and production-specific credential provisioning/rotation.
 
 Mitigation:
 
@@ -40,5 +40,5 @@ Mitigation:
   or convert fake transport evidence into a real acceptance PASS.
 - Keep web health independent so a stopped/unhealthy worker does not break
   login or M2-M5 web flows.
-- Close this gate only after all 14 checks in M6.72 are recorded without raw
-  credential, token, chat identifier, or private screenshot data.
+- Keep the completed M6.72 report free of raw credential, token, chat
+  identifier, private message, QR, deep-link and screenshot data.

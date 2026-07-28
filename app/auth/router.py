@@ -746,6 +746,15 @@ def _render_telegram_page(
     link_status = get_link_status(db, user)
     language = _telegram_web_language(request)
     copy = get_telegram_web_copy(language)
+    notice_message = _telegram_notice_message(
+        notice_key,
+        language=language,
+    )
+    if link_status is TelegramLinkStatus.LINKED and notice_key in {
+        "unlinked",
+        "already_unlinked",
+    }:
+        notice_message = None
     return templates.TemplateResponse(
         request,
         "auth/telegram.html",
@@ -758,10 +767,7 @@ def _render_telegram_page(
                     language=language,
                 ),
                 "is_linked": link_status is TelegramLinkStatus.LINKED,
-                "notice_message": _telegram_notice_message(
-                    notice_key,
-                    language=language,
-                ),
+                "notice_message": notice_message,
                 "page_language": language.value,
                 "password_max_length": settings.password_max_length,
                 "status_label": _telegram_status_label(
@@ -839,7 +845,8 @@ def _render_telegram_reveal_fragment(
         '<section aria-labelledby="telegram-reveal-heading" '
         'data-telegram-link-reveal="one-time" hx-history="false">'
         f'<h2 id="telegram-reveal-heading">{escape(copy["reveal_heading"])}</h2>'
-        f'<p><a class="telegram-open-link" href="{escaped_url}" '
+        '<p><a class="telegram-open-link" href="/auth/telegram" '
+        f'data-telegram-external-link="{escaped_url}" '
         'rel="noopener noreferrer">'
         f"{escape(copy['open_telegram'])}"
         "</a></p>"
@@ -955,7 +962,16 @@ def _render_telegram_attempt_status_fragment(
             f' hx-trigger="every {TELEGRAM_ATTEMPT_POLL_INTERVAL_SECONDS}s"'
             ' hx-swap="outerHTML"'
         )
-    return f"<div {attributes}>{escape(copy[status_copy_key])}</div>"
+    fragment = f"<div {attributes}>{escape(copy[status_copy_key])}</div>"
+    if presentation is TelegramLinkAttemptPresentation.LINKED:
+        fragment += (
+            '<p id="telegram-account-status" class="telegram-account-status" '
+            'role="status" hx-swap-oob="outerHTML">'
+            f"{escape(copy['linked'])}"
+            "</p>"
+            '<p id="telegram-notice" hx-swap-oob="delete"></p>'
+        )
+    return fragment
 
 
 def _render_telegram_issue_error(

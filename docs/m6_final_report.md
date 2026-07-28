@@ -1,6 +1,6 @@
 # M6 Final Report
 
-Status: **M6 TECHNICAL GREEN - REAL BOT ACCEPTANCE BLOCKED; REMOTE CI PENDING**
+Status: **M6 TECHNICAL GREEN — REMOTE CI PENDING**
 
 Date: 2026-07-28
 
@@ -67,7 +67,28 @@ Dependencies:
 - Runtime `segno==1.6.6` under the approved `>=1.6.6,<2` bound.
 - Locally vendored `htmx 2.0.4`, checksum and license recorded in
   `docs/m6_decisions.md`; no CDN. History/cache, eval, and swapped script
-  processing are disabled on the account page.
+  processing are disabled on the account page. Public 4xx account-action
+  fragments are explicitly swapped so approved rate-limit and re-auth errors
+  remain visible without weakening their HTTP status.
+
+## Corrective Acceptance Fixes
+
+Real-browser acceptance found and closed three account-page presentation
+defects without changing the M4 token domain, schema, 600-second TTL, worker
+TX-A/TX-B, QR dependency, authorization, or supersession semantics:
+
+- A pending relink attempt now owns its reveal and polls its exact
+  `telegram_link_tokens.id` attempt route. The existing account link remains
+  active until successful consumption; account-level LINKED state cannot
+  overwrite WAITING.
+- The Telegram deep-link is inert when inserted. It becomes navigable only
+  after a trusted explicit pointer or keyboard action on
+  `Telegramda ochish`; form submission, synthetic click, polling, and HTMX
+  swap cannot launch Telegram.
+- An exhausted approved issuance window returns a visible 429 alert. The
+  transient `Holat tekshirilmoqda` indicator is no longer mistaken for a
+  disappearing initial attempt. Within the approved limit, unlink to initial
+  link remains WAITING through polling and reaches LINKED after consumption.
 
 ## Transaction And Failure Protocol
 
@@ -90,33 +111,43 @@ Final code-level validation:
 - `uv sync --dev --frozen`: GREEN, 39 packages checked.
 - Ruff check: GREEN.
 - Ruff format check: GREEN, 195 files.
-- Full pytest: **1368 passed, 0 skipped, 0 xfailed** in 80.71s.
+- Full pytest after corrective fixes and real-bot acceptance:
+  **1373 passed, 0 skipped, 0 xfailed** in 147.43s.
+- Independent `pytest -q --durations=10` run:
+  **1373 passed, 0 skipped, 0 xfailed** in 146.06s; no pathological
+  long-running test was found.
 - Warning: one existing Starlette/TestClient `httpx` deprecation warning.
-- Collection: 1368 tests.
+- Collection: 1373 tests.
 - Alembic: one head/current, exact `d4e5f6a7b8c9`.
 - `git diff --check`: GREEN.
-- Tracked Telegram credential-shape scan: zero token-pattern hits.
+- Tracked secret/PII audit: no Telegram credential shape, acceptance
+  deep-link payload, private chat identifier, or phone number was found in
+  tracked/report changes.
 
 Focused evidence sets below overlap the full suite and are not additive:
 
 | Category | Result |
 | --- | --- |
 | Migration/polling persistence/static hardening | 26 passed |
-| Fake Bot API, worker recovery, lock, TX-A/TX-B, reply | 137 passed |
-| Auth/customer/shop/Telegram HTTP regression | 581 passed |
-| Final scope/deployment/static regression | 14 passed |
+| Fake Bot API, worker recovery, lock, TX-A/TX-B, reply | 156 passed |
+| Corrective Telegram/auth regression matrix | 127 passed |
+| Sensitive-data and scope leakage matrix | 107 passed |
+| Existing auth/customer/shop/Telegram HTTP regression | 244 passed |
 
 Runtime evidence:
 
-- Separate PostgreSQL DBs passed base-to-head, M6-to-M5-to-M6, repeat upgrade,
-  M1-M5 preservation, expected M6 tables/constraints/indexes, and exact
-  current-head checks. Temporary DBs were removed; no development volume was
-  deleted.
+- A temporary PostgreSQL database passed base-to-head, downgrade to exact M5
+  `a6b4c2d8e9f1`, re-upgrade to exact M6 `d4e5f6a7b8c9`, and repeat upgrade.
+  The two M6 operational tables disappeared at M5 and returned at M6 while
+  the inherited user/session/customer/shop/Telegram-link tables remained.
+  The focused migration suite passed 3 tests; the temporary database was
+  removed and no development volume was deleted.
 - Current-source no-cache images built for migrate, web, and worker.
 - Migration service ran after DB health and exited `0`; web started only after
   migration and served `/health` 200 without a bot token.
 - Worker without credentials returned sanitized
-  `WORKER_CREDENTIALS_MISSING` and failed closed.
+  `WORKER_CREDENTIALS_MISSING`, exited nonzero, and was stopped rather than
+  left in a restart loop. No real credential was persisted for this smoke.
 - Fake runtime covered second-poller lock denial/release, restart cursor,
   duplicate replay, 429, fatal 409, fifth-attempt quarantine, TX-B fatal
   cursor safety, fresh/stale health, post-commit reply failure, and connection
@@ -125,6 +156,54 @@ Runtime evidence:
   customer draft, shop workspace/isolation, Telegram issue/status/expiry/QR,
   unlink/relink, CSRF, no-store, and security headers. Chrome 320px and 430px
   smoke found no overlap or horizontal overflow.
+- Corrective-fix Chrome runs covered relink and initial WAITING persistence,
+  explicit-only Telegram handoff, two-tab supersession, and visible 429
+  presentation with no top-level external navigation.
+
+## M6.74 Checkpoint
+
+| Required check | Result |
+| --- | --- |
+| Frozen development install | GREEN; 39 packages checked |
+| Ruff check / format check | GREEN / GREEN |
+| Full pytest / durations run | GREEN; 1373 tests, 0 skip/xfail |
+| Alembic heads/current | GREEN; exact single `d4e5f6a7b8c9` |
+| Diff and tracked secret/PII audit | GREEN |
+| Full migration walk | GREEN |
+| Docker no-cache and runtime smoke | GREEN |
+| Fake runtime recovery | GREEN; 156 tests |
+| Existing HTTP regression | GREEN; 244 tests |
+| Real-bot acceptance | `M6 ACCEPTANCE GREEN` |
+| Report/evidence consistency | GREEN |
+
+## Real-Bot Acceptance
+
+M6.72 used the configured untracked dev/test credential and real Telegram
+network. No credential, raw token, deep-link, QR, chat identifier, private
+message, or screenshot data is recorded here.
+
+| Acceptance area | Result |
+| --- | --- |
+| Strict preflight, username match, webhook inactive | GREEN |
+| Worker lock, heartbeat and health | GREEN |
+| Authenticated initial link, private `/start`, web LINKED | GREEN |
+| Phone handoff and desktop QR | GREEN |
+| Replay protection | GREEN |
+| Wrong/correct-password unlink and fresh linking | GREEN |
+| Relink WAITING persistence and two-tab supersession | GREEN |
+| Explicit-only Telegram handoff and stale-flash removal | GREEN |
+| Real 600-second expiry while the existing link stayed active | GREEN |
+| Uzbek success/failure bot replies | GREEN |
+| Russian success/failure bot replies | GREEN |
+| Graceful worker restart and persisted cursor recovery | GREEN |
+| Live DB/log secret, token, update and identifier leakage audit | GREEN |
+
+The expiry candidate remained unconsumed and non-invalidated through the
+deadline, presented EXPIRED, removed its reveal, and left the existing active
+link unchanged. Worker recovery preserved the cursor across restart, advanced
+it after a real post-restart terminal update, then preserved the advanced
+cursor across a second restart. Heartbeat returned fresh and no poison row was
+created.
 
 ## TT Traceability
 
@@ -141,18 +220,29 @@ Runtime evidence:
   Broader platform monitoring/backup requirements remain future scope.
 - TT 11: real PostgreSQL migration, replay, expiry, concurrency, IDOR,
   leakage, browser/static and fake-transport recovery tests are covered.
-  Real Telegram network/device acceptance remains open.
+  Real Telegram network/device acceptance is GREEN.
 
-## Open Gates
+## Gates
 
-`KL-M6-01` remains active. No dev/test bot token or matching username is
-configured, so M6.72 is honestly:
+### KL-M6-01
 
-**BLOCKED: REAL TELEGRAM BOT NOT READY**
+Status: **SATISFIED FOR M6.72**
 
-The 14-step real mobile/desktop acceptance must be completed before
-PRE-PRODUCTION approval. No fake-transport result is classified as real
-acceptance.
+The separate untracked dev/test credential, strict username, webhook-off
+state, private round trip, mobile/desktop handoff, restart recovery, language,
+expiry and no-leak conditions were verified. The continuing operational
+constraint remains: real credentials stay outside tracked files, docs,
+fixtures, logs and CI.
+
+### REAL-BOT Gate
+
+Status: **M6 ACCEPTANCE GREEN**
+
+All M6.72 real-bot acceptance areas are complete. Fake transport evidence was
+not substituted for the real network/device checks.
+
+### REMOTE-CI Gate
 
 GitHub Actions has not yet run for the final checkpoint SHA. Remote status is
-therefore **REMOTE CI PENDING** and M6 is not remote-closed.
+therefore **REMOTE CI PENDING**. M6 is technical/local GREEN but is not
+remote-closed.

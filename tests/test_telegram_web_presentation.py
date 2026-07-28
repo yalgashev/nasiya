@@ -134,15 +134,11 @@ def test_attempt_status_hides_foreign_unknown_and_purged_rows(
     assert unknown_result is TelegramLinkAttemptPresentation.UNAVAILABLE
 
 
-def test_canonical_linked_status_wins_for_every_owned_attempt(
+def test_existing_link_does_not_complete_live_relink_attempt(
     db_session: Session,
 ) -> None:
     user = add_user(db_session, "+998905555555")
-    superseded = add_token(
-        db_session,
-        user,
-        invalidated_at=NOW,
-    )
+    live_relink = add_token(db_session, user)
     db_session.add(
         TelegramLink(
             user_id=user.id,
@@ -153,9 +149,9 @@ def test_canonical_linked_status_wins_for_every_owned_attempt(
     )
     db_session.flush()
 
-    result = get_link_attempt_presentation(db_session, user, superseded.id, NOW)
+    result = get_link_attempt_presentation(db_session, user, live_relink.id, NOW)
 
-    assert result is TelegramLinkAttemptPresentation.LINKED
+    assert result is TelegramLinkAttemptPresentation.WAITING
 
 
 @pytest.mark.parametrize(

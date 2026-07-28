@@ -5,7 +5,7 @@
 {% block head %}
 <meta
     name="htmx-config"
-    content='{"historyEnabled":false,"historyCacheSize":0,"allowEval":false,"allowScriptTags":false}'
+    content='{"historyEnabled":false,"historyCacheSize":0,"allowEval":false,"allowScriptTags":false,"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"[4]..","swap":true,"error":true},{"code":"[5]..","swap":false,"error":true}]}'
 >
 <script src="{{ url_for('static', path='vendor/htmx-2.0.4.min.js') }}" defer></script>
 <script src="{{ url_for('static', path='js/telegram-account.js') }}" defer></script>
@@ -18,11 +18,13 @@
     <div role="alert">{{ error_message }}</div>
     {% endif %}
     {% if notice_message %}
-    <p class="telegram-notice" role="status">{{ notice_message }}</p>
+    <p id="telegram-notice" class="telegram-notice" role="status">{{ notice_message }}</p>
     {% endif %}
     <section aria-labelledby="telegram-status-heading">
         <h2 id="telegram-status-heading">{{ copy.status_heading }}</h2>
-        <p class="telegram-account-status" role="status">{{ status_label }}</p>
+        <p id="telegram-account-status" class="telegram-account-status" role="status">
+            {{ status_label }}
+        </p>
     </section>
     {% if bot_configured %}
     <section aria-labelledby="telegram-actions-heading">

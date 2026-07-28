@@ -63,6 +63,7 @@ def make_settings(engine: Engine) -> Settings:
 
 
 def seed_token(engine: Engine) -> None:
+    issued_at = datetime.now(UTC)
     session_factory = create_database_session_factory(engine)
     with session_factory.begin() as session:
         user = User(phone="+998900081001")
@@ -72,8 +73,8 @@ def seed_token(engine: Engine) -> None:
             TelegramLinkToken(
                 user_id=user.id,
                 token_hash=hash_telegram_link_token(RawTelegramLinkToken(RAW_TOKEN)),
-                created_at=NOW,
-                expires_at=NOW + timedelta(minutes=10),
+                created_at=issued_at,
+                expires_at=issued_at + timedelta(minutes=10),
             )
         )
 

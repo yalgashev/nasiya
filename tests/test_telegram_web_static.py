@@ -19,6 +19,12 @@ def test_telegram_template_has_local_script_and_no_inline_or_unsafe_rendering() 
         '"historyEnabled":false,"historyCacheSize":0,'
         '"allowEval":false,"allowScriptTags":false'
     ) in template
+    assert (
+        '"responseHandling":[{"code":"204","swap":false},'
+        '{"code":"[23]..","swap":true},'
+        '{"code":"[4]..","swap":true,"error":true},'
+        '{"code":"[5]..","swap":false,"error":true}]'
+    ) in template
     assert "<script src=" in template
     assert "<script>" not in template
     assert "|safe" not in template
@@ -57,12 +63,17 @@ def test_vendored_htmx_asset_and_license_are_pinned() -> None:
     assert "Zero-Clause BSD" in license_text
 
 
-def test_account_script_only_clears_password_memory_after_htmx_request() -> None:
+def test_account_script_gates_external_link_and_clears_password_memory() -> None:
     source = TELEGRAM_ACCOUNT_JS.read_text(encoding="utf-8")
 
     assert "htmx:afterRequest" in source
     assert 'input[type="password"]' in source
     assert 'input.value = ""' in source
+    assert "data-telegram-external-link" in source
+    assert '"pointerdown"' in source
+    assert '"keydown"' in source
+    assert "event.isTrusted" in source
+    assert "event.preventDefault()" in source
     for forbidden in (
         "localStorage",
         "sessionStorage",
@@ -70,5 +81,9 @@ def test_account_script_only_clears_password_memory_after_htmx_request() -> None
         "document.cookie",
         "fetch(",
         "XMLHttpRequest",
+        "window.open",
+        "location.href",
+        "window.location",
+        ".click(",
     ):
         assert forbidden not in source
