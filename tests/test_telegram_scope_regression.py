@@ -181,9 +181,19 @@ def test_no_production_telegram_route_webhook_callback_or_public_csrf_bypass(
     client = TestClient(application)
     routes = list(iter_api_routes(application))
     route_paths = {route.path_format for route in routes}
+    allowed_auth_telegram_paths = {
+        "/auth/telegram",
+        "/auth/telegram/status",
+        "/auth/telegram/link-token",
+        "/auth/telegram/relink-token",
+        "/auth/telegram/unlink",
+    }
 
-    assert not any(path.startswith("/auth/telegram") for path in route_paths)
-    assert not any("telegram" in path.casefold() for path in route_paths)
+    assert allowed_auth_telegram_paths.issubset(route_paths)
+    assert not any(
+        path.startswith("/auth/telegram") and path not in allowed_auth_telegram_paths
+        for path in route_paths
+    )
     assert not any("webhook" in path.casefold() for path in route_paths)
     assert not any("callback" in path.casefold() for path in route_paths)
     assert not any("qr" in path.casefold() for path in route_paths)
@@ -192,7 +202,6 @@ def test_no_production_telegram_route_webhook_callback_or_public_csrf_bypass(
     assert not any("reauth" in path.casefold() for path in route_paths)
 
     for path in (
-        "/auth/telegram",
         "/auth/telegram/link",
         "/auth/telegram/callback",
         "/telegram/webhook",
@@ -234,12 +243,15 @@ def test_no_bot_credential_transport_worker_qr_otp_proxy_or_scheduler_runtime() 
 
 
 def test_qr_otp_password_reauth_and_customer_activation_do_not_appear_in_ui() -> None:
-    auth_customer_templates = template_text(
-        "auth/account.html",
+    non_telegram_templates = template_text(
         "auth/login.html",
         "auth/sessions.html",
         "customer/onboarding.html",
         "customer/profile.html",
+    ).casefold()
+    account_telegram_templates = template_text(
+        "auth/account.html",
+        "auth/telegram.html",
     ).casefold()
     static_paths = [
         path.relative_to(PROJECT_ROOT).as_posix().casefold()
@@ -247,21 +259,26 @@ def test_qr_otp_password_reauth_and_customer_activation_do_not_appear_in_ui() ->
         if path.is_file()
     ]
 
+    for marker in FORBIDDEN_CUSTOMER_FEATURE_TEXT:
+        assert marker not in non_telegram_templates
+
+    assert "auth/telegram" in account_telegram_templates
+    assert "telegram" in account_telegram_templates
     for marker in (
         "telegram",
         "otp",
         "qrcode",
         "qr_code",
-        "auth/telegram",
         "webhook",
-        "bot",
         "current_password",
         "reauth",
         "re-auth",
         "activation",
         "activated",
     ):
-        assert marker not in auth_customer_templates
+        if marker == "telegram":
+            continue
+        assert marker not in account_telegram_templates
     assert not any("qr" in path or "telegram" in path for path in static_paths)
 
 

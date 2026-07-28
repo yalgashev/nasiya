@@ -347,8 +347,11 @@ def test_auth_customer_html_and_m4_sources_have_no_identifier_dump_paths() -> No
     template_paths = tuple(
         sorted((PROJECT_ROOT / "app" / "templates" / "auth").glob("*.html"))
     ) + tuple(sorted((PROJECT_ROOT / "app" / "templates" / "customer").glob("*.html")))
-    forbidden_template_snippets = (
-        "telegram",
+    m6_telegram_account_template_paths = {
+        PROJECT_ROOT / "app" / "templates" / "auth" / "account.html",
+        PROJECT_ROOT / "app" / "templates" / "auth" / "telegram.html",
+    }
+    forbidden_identifier_template_snippets = (
         "t.me",
         "?start=",
         "RawTelegramLinkToken",
@@ -367,7 +370,9 @@ def test_auth_customer_html_and_m4_sources_have_no_identifier_dump_paths() -> No
     )
     for path in template_paths:
         template_text = path.read_text(encoding="utf-8")
-        for snippet in forbidden_template_snippets:
+        if path not in m6_telegram_account_template_paths:
+            assert "telegram" not in template_text.casefold()
+        for snippet in forbidden_identifier_template_snippets:
             assert snippet not in template_text
 
     persistence_paths = (

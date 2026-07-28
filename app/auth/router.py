@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from html import escape
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlsplit
@@ -21,7 +22,7 @@ from app.auth.deps import (
     require_user,
     validate_csrf,
 )
-from app.auth.error_codes import ErrorCode
+from app.auth.error_codes import ErrorCode, get_error_http_status, get_public_error_body
 from app.auth.login_rate_limit import LoginRateLimitPolicy, get_login_client_host
 from app.auth.phone import (
     PhoneNormalizationError,
@@ -44,11 +45,24 @@ from app.auth.sessions import (
 from app.auth.template_context import with_csrf_context
 from app.security_headers import mark_auth_response_no_store
 from app.settings import Settings
+from app.telegram.client_ip import ResolvedClientIp
+from app.telegram.service import (
+    TelegramLinkLifecycleInternalError,
+    TelegramLinkStatus,
+    TelegramLinkTokenIssueError,
+    TelegramLinkTokenIssueInternalError,
+    get_link_status,
+    issue_link_token,
+    issue_relink_token,
+)
+from app.telegram.service import unlink as unlink_telegram
+from app.telegram.token import build_telegram_start_link
 
 TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates"
 LOGIN_FAILED_MESSAGE = "Telefon raqam yoki parol noto'g'ri."
 ACCOUNT_PATH = "/auth/account"
 LOGIN_PATH = "/auth/login"
+TELEGRAM_PATH = "/auth/telegram"
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 router = APIRouter(prefix="/auth")
 
@@ -212,6 +226,203 @@ def account_page(
             {"masked_phone": mask_phone_for_display(user.phone)},
             session,
         ),
+    )
+    return mark_auth_response_no_store(response)
+
+
+@router.get("/telegram", response_class=HTMLResponse, response_model=None)
+def telegram_page(
+    request: Request,
+    db: Annotated[
+        DatabaseSession,
+        Depends(get_database_session, scope="function"),
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+    context: Annotated[
+        CurrentSessionContext,
+        Depends(get_current_session_context),
+    ],
+) -> Response:
+    try:
+        user = require_user(context)
+    except LoginRequired:
+        return _redirect_auth_login(context, settings)
+
+    response = _render_telegram_page(
+        request=request,
+        db=db,
+        user=user,
+        settings=settings,
+        context=context,
+        error_key=request.query_params.get("error"),
+        notice_key=request.query_params.get("notice"),
+    )
+    return mark_auth_response_no_store(response)
+
+
+@router.get("/telegram/status", response_class=HTMLResponse, response_model=None)
+def telegram_status(
+    db: Annotated[
+        DatabaseSession,
+        Depends(get_database_session, scope="function"),
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+    context: Annotated[
+        CurrentSessionContext,
+        Depends(get_current_session_context),
+    ],
+) -> Response:
+    try:
+        user = require_user(context)
+    except LoginRequired:
+        return _redirect_auth_login(context, settings)
+
+    link_status = get_link_status(db, user)
+    response = HTMLResponse(_render_telegram_status_fragment(link_status))
+    return mark_auth_response_no_store(response)
+
+
+@router.post("/telegram/link-token", response_class=HTMLResponse, response_model=None)
+def issue_telegram_link_token(
+    request: Request,
+    db: Annotated[
+        DatabaseSession,
+        Depends(get_database_session, scope="function"),
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+    now: Annotated[datetime, Depends(get_current_time)],
+    context: Annotated[
+        CurrentSessionContext,
+        Depends(get_current_session_context),
+    ],
+    _csrf: Annotated[None, Depends(validate_csrf)],
+) -> Response:
+    _ = _csrf
+    try:
+        user = require_user(context)
+    except LoginRequired:
+        return _redirect_auth_login(context, settings)
+
+    client_ip = _resolve_telegram_client_ip(request)
+    if client_ip is None:
+        return _render_telegram_public_error(
+            request,
+            ErrorCode.VALIDATION_ERROR,
+            error_key="client_ip",
+        )
+    if settings.telegram_bot_username is None:
+        return _render_telegram_public_error(
+            request,
+            ErrorCode.VALIDATION_ERROR,
+            error_key="bot_unavailable",
+        )
+
+    try:
+        issued = issue_link_token(db, settings, user, client_ip, now)
+    except TelegramLinkTokenIssueError as exc:
+        return _render_telegram_issue_error(request, exc)
+    except TelegramLinkTokenIssueInternalError:
+        raise
+
+    start_link = build_telegram_start_link(
+        settings.telegram_bot_username,
+        issued.raw_token,
+    )
+    return _render_telegram_reveal_response(
+        request,
+        start_link.as_delivery_url(),
+        action="link",
+    )
+
+
+@router.post("/telegram/relink-token", response_class=HTMLResponse, response_model=None)
+def issue_telegram_relink_token(
+    request: Request,
+    db: Annotated[
+        DatabaseSession,
+        Depends(get_database_session, scope="function"),
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+    now: Annotated[datetime, Depends(get_current_time)],
+    context: Annotated[
+        CurrentSessionContext,
+        Depends(get_current_session_context),
+    ],
+    _csrf: Annotated[None, Depends(validate_csrf)],
+) -> Response:
+    _ = _csrf
+    try:
+        user = require_user(context)
+    except LoginRequired:
+        return _redirect_auth_login(context, settings)
+
+    client_ip = _resolve_telegram_client_ip(request)
+    if client_ip is None:
+        return _render_telegram_public_error(
+            request,
+            ErrorCode.VALIDATION_ERROR,
+            error_key="client_ip",
+        )
+    if settings.telegram_bot_username is None:
+        return _render_telegram_public_error(
+            request,
+            ErrorCode.VALIDATION_ERROR,
+            error_key="bot_unavailable",
+        )
+
+    try:
+        issued = issue_relink_token(db, settings, user, client_ip, now)
+    except TelegramLinkTokenIssueError as exc:
+        return _render_telegram_issue_error(request, exc)
+    except TelegramLinkTokenIssueInternalError:
+        raise
+
+    start_link = build_telegram_start_link(
+        settings.telegram_bot_username,
+        issued.raw_token,
+    )
+    return _render_telegram_reveal_response(
+        request,
+        start_link.as_delivery_url(),
+        action="relink",
+    )
+
+
+@router.post("/telegram/unlink", response_model=None)
+def unlink_telegram_account(
+    db: Annotated[
+        DatabaseSession,
+        Depends(get_database_session, scope="function"),
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+    now: Annotated[datetime, Depends(get_current_time)],
+    context: Annotated[
+        CurrentSessionContext,
+        Depends(get_current_session_context),
+    ],
+    _csrf: Annotated[None, Depends(validate_csrf)],
+) -> Response:
+    _ = _csrf
+    try:
+        user = require_user(context)
+    except LoginRequired:
+        return _redirect_auth_login(context, settings)
+
+    try:
+        unlink_telegram(db, user, now)
+    except TelegramLinkTokenIssueError as exc:
+        response = RedirectResponse(
+            f"{TELEGRAM_PATH}?error={_telegram_error_key(exc.error_code)}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+        response.headers["X-Error-Code"] = exc.error_code.value
+        return mark_auth_response_no_store(response)
+    except TelegramLinkLifecycleInternalError:
+        raise
+
+    response = RedirectResponse(
+        f"{TELEGRAM_PATH}?notice=unlinked",
+        status_code=status.HTTP_303_SEE_OTHER,
     )
     return mark_auth_response_no_store(response)
 
@@ -415,6 +626,160 @@ def _render_session_not_found() -> Response:
         status_code=status.HTTP_404_NOT_FOUND,
     )
     return mark_auth_response_no_store(response)
+
+
+def _render_telegram_page(
+    *,
+    request: Request,
+    db: DatabaseSession,
+    user,
+    settings: Settings,
+    context: CurrentSessionContext,
+    error_key: str | None = None,
+    notice_key: str | None = None,
+) -> Response:
+    link_status = get_link_status(db, user)
+    return templates.TemplateResponse(
+        request,
+        "auth/telegram.html",
+        with_csrf_context(
+            {
+                "bot_configured": settings.telegram_bot_username is not None,
+                "error_message": _telegram_error_message(error_key),
+                "is_linked": link_status is TelegramLinkStatus.LINKED,
+                "notice_message": _telegram_notice_message(notice_key),
+                "status_label": _telegram_status_label(link_status),
+            },
+            context.get_session_row(),
+        ),
+    )
+
+
+def _render_telegram_status_fragment(link_status: TelegramLinkStatus) -> str:
+    status_value = escape(link_status.value)
+    status_label = escape(_telegram_status_label(link_status))
+    return (
+        f'<div data-telegram-link-status="{status_value}">'
+        f"Telegram holati: {status_label}"
+        "</div>"
+    )
+
+
+def _render_telegram_reveal_response(
+    request: Request,
+    start_link_url: str,
+    *,
+    action: str,
+) -> Response:
+    fragment = _render_telegram_reveal_fragment(start_link_url, action=action)
+    response = HTMLResponse(fragment)
+    response.headers["X-Telegram-Link-Reveal"] = "one-time"
+    return mark_auth_response_no_store(response)
+
+
+def _render_telegram_reveal_fragment(start_link_url: str, *, action: str) -> str:
+    escaped_url = escape(start_link_url, quote=True)
+    title = "Telegram havolasi"
+    hint = (
+        "Telegramda qayta bog'lashni tasdiqlang."
+        if action == "relink"
+        else "Telegramda bog'lashni tasdiqlang."
+    )
+    return (
+        '<section aria-labelledby="telegram-reveal-heading" '
+        'data-telegram-link-reveal="one-time">'
+        f'<h2 id="telegram-reveal-heading">{title}</h2>'
+        f'<p><a href="{escaped_url}" rel="noopener noreferrer">'
+        "Telegramda ochish"
+        "</a></p>"
+        f"<p>{escape(hint)}</p>"
+        "</section>"
+    )
+
+
+def _render_telegram_issue_error(
+    request: Request,
+    exc: TelegramLinkTokenIssueError,
+) -> Response:
+    return _render_telegram_public_error(
+        request,
+        exc.error_code,
+        error_key=_telegram_error_key(exc.error_code),
+    )
+
+
+def _render_telegram_public_error(
+    request: Request,
+    error_code: ErrorCode,
+    *,
+    error_key: str,
+) -> Response:
+    if _is_htmx_request(request):
+        message = _telegram_error_message(error_key)
+        if message is None:
+            public_error = get_public_error_body(error_code)
+            message = public_error["message"]
+        response = HTMLResponse(
+            _render_telegram_error_fragment(message),
+            status_code=get_error_http_status(error_code),
+            headers={"X-Error-Code": error_code.value},
+        )
+        return mark_auth_response_no_store(response)
+
+    response = RedirectResponse(
+        f"{TELEGRAM_PATH}?error={error_key}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+    response.headers["X-Error-Code"] = error_code.value
+    return mark_auth_response_no_store(response)
+
+
+def _render_telegram_error_fragment(message: str) -> str:
+    return f'<div role="alert">{escape(message)}</div>'
+
+
+def _resolve_telegram_client_ip(request: Request) -> ResolvedClientIp | None:
+    client = request.client
+    if client is None:
+        return None
+    try:
+        return ResolvedClientIp(client.host)
+    except ValueError:
+        return None
+
+
+def _telegram_status_label(link_status: TelegramLinkStatus) -> str:
+    return {
+        TelegramLinkStatus.LINKED: "Bog'langan",
+        TelegramLinkStatus.UNLINKED: "Bog'lanmagan",
+    }[link_status]
+
+
+def _telegram_error_key(error_code: ErrorCode) -> str:
+    return error_code.value.casefold()
+
+
+def _telegram_error_message(error_key: str | None) -> str | None:
+    if error_key is None:
+        return None
+    if error_key == "bot_unavailable":
+        return "Telegram bot havolasi hali sozlanmagan."
+    if error_key == "client_ip":
+        return "Telegram bog'lashni hozir boshlash mumkin emas."
+    try:
+        return get_public_error_body(ErrorCode(error_key.upper()))["message"]
+    except ValueError:
+        return "So'rov bajarilmadi."
+
+
+def _telegram_notice_message(notice_key: str | None) -> str | None:
+    if notice_key == "unlinked":
+        return "Telegram bog'lanishi uzildi."
+    return None
+
+
+def _is_htmx_request(request: Request) -> bool:
+    return request.headers.get("HX-Request", "").casefold() == "true"
 
 
 def _get_session_view_model(

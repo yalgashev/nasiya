@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+
+{% block title %}Telegram - Nasiya{% endblock %}
+
+{% block content %}
+<main class="telegram-page">
+    <h1>Telegram</h1>
+    {% if error_message %}
+    <div role="alert">{{ error_message }}</div>
+    {% endif %}
+    {% if notice_message %}
+    <p class="customer-status">{{ notice_message }}</p>
+    {% endif %}
+    <section aria-labelledby="telegram-status-heading">
+        <h2 id="telegram-status-heading">Holat</h2>
+        <p>{{ status_label }}</p>
+    </section>
+    {% if bot_configured %}
+    <section aria-labelledby="telegram-actions-heading">
+        <h2 id="telegram-actions-heading">Amallar</h2>
+        <div id="telegram-link-reveal" aria-live="polite"></div>
+        {% if is_linked %}
+        <form
+            method="post"
+            action="/auth/telegram/relink-token"
+            hx-post="/auth/telegram/relink-token"
+            hx-target="#telegram-link-reveal"
+            hx-swap="innerHTML"
+        >
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit">Qayta bog'lash havolasini olish</button>
+        </form>
+        <form method="post" action="/auth/telegram/unlink">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="button-danger" type="submit">Telegramni uzish</button>
+        </form>
+        {% else %}
+        <form
+            method="post"
+            action="/auth/telegram/link-token"
+            hx-post="/auth/telegram/link-token"
+            hx-target="#telegram-link-reveal"
+            hx-swap="innerHTML"
+        >
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit">Bog'lash havolasini olish</button>
+        </form>
+        {% endif %}
+    </section>
+    {% else %}
+    <section aria-labelledby="telegram-unavailable-heading">
+        <h2 id="telegram-unavailable-heading">Hozircha mavjud emas</h2>
+        <p>Telegram bog'lash havolasi sozlanmagan.</p>
+    </section>
+    {% endif %}
+    <nav aria-label="Hisob navigatsiyasi">
+        <a href="/auth/account">Hisobga qaytish</a>
+    </nav>
+</main>
+{% endblock %}
