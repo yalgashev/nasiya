@@ -350,11 +350,14 @@ def test_customer_schema_remains_draft_only_and_telegram_tables_stay_scoped() ->
     )
 
 
-def test_readme_documents_m4_as_domain_foundation_only() -> None:
+def test_readme_preserves_m4_baseline_and_documents_m6_integration() -> None:
     readme_text = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8").casefold()
+    m4_section = readme_text.split(
+        "## secure telegram linking domain foundation (m4)",
+        1,
+    )[1].split("## production telegram account linking (m6)", 1)[0]
 
-    assert "secure telegram linking domain foundation (m4)" in readme_text
-    assert "end-to-end telegram integratsiya emas" in readme_text
+    assert "end-to-end telegram integratsiya emas" in m4_section
     for explicit_absence in (
         "real bot api",
         "production route/ui",
@@ -369,7 +372,7 @@ def test_readme_documents_m4_as_domain_foundation_only() -> None:
         "talab qilinmaydi",
         "real telegram credential yoki network talab qilinmaydi",
     ):
-        assert explicit_absence in readme_text
+        assert explicit_absence in m4_section
 
     for unsupported_route_or_claim in (
         "/auth/telegram",
@@ -382,4 +385,9 @@ def test_readme_documents_m4_as_domain_foundation_only() -> None:
         "customer activation enabled",
         "notification worker",
     ):
-        assert unsupported_route_or_claim not in readme_text
+        assert unsupported_route_or_claim not in m4_section
+
+    assert "/auth/telegram" in readme_text
+    assert "python -m app.telegram.worker run" in readme_text
+    assert "public registration" in readme_text
+    assert "webhook scope'ga kirmaydi" in readme_text

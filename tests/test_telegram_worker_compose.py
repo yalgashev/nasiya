@@ -7,6 +7,10 @@ def compose_text() -> str:
     return (PROJECT_ROOT / "compose.yaml").read_text(encoding="utf-8")
 
 
+def dockerfile_text() -> str:
+    return (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+
 def service_block(text: str, service_name: str, next_service_name: str) -> str:
     return text.split(f"  {service_name}:", 1)[1].split(
         f"  {next_service_name}:",
@@ -51,3 +55,10 @@ def test_compose_worker_uses_same_image_contract_and_exact_lifecycle_values() ->
         "start_period: 20s",
     ):
         assert health_value in worker
+
+
+def test_web_container_disables_raw_client_ip_access_logging() -> None:
+    command = dockerfile_text().split("CMD ", 1)[1]
+
+    assert '"uvicorn"' in command
+    assert '"--no-access-log"' in command

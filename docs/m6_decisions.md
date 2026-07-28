@@ -76,7 +76,9 @@ Approved production dependencies:
   checksum
   `e209dda5c8235479f3166defc7750e1dbcd5a5c1808b7792fc2e6733768fb447`.
   It is served from the application origin so the linking flow has no CDN,
-  external-resource, or relaxed-CSP requirement.
+  external-resource, or relaxed-CSP requirement. The Telegram page disables
+  HTMX history, sets history cache size to zero, and disables eval and script
+  tags in swapped responses.
 
 ## 6. CI And Deployment Decisions
 
@@ -99,6 +101,9 @@ Approved production dependencies:
   interval `15s`, timeout `5s`, retries `3`, start period `20s`.
 - Web `/health` remains independent of worker health and web starts without the
   bot token. Worker fails closed when the token is absent or empty.
+- The production Uvicorn command disables access logging so raw client IP
+  addresses are not emitted. Sanitized application and worker operational
+  codes remain available.
 - Account-page attempt status uses a fixed `3s` HTMX polling interval. Only
   `WAITING` continues polling; every other presentation state is terminal and
   removes the one-time reveal container contents.

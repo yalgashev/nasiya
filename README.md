@@ -51,12 +51,14 @@ Muhim maydonlar:
   rate-limit sozlamalari; default policy 900 soniyada 3 user, 3 phone va
   20 IP attempt.
 - `RATE_LIMIT_HMAC_KEY` - raw phone/IP ni DBga yozmaslik uchun HMAC secret.
-- `TELEGRAM_BOT_USERNAME` - optional. App startup uchun shart emas; faqat
-  pure deep-link builder ishlatilganda kerak bo'ladi. Qiymat `@`siz, URLsiz,
-  `bot` suffixli username bo'lishi kerak.
+- `TELEGRAM_BOT_USERNAME` - web startup uchun optional, linking flow va worker
+  preflight uchun required. Qiymat `@`siz, URLsiz, `bot` suffixli username
+  bo'lishi va Bot API `getMe` natijasiga aynan mos kelishi kerak.
+- `TELEGRAM_BOT_TOKEN` - faqat `telegram-worker` runtime secret. Web va CI
+  uchun required emas; worker unset/empty qiymatda fail-closed ishlaydi.
 
-M4da `TELEGRAM_BOT_TOKEN` mavjud emas va talab qilinmaydi. Real Telegram Bot
-API credentialini `.env`, README, CI yoki testlarga qo'shmang.
+Real Telegram Bot API credentialini tracked `.env`, README, CI, test fixture,
+command argument yoki chatga qo'shmang.
 
 `RATE_LIMIT_HMAC_KEY`ning real qiymatini README, CI log, commit yoki chatda
 chiqarmang. `.env.example` faqat development namunasi; productionda alohida,
@@ -81,9 +83,8 @@ development databasega qaragan `TEST_DATABASE_URL`ni rad etadi.
 cd /home/yalgashev/projects/nasiya
 cp .env.example .env
 docker compose config --quiet
-docker compose build web
-docker compose up -d
-docker compose exec web alembic upgrade head
+docker compose build migrate web telegram-worker
+docker compose up -d db migrate web
 xdg-open http://localhost:8000/
 xdg-open http://localhost:8000/auth/login
 ```
@@ -100,9 +101,8 @@ export TEST_DATABASE_URL='postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/na
 cd C:\path\to\nasiya
 Copy-Item .env.example .env
 docker compose config --quiet
-docker compose build web
-docker compose up -d
-docker compose exec web alembic upgrade head
+docker compose build migrate web telegram-worker
+docker compose up -d db migrate web
 Start-Process http://localhost:8000/
 Start-Process http://localhost:8000/auth/login
 ```
@@ -115,10 +115,11 @@ $env:TEST_DATABASE_URL = "postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/na
 
 ## Migrations
 
-Container ichida development database uchun:
+Compose development database uchun migration bir martalik `migrate` service
+tomonidan DB healthdan keyin bajariladi:
 
 ```bash
-docker compose exec web alembic upgrade head
+docker compose up db migrate
 docker compose exec web alembic current
 ```
 
@@ -139,9 +140,10 @@ uv run alembic upgrade head
 uv run alembic current
 ```
 
-M5 checkpointida `alembic current` natijasi `a6b4c2d8e9f1 (head)` bo'lishi
-kerak. Migrationni development databasega container ichidan, test databasega
-esa faqat `_test` bilan tugaydigan alohida `TEST_DATABASE_URL` orqali qo'llang.
+M6 checkpointida `alembic current` natijasi `d4e5f6a7b8c9 (head)` bo'lishi
+kerak; uning exact parent revisioni `a6b4c2d8e9f1`. Migrationni development
+databasega Compose one-shot service orqali, test databasega esa faqat `_test`
+bilan tugaydigan alohida `TEST_DATABASE_URL` orqali qo'llang.
 
 ## Local User
 
@@ -215,9 +217,10 @@ sahifalaridir.
 
 ## Secure Telegram Linking Domain Foundation (M4)
 
-M4 faqat Telegram linking domenining server-side foundation qatlami. Bu
-end-to-end Telegram integratsiya emas: real Bot API, production route/UI,
-webhook, worker, QR, OTP va customer activation hali yo'q.
+M4 closeout holatida bu faqat Telegram linking domenining server-side
+foundation qatlami edi. U hali end-to-end Telegram integratsiya emas edi:
+real Bot API, production route/UI, webhook, worker va QR hali yo'q edi. OTP va
+customer activation ham hali yo'q edi.
 
 M4 Alembic migrationi `4f9c2d7a1b03` uchta jadval yaratadi:
 
@@ -232,14 +235,42 @@ limiter orqali 900 soniyada 3 user, 3 phone va 20 IP attempt siyosatini
 qo'llaydi. Consume oqimi faqat typed verified-private chat identityni qabul
 qiladi; M4 testlarida zero-network fake inbound boundary ishlatiladi.
 
-`TELEGRAM_BOT_USERNAME` unset bo'lsa app startup va token domain service
-ishlaydi. Username faqat pure Telegram start deep-link builder uchun kerak.
-`TELEGRAM_BOT_TOKEN`, Telegram SDK, HTTP Bot API chaqiruvi, webhook route yoki
-polling worker M4 scope'ida yo'q.
+M4 baseline'da `TELEGRAM_BOT_TOKEN` mavjud emas va talab qilinmaydi.
+Real Telegram credential yoki network talab qilinmaydi. Quyidagi M6 bo'limi
+aynan shu tarixiy baseline ustiga qo'shilgan production integrationni
+tavsiflaydi.
 
-PostgreSQL test suite M4 migration, metadata, constraint, replay,
-concurrency, retention purge va leakage boundary testlarini real `_test`
-database orqali bajaradi.
+## Production Telegram Account Linking (M6)
+
+M6 M4 domen foundationi ustiga authenticated account UI, Telegram Bot API
+adapteri, persisted long-poll cursor, poison-update quarantine, local QR va
+password-protected unlink/relink oqimlarini qo'shadi. Public registration,
+OTP, customer activation va webhook scope'ga kirmaydi.
+
+`/auth/telegram` authenticated account-scoped route bo'lib, shop selection,
+`active_shop_id`, membership va shop statusga bog'liq emas. Raw deep-link faqat
+HTMX POST javobida bir marta `no-store` fragment sifatida ochiladi. QR shu
+exact linkdan serverda in-memory PNG sifatida yaratiladi.
+
+Worker `python -m app.telegram.worker run` bilan ishga tushadi. U bitta
+PostgreSQL advisory lock, 25 soniyalik long poll, 10 soniyalik heartbeat va
+TX-A/TX-B caller-owned transaction protokolidan foydalanadi. Attempt 5dagi
+unknown TX-A failure quarantine qilinib cursor bilan atomik commit qilinadi.
+CI va automated testlar injected fake transport ishlatadi va real Telegram
+network yoki credential talab qilmaydi.
+
+Minimal local operation:
+
+```bash
+docker compose up -d db migrate web
+docker compose up -d telegram-worker
+docker compose exec telegram-worker python -m app.telegram.worker healthcheck
+```
+
+Worker uchun real dev/test secret untracked runtime konfiguratsiyada bo'lishi
+kerak. Secret yo'q muhitda faqat webni ishga tushiring; workerning fail-closed
+chiqishi expected. Batafsil deployment, rotation va incident amallari
+`docs/m6_worker_runbook.md`da.
 
 ## Validation (Xubuntu Terminal)
 
@@ -261,8 +292,8 @@ git diff --check
 Docker smoke:
 
 ```bash
-docker compose build web
-docker compose up -d
+docker compose build --no-cache migrate web telegram-worker
+docker compose up -d db migrate web
 docker compose ps
 docker compose logs -f web
 ```
@@ -285,8 +316,8 @@ git diff --check
 Docker smoke:
 
 ```powershell
-docker compose build web
-docker compose up -d
+docker compose build --no-cache migrate web telegram-worker
+docker compose up -d db migrate web
 docker compose ps
 docker compose logs -f web
 ```
@@ -295,8 +326,10 @@ docker compose logs -f web
 skipped testlarni yashiradigan flag ishlatilmaydi. Generic full suite real
 PostgreSQL test database orqali customer migration testlari bilan birga M4
 Telegram migration/replay/concurrency/retention va M5 shop
-persistence/tenant/lifecycle/HTTP containment testlarini ham avtomatik
-bajaradi. Real Telegram credential yoki network talab qilinmaydi.
+persistence/tenant/lifecycle/HTTP containment testlarini, shuningdek M6 Bot
+API fake transport, polling persistence, worker recovery, QR va account web
+flow testlarini ham avtomatik bajaradi. Real Telegram credential yoki network
+talab qilinmaydi.
 
 ## Stop Services
 

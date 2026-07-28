@@ -3,6 +3,10 @@
 {% block title %}{{ copy.page_title }} - Nasiya{% endblock %}
 
 {% block head %}
+<meta
+    name="htmx-config"
+    content='{"historyEnabled":false,"historyCacheSize":0,"allowEval":false,"allowScriptTags":false}'
+>
 <script src="{{ url_for('static', path='vendor/htmx-2.0.4.min.js') }}" defer></script>
 <script src="{{ url_for('static', path='js/telegram-account.js') }}" defer></script>
 {% endblock %}

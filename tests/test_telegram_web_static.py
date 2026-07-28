@@ -15,6 +15,10 @@ def test_telegram_template_has_local_script_and_no_inline_or_unsafe_rendering() 
 
     assert "static', path='vendor/htmx-2.0.4.min.js'" in template
     assert "static', path='js/telegram-account.js'" in template
+    assert (
+        '"historyEnabled":false,"historyCacheSize":0,'
+        '"allowEval":false,"allowScriptTags":false'
+    ) in template
     assert "<script src=" in template
     assert "<script>" not in template
     assert "|safe" not in template
