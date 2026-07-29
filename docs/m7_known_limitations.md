@@ -1,6 +1,6 @@
 # Nasiya M7 Known Limitations
 
-Status: approved known limitations for M7 closeout preparation.
+Status: approved known limitations for the closed M7 milestone.
 Source authority: `/home/yalgashev/projects/nasiya_m7_00_final_scope_freeze.md`
 and M7.04 feasibility audit.
 
@@ -80,5 +80,18 @@ Impact:
 - `OTP_HMAC_KEY` rotation invalidates outstanding challenges; M7 has no
   fallback key chain.
 - CI must not require a real Telegram credential or network.
-- Real network/device acceptance is `GREEN`; remote CI for the final M7
-  closeout is still `PENDING`.
+- Real network/device acceptance is `GREEN` with `16/16 PASS`.
+
+## Remote Closure Evidence
+
+Remote CI:
+`SATISFIED — exact M7 implementation SHA remote CI success`.
+
+- Implementation SHA:
+  `2c0c783db35a7a7e8dddeb7ecb6c5b20531a17c3`.
+- GitHub Actions run: `30453909901`.
+- Workflow/job: `CI / dependency-sync`.
+- Conclusion: `success`.
+- Tests: `1666 passed`, 0 failed/skipped/xfailed/xpassed.
+- Alembic head: `e7f8a9b0c1d2`.
+- Ruff check and Ruff format check: PASS.

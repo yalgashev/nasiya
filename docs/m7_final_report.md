@@ -1,11 +1,11 @@
 # Nasiya M7 Final Report
 
-Status: `M7 TECHNICAL GREEN — REMOTE CI PENDING`
+Status: `M7 REMOTE GREEN — CLOSED`
 Date: 2026-07-29
 
-This report records the M7 implementation, real-device acceptance, and M7.66
-full local technical validation. It does not claim remote CI green or
-milestone closure.
+This report records the M7 implementation, real-device acceptance, M7.66 full
+local technical validation, exact-SHA remote CI success, and formal milestone
+closure.
 
 ## Baseline And Authority
 
@@ -17,22 +17,22 @@ milestone closure.
   `30411142510` succeeded.
 - M6 status: `M6 REMOTE GREEN — CLOSED`; migration head
   `d4e5f6a7b8c9`; full suite `1373 passed` with no skip or xfail.
-- Seven M7 checkpoint commits are descendants of both M6 baselines:
+- Eight M7 checkpoint commits are descendants of both M6 baselines:
   `f2a7fac04061e4fa035f751ff85b35b91669445f`,
   `f70c81a79bf1300874bfc9d8eb14a7db7f0b2248`,
   `6c57da15f6eb01f526a2a86335c1186d20f1647b`,
   `87828b053815d48e1fecf6f0bb2699f590bee2b8`,
   `3d5456055569a07d1349cee66e8ac0789a7f5a3c`,
   `fe4c679d7dcde03aa9e52a722ea73df23e395565`, and
-  `05deba9f4faaf8e87371525821f47e629b2874be`.
-- The M7.66 final checkpoint is the commit that records this report together
-  with the approved M7.60-M7.66 changes.
-- Its immutable exact SHA is taken from Git history only after the checkpoint
-  commit/amend completes; this report deliberately does not self-reference.
-- The exact pushed SHA and remote CI run ID will be recorded in
-  `m7-result.md` during M7 remote closeout.
-- M7.66 validation started with a clean worktree on a branch locally ahead of
-  `origin/main` by eight commits.
+  `05deba9f4faaf8e87371525821f47e629b2874be`, followed by the immutable
+  implementation baseline
+  `2c0c783db35a7a7e8dddeb7ecb6c5b20531a17c3`.
+- The implementation baseline was pushed from a clean `main` with
+  `HEAD == origin/main` and divergence `0 0`.
+- GitHub Actions run `30453909901`, workflow/job `CI / dependency-sync`,
+  concluded `success` for that exact implementation SHA.
+- The docs-only closeout commit is intentionally not self-referenced in this
+  report; its SHA is taken from Git history after commit creation.
 - Scope and decision authority:
   `docs/m7_scope_contract.md`, `docs/m7_decisions.md`,
   `docs/m7_repository_map.md`, and `docs/m7_known_limitations.md`.
@@ -175,11 +175,25 @@ M7.66 exact local evidence:
 The focused sets overlap each other and the full suite. Their counts are gate
 evidence and are not added together as an artificial total.
 
-CI remains a single `dependency-sync` job with PostgreSQL, frozen dependency
-sync, exact-head migration assertion, Ruff, M5 containment and historical
-regressions, M6 fake-worker coverage, M7 containment/fake/security coverage,
-and the full M1-M7 suite. It requires zero failed, skipped, xfailed, or xpassed
-tests and no real Telegram credential or network.
+M7.68 exact-SHA remote evidence:
+
+| Validation | Result |
+|---|---|
+| Implementation SHA | `2c0c783db35a7a7e8dddeb7ecb6c5b20531a17c3` |
+| GitHub Actions run | `30453909901` |
+| Workflow / job | `CI / dependency-sync` |
+| Conclusion | `success` |
+| Alembic head | `e7f8a9b0c1d2` |
+| Ruff check | PASS |
+| Ruff format check | PASS |
+| Full pytest | `1666 passed` |
+| Failed / skipped / xfailed / xpassed | `0/0/0/0` |
+| Validated implementation sync | `HEAD == origin/main`, divergence `0 0`, clean worktree |
+
+The successful CI job used PostgreSQL, frozen dependency sync, an exact-head
+migration assertion, Ruff, M5 containment and historical regressions, M6
+fake-worker coverage, M7 containment/fake/security coverage, and the full
+M1-M7 suite. It used no real Telegram credential or network.
 
 ## Real Telegram Acceptance
 
@@ -218,14 +232,17 @@ Acceptance status: `M7 ACCEPTANCE GREEN`.
 - Generic notification, outbox, or scheduler infrastructure
 - Debt, payment, or rating features
 
-## Gates
+## Closure Summary
 
 | Gate | Status |
 |---|---|
+| Technical | GREEN |
 | Real Telegram network/device acceptance | GREEN |
 | Local final technical validation | GREEN |
-| Remote CI | PENDING |
-| M7 milestone | NOT CLOSED |
+| Remote CI | GREEN |
+| M7 milestone | CLOSED |
 
-The remaining gate is exact-SHA remote CI validation and its separate
-closeout decision. M7 remains open until that remote evidence is recorded.
+GitHub Actions run `30453909901` validated the exact immutable implementation
+SHA `2c0c783db35a7a7e8dddeb7ecb6c5b20531a17c3`. M7 formal closure is recorded
+in `m7-result.md`; the subsequent docs-only closeout does not alter the
+validated implementation baseline.
