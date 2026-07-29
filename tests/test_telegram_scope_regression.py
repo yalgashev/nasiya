@@ -181,16 +181,26 @@ def test_no_production_telegram_route_webhook_callback_or_public_csrf_bypass(
         "/auth/telegram/relink-token",
         "/auth/telegram/unlink",
     }
+    allowed_auth_otp_paths = {
+        "/auth/otp",
+        "/auth/otp/new-code",
+        "/auth/otp/request",
+        "/auth/otp/verify",
+    }
 
     assert allowed_auth_telegram_paths.issubset(route_paths)
+    assert allowed_auth_otp_paths.issubset(route_paths)
     assert not any(
         path.startswith("/auth/telegram") and path not in allowed_auth_telegram_paths
+        for path in route_paths
+    )
+    assert not any(
+        "otp" in path.casefold() and path not in allowed_auth_otp_paths
         for path in route_paths
     )
     assert not any("webhook" in path.casefold() for path in route_paths)
     assert not any("callback" in path.casefold() for path in route_paths)
     assert not any("qr" in path.casefold() for path in route_paths)
-    assert not any("otp" in path.casefold() for path in route_paths)
     assert not any("activation" in path.casefold() for path in route_paths)
     assert not any("reauth" in path.casefold() for path in route_paths)
 

@@ -270,6 +270,28 @@ dd {
     opacity: 0.7;
 }
 
+.otp-page {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+
+.otp-page h1,
+.otp-page p,
+.otp-page a,
+.otp-page button {
+    overflow-wrap: anywhere;
+}
+
+.otp-guidance {
+    color: #374151;
+}
+
+.otp-field-help {
+    margin-top: 6px;
+    color: #4b5563;
+    font-size: 0.875rem;
+}
+
 .shop-workspace,
 .shop-select,
 .shop-staff {
@@ -419,6 +441,10 @@ dd {
         width: min(100% - 24px, 640px);
     }
 
+    .otp-page {
+        width: min(100% - 24px, 640px);
+    }
+
     .telegram-qr {
         display: none;
     }
@@ -435,6 +461,7 @@ dd {
 }
 
 @media (max-width: 320px) {
+    .otp-page,
     .telegram-page,
     .shop-workspace,
     .shop-select,

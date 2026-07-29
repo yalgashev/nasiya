@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block title %}{{ copy.verify_page_title }} - Nasiya{% endblock %}
+
+{% block content %}
+<main class="otp-page otp-verify-page">
+    <h1>{{ copy.verify_heading }}</h1>
+    <p id="otp-request-notice" class="otp-guidance">{{ copy.verify_notice }}</p>
+    <form method="post" action="/auth/otp/verify" novalidate>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        {% if next_url %}
+        <input type="hidden" name="next" value="{{ next_url }}">
+        {% endif %}
+
+        <div>
+            <label for="otp-code">{{ copy.code_label }}</label>
+            <input
+                id="otp-code"
+                name="code"
+                type="text"
+                inputmode="numeric"
+                autocomplete="one-time-code"
+                maxlength="6"
+                pattern="[0-9]{6}"
+                aria-describedby="otp-code-help"
+                required
+            >
+            <p id="otp-code-help" class="otp-field-help">{{ copy.code_help }}</p>
+        </div>
+
+        <div id="otp-verify-error" role="alert" aria-live="polite">
+            {% if error_message %}{{ error_message }}{% endif %}
+        </div>
+
+        <button type="submit">{{ copy.verify_button }}</button>
+    </form>
+    <form method="post" action="/auth/otp/new-code" novalidate>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        {% if next_url %}
+        <input type="hidden" name="next" value="{{ next_url }}">
+        {% endif %}
+        <button type="submit">{{ copy.new_code_button }}</button>
+    </form>
+    <nav aria-label="{{ copy.alternative_navigation }}">
+        <a href="{{ password_login_url }}">{{ copy.password_login }}</a>
+    </nav>
+</main>
+{% endblock %}

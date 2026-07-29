@@ -3,9 +3,10 @@ from datetime import UTC, datetime
 from html import escape
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlencode
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Form, Request, status
+from fastapi import APIRouter, Depends, Form, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session as DatabaseSession
@@ -45,9 +46,20 @@ from app.auth.sessions import (
 )
 from app.auth.telegram_reauth import TelegramReauthRateLimitPolicy
 from app.auth.template_context import with_csrf_context
+from app.otp.crypto import derive_browser_binding_digest
+from app.otp.issuance import request_login_otp, request_new_login_code
+from app.otp.session_login import rotate_session_after_otp_consume
+from app.otp.verification import verify_login_otp
+from app.otp.web_presentation import (
+    OTP_LOCALE_COOKIE_NAME,
+    OtpWebLanguage,
+    get_otp_dispatch_locale,
+    get_otp_web_copy,
+    resolve_otp_web_language,
+)
 from app.request_client_ip import ClientIpResolutionError, resolve_client_ip
 from app.security_headers import mark_auth_response_no_store
-from app.settings import Settings
+from app.settings import OtpHmacKeySettingsError, Settings
 from app.telegram.client_ip import ResolvedClientIp
 from app.telegram.qr import TelegramQrRenderError, render_telegram_start_link_qr_png
 from app.telegram.service import (
@@ -73,9 +85,279 @@ from app.telegram.web_presentation import (
 TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates"
 LOGIN_FAILED_MESSAGE = "Telefon raqam yoki parol noto'g'ri."
 LOGIN_PATH = "/auth/login"
+OTP_PATH = "/auth/otp"
 TELEGRAM_PATH = "/auth/telegram"
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 router = APIRouter(prefix="/auth")
+
+
+@router.get("/otp", response_class=HTMLResponse, response_model=None)
+def otp_request_page(
+    request: Request,
+    db: Annotated[
+        DatabaseSession,
+        Depends(get_database_session, scope="function"),
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+    now: Annotated[datetime, Depends(get_current_time)],
+    context: Annotated[
+        CurrentSessionContext,
+        Depends(get_current_session_context),
+    ],
+    next_url: Annotated[str | None, Query(alias="next")] = None,
+) -> Response:
+    if context.is_authenticated:
+        response = RedirectResponse(
+            "/auth/account",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+        return mark_auth_response_no_store(response)
+
+    created_session = _get_or_create_anonymous_session(
+        db=db,
+        request=request,
+        settings=settings,
+        context=context,
+        now=now,
+    )
+    language = _otp_web_language(request)
+    response = templates.TemplateResponse(
+        request,
+        "auth/otp_request.html",
+        with_csrf_context(
+            {
+                "copy": get_otp_web_copy(language),
+                "error_message": None,
+                "next_url": _get_safe_next_or_none(next_url),
+                "page_language": language.value,
+                "password_login_url": LOGIN_PATH,
+            },
+            created_session.session,
+        ),
+    )
+    set_session_cookie(response, created_session.raw_token, settings)
+    return mark_auth_response_no_store(response)
+
+
+@router.post("/otp/request", response_model=None)
+def request_login_otp_route(
+    request: Request,
+    db: Annotated[
+        DatabaseSession,
+        Depends(get_database_session, scope="function"),
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+    now: Annotated[datetime, Depends(get_current_time)],
+    context: Annotated[
+        CurrentSessionContext,
+        Depends(get_current_session_context),
+    ],
+    _csrf: Annotated[None, Depends(validate_csrf)],
+    phone: Annotated[str, Form()] = "",
+    next_url: Annotated[str | None, Form(alias="next")] = None,
+) -> Response:
+    _ = _csrf
+    if context.is_authenticated:
+        response = RedirectResponse(
+            "/auth/account",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+        return mark_auth_response_no_store(response)
+
+    current_session = context.get_session_row()
+    if current_session is None:
+        return _redirect_otp_verify(next_url)
+
+    try:
+        client_ip = resolve_client_ip(request, settings)
+        otp_hmac_key = settings.require_otp_hmac_key()
+    except (ClientIpResolutionError, OtpHmacKeySettingsError):
+        return _redirect_otp_verify(next_url)
+
+    language = _otp_web_language(request)
+    browser_binding_digest = derive_browser_binding_digest(
+        otp_hmac_key=otp_hmac_key,
+        session_id=current_session.id,
+        csrf_secret=current_session.csrf_secret,
+    )
+    request_login_otp(
+        db,
+        settings,
+        phone_input=phone,
+        browser_binding_digest=browser_binding_digest,
+        client_ip=client_ip,
+        locale=get_otp_dispatch_locale(language),
+        now=now,
+    )
+    return _redirect_otp_verify(next_url)
+
+
+@router.get("/otp/verify", response_class=HTMLResponse, response_model=None)
+def otp_verify_page(
+    request: Request,
+    db: Annotated[
+        DatabaseSession,
+        Depends(get_database_session, scope="function"),
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+    now: Annotated[datetime, Depends(get_current_time)],
+    context: Annotated[
+        CurrentSessionContext,
+        Depends(get_current_session_context),
+    ],
+    next_url: Annotated[str | None, Query(alias="next")] = None,
+    error: Annotated[str | None, Query()] = None,
+) -> Response:
+    if context.is_authenticated:
+        response = RedirectResponse(
+            "/auth/account",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+        return mark_auth_response_no_store(response)
+
+    created_session = _get_or_create_anonymous_session(
+        db=db,
+        request=request,
+        settings=settings,
+        context=context,
+        now=now,
+    )
+    language = _otp_web_language(request)
+    copy = get_otp_web_copy(language)
+    response = templates.TemplateResponse(
+        request,
+        "auth/otp_verify.html",
+        with_csrf_context(
+            {
+                "copy": copy,
+                "error_message": copy["invalid_code_message"]
+                if error == "invalid"
+                else None,
+                "next_url": _get_safe_next_or_none(next_url),
+                "page_language": language.value,
+                "password_login_url": LOGIN_PATH,
+            },
+            created_session.session,
+        ),
+    )
+    set_session_cookie(response, created_session.raw_token, settings)
+    return mark_auth_response_no_store(response)
+
+
+@router.post("/otp/new-code", response_model=None)
+def request_new_login_otp_route(
+    request: Request,
+    db: Annotated[
+        DatabaseSession,
+        Depends(get_database_session, scope="function"),
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+    now: Annotated[datetime, Depends(get_current_time)],
+    context: Annotated[
+        CurrentSessionContext,
+        Depends(get_current_session_context),
+    ],
+    _csrf: Annotated[None, Depends(validate_csrf)],
+    next_url: Annotated[str | None, Form(alias="next")] = None,
+) -> Response:
+    _ = _csrf
+    if context.is_authenticated:
+        response = RedirectResponse(
+            "/auth/account",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+        return mark_auth_response_no_store(response)
+
+    current_session = context.get_session_row()
+    if current_session is None:
+        return _redirect_otp_verify(next_url)
+
+    try:
+        client_ip = resolve_client_ip(request, settings)
+        otp_hmac_key = settings.require_otp_hmac_key()
+    except (ClientIpResolutionError, OtpHmacKeySettingsError):
+        return _redirect_otp_verify(next_url)
+
+    language = _otp_web_language(request)
+    browser_binding_digest = derive_browser_binding_digest(
+        otp_hmac_key=otp_hmac_key,
+        session_id=current_session.id,
+        csrf_secret=current_session.csrf_secret,
+    )
+    request_new_login_code(
+        db,
+        settings,
+        browser_binding_digest=browser_binding_digest,
+        client_ip=client_ip,
+        locale=get_otp_dispatch_locale(language),
+        now=now,
+    )
+    return _redirect_otp_verify(next_url)
+
+
+@router.post("/otp/verify", response_model=None)
+def verify_login_otp_route(
+    request: Request,
+    db: Annotated[
+        DatabaseSession,
+        Depends(get_database_session, scope="function"),
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+    now: Annotated[datetime, Depends(get_current_time)],
+    context: Annotated[
+        CurrentSessionContext,
+        Depends(get_current_session_context),
+    ],
+    _csrf: Annotated[None, Depends(validate_csrf)],
+    code: Annotated[str, Form()] = "",
+    next_url: Annotated[str | None, Form(alias="next")] = None,
+) -> Response:
+    _ = _csrf
+    if context.is_authenticated:
+        response = RedirectResponse(
+            "/auth/account",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+        return mark_auth_response_no_store(response)
+
+    current_session = context.get_session_row()
+    if current_session is None:
+        return _redirect_otp_verify(next_url, error="invalid")
+
+    try:
+        otp_hmac_key = settings.require_otp_hmac_key()
+    except OtpHmacKeySettingsError:
+        return _redirect_otp_verify(next_url, error="invalid")
+
+    browser_binding_digest = derive_browser_binding_digest(
+        otp_hmac_key=otp_hmac_key,
+        session_id=current_session.id,
+        csrf_secret=current_session.csrf_secret,
+    )
+    verification_result = verify_login_otp(
+        db,
+        settings,
+        browser_binding_digest=browser_binding_digest,
+        candidate_code_input=code,
+        now=now,
+    )
+    created_session = rotate_session_after_otp_consume(
+        db,
+        verification_result=verification_result,
+        current_session=current_session,
+        user_agent=request.headers.get("user-agent"),
+        now=now,
+        settings=settings,
+    )
+    if created_session is None:
+        return _redirect_otp_verify(next_url, error="invalid")
+
+    response = RedirectResponse(
+        get_safe_redirect_target(next_url),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+    set_session_cookie(response, created_session.raw_token, settings)
+    return mark_auth_response_no_store(response)
 
 
 @router.get("/login", response_class=HTMLResponse, response_model=None)
@@ -1077,6 +1359,42 @@ def _telegram_notice_message(
 
 def _telegram_web_language(request: Request) -> TelegramWebLanguage:
     return resolve_telegram_web_language(request.headers.get("accept-language"))
+
+
+def _otp_web_language(request: Request) -> OtpWebLanguage:
+    return resolve_otp_web_language(
+        request.cookies.get(OTP_LOCALE_COOKIE_NAME),
+        request.headers.get("accept-language"),
+    )
+
+
+def _get_safe_next_or_none(next_url: str | None) -> str | None:
+    if next_url is None:
+        return None
+    safe_target = get_safe_redirect_target(next_url)
+    if safe_target != next_url:
+        return None
+    return safe_target
+
+
+def _redirect_otp_verify(next_url: str | None, *, error: str | None = None) -> Response:
+    response = RedirectResponse(
+        _otp_verify_location(next_url, error=error),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+    return mark_auth_response_no_store(response)
+
+
+def _otp_verify_location(next_url: str | None, *, error: str | None = None) -> str:
+    query_params = {}
+    safe_next = _get_safe_next_or_none(next_url)
+    if safe_next is not None:
+        query_params["next"] = safe_next
+    if error is not None:
+        query_params["error"] = error
+    if not query_params:
+        return f"{OTP_PATH}/verify"
+    return f"{OTP_PATH}/verify?{urlencode(query_params)}"
 
 
 def _redirect_telegram_javascript_required() -> Response:

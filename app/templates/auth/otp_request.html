@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block title %}{{ copy.request_page_title }} - Nasiya{% endblock %}
+
+{% block content %}
+<main class="otp-page">
+    <h1>{{ copy.request_heading }}</h1>
+    <p class="otp-guidance">{{ copy.request_intro }}</p>
+    <form method="post" action="/auth/otp/request" novalidate>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        {% if next_url %}
+        <input type="hidden" name="next" value="{{ next_url }}">
+        {% endif %}
+
+        <div>
+            <label for="otp-phone">{{ copy.phone_label }}</label>
+            <input
+                id="otp-phone"
+                name="phone"
+                type="tel"
+                autocomplete="tel"
+                inputmode="tel"
+                aria-describedby="otp-phone-help"
+                required
+            >
+            <p id="otp-phone-help" class="otp-field-help">{{ copy.phone_help }}</p>
+        </div>
+
+        <div id="otp-request-error" role="alert" aria-live="polite">
+            {% if error_message %}{{ error_message }}{% endif %}
+        </div>
+
+        <button type="submit">{{ copy.request_button }}</button>
+    </form>
+    <nav aria-label="{{ copy.alternative_navigation }}">
+        <a href="{{ password_login_url }}">{{ copy.password_login }}</a>
+    </nav>
+</main>
+{% endblock %}

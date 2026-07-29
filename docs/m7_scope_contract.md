@@ -849,23 +849,62 @@ dispatcher fails closed without OTP key or bot credentials.
 
 ## Route Contract
 
-| Method | Route | Semantics |
+M7 pre-auth OTP web flow uses only this route family:
+
+| Method | Route | Template | Anonymous behavior | Authenticated behavior | Transaction owner | PRG / response |
+|---|---|---|---|---|---|---|
+| GET | `/auth/otp` | `auth/otp_request.html` | Reuse or create the existing anonymous server-side session, expose a CSRF token, and render the phone entry form. | `303` to `/auth/account`; no OTP mutation. | Route dependency owns the request SQLAlchemy session; only anonymous-session creation may commit. | `200` HTML, no-store. |
+| POST | `/auth/otp/request` | none | Require current anonymous session and CSRF, resolve trusted client IP, derive browser binding from the anonymous session, call `request_login_otp`, and perform no Telegram network call. | With valid CSRF, `303` to `/auth/account`; no OTP mutation. | Route owns the outer transaction; OTP services never call `commit()`, full `rollback()`, or `close()`. | Always PRG to `/auth/otp/verify` for accepted, unknown, inactive, unlinked, unavailable, and provider-internal paths; response remains generic. |
+| GET | `/auth/otp/verify` | `auth/otp_verify.html` | Reuse or create the existing anonymous server-side session, expose a CSRF token, and render the generic code entry/new-code page without looking up challenge status for presentation. | `303` to `/auth/account`; no OTP mutation. | Route dependency owns the request SQLAlchemy session; only anonymous-session creation may commit. | `200` HTML, no-store. |
+| POST | `/auth/otp/verify` | none | Require current anonymous session and CSRF, derive browser binding, call `verify_login_otp`, and authenticate only an `OTP_CONSUMED` result through `rotate_session_after_otp_consume`. | With valid CSRF, `303` to `/auth/account`; no OTP mutation. | Route owns the outer transaction so consume, event insert, session revoke/create, cookie preparation, and commit are all-or-nothing. | Success `303` to safe `next` or `/auth/account`; invalid/replay/expired/burned/link-changed/missing/malformed responses PRG back to `/auth/otp/verify` with the same generic invalid message. |
+| POST | `/auth/otp/new-code` | none | Require current anonymous session and CSRF, resolve trusted client IP, derive browser binding, call `request_new_login_code`, and perform no Telegram network call. | With valid CSRF, `303` to `/auth/account`; no OTP mutation. | Route owns the outer transaction; allowed new-code supersedes the old outstanding challenge in that transaction. | Always PRG to `/auth/otp/verify`; cooldown, missing challenge, terminal challenge, unavailable, unknown, and allowed paths do not reveal account or delivery state. |
+
+Shared route rules:
+
+- all OTP route responses, including redirects and CSRF failures, use
+  `mark_auth_response_no_store`; the existing middleware supplies CSP and the
+  other security headers;
+- all mutation routes use the existing session-bound CSRF dependency; there is
+  no OTP POST exemption;
+- `next` is accepted only as an optional form/query value and is normalized by
+  `app.auth.redirects.get_safe_redirect_target`; unsafe absolute,
+  protocol-relative, non-root-relative, or empty values fall back to
+  `/auth/account`;
+- safe `next` may be carried between OTP pages only as a hidden form field or
+  query value after validation; phone, user ID, challenge ID, dispatch ID,
+  Telegram link ID, chat ID, delivery status, provider detail, and attempt
+  count never appear in URL, HTML, flash/session data, logs, or response
+  headers;
+- pre-auth locale is bounded to `uz` and `ru`; a valid pre-auth locale cookie
+  wins, otherwise the existing request-language resolver may choose `uz` or
+  `ru`, and the final fallback is `uz`;
+- all public copy is selected from the bounded locale catalog and rendered with
+  Jinja autoescape; OTP templates do not use inline script or the `|safe`
+  filter;
+- request responses for eligible, unknown, inactive, unlinked, dispatcher
+  unavailable, and configuration-unavailable cases are indistinguishable except
+  for caller-abuse rate-limit copy allowed by the Outcome Contract;
+- verify responses for malformed, missing, wrong, expired, superseded, burned,
+  invalidated/link-changed, inactive user, and replay cases use one localized
+  invalid-code message;
+- no route queries or renders public delivery status; `/auth/otp/new-code` is
+  the only user recovery action for lost or unknown delivery;
+- `active_shop_id`, `require_shop_staff`, `resolve_current_shop`, shop
+  membership, customer activation, and role-specific routing are outside this
+  flow and are not read or mutated.
+
+Template context contract:
+
+| Template | Required context | Forbidden context/output |
 |---|---|---|
-| GET | `/auth/otp` | phone input; anonymous session and CSRF |
-| POST | `/auth/otp/request` | generic issue request; PRG |
-| GET | `/auth/otp/verify` | generic code page |
-| POST | `/auth/otp/verify` | verify/consume; PRG |
-| POST | `/auth/otp/new-code` | cooldown/rate-limit; new challenge; PRG |
+| `auth/otp_request.html` | `csrf_token`, `page_language`, optional safe `next_url`, localized title/label/help/error strings, and password-login fallback URL. | Raw phone after PRG, canonical phone, account existence, Telegram link status, challenge/dispatch IDs, delivery status, provider details, chat ID, raw OTP, session token, shop/customer state. |
+| `auth/otp_verify.html` | `csrf_token`, `page_language`, optional safe `next_url`, one generic request notice, one generic invalid-code/cooldown message slot, six-digit code input metadata, new-code form metadata, and password-login fallback URL. | Phone, account existence, challenge status, attempt count, remaining TTL as an oracle, delivery status, provider details, Telegram identity, raw OTP, session token, shop/customer state. |
 
-Rules:
+The fixed public verify text remains:
 
-- authenticated users redirect to the default account route;
-- all GETs are side-effect-free except safe anonymous-session creation where
-  already used by auth forms;
-- all POSTs require CSRF;
-- `next` uses the existing safe-relative redirect policy;
-- no challenge UUID, phone, delivery status, or provider detail in URLs;
-- every response is no-store and uses existing security headers.
+```text
+Agar kiritilgan telefon mos hisobga tegishli bo'lsa, kod Telegramga yuboriladi. Kod kelmasa, 60 soniyadan keyin yangi kod so'rang yoki parol bilan kiring.
+```
 
 ## Dispatcher Deployment
 
