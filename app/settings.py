@@ -9,6 +9,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from app.telegram.bot import TelegramBotUsername
 
 MIN_RATE_LIMIT_HMAC_KEY_LENGTH = 32
+MIN_OTP_HMAC_KEY_LENGTH = 32
 ClientIpNetwork = IPv4Network | IPv6Network
 
 
@@ -20,6 +21,11 @@ class ClientIpMode(StrEnum):
 class TelegramWorkerSettingsError(RuntimeError):
     def __init__(self) -> None:
         super().__init__("Telegram worker credentials are not configured")
+
+
+class OtpHmacKeySettingsError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("OTP HMAC key is not configured")
 
 
 @dataclass(frozen=True, repr=False)
@@ -52,6 +58,22 @@ class Settings(BaseSettings):
     rate_limit_hmac_key: SecretStr
     telegram_bot_username: TelegramBotUsername | None = None
     telegram_bot_token: SecretStr | None = None
+    otp_hmac_key: SecretStr | None = None
+    otp_login_ttl_seconds: int = Field(default=180, ge=60, le=600)
+    otp_login_max_verify_attempts: int = Field(default=5, ge=1, le=10)
+    otp_login_resend_cooldown_seconds: int = Field(default=60, gt=0)
+    otp_login_rate_limit_window_seconds: int = Field(default=900, gt=0)
+    otp_login_rate_limit_phone_attempts: int = Field(default=3, gt=0)
+    otp_login_rate_limit_user_attempts: int = Field(default=3, gt=0)
+    otp_login_rate_limit_ip_attempts: int = Field(default=20, gt=0)
+    otp_dispatch_poll_seconds: int = Field(default=1, gt=0)
+    otp_dispatch_batch_size: int = Field(default=20, ge=1, le=100)
+    otp_dispatch_claim_stale_seconds: int = Field(default=60, gt=0)
+    otp_dispatch_heartbeat_seconds: int = Field(default=10, gt=0)
+    otp_dispatch_stale_seconds: int = Field(default=60, gt=0)
+    otp_send_timeout_seconds: int = Field(default=5, ge=1, le=15)
+    otp_terminal_retention_days: int = Field(default=30, gt=0)
+    otp_event_retention_days: int = Field(default=90, gt=0)
     client_ip_mode: ClientIpMode = ClientIpMode.DIRECT
     trusted_proxy_cidrs: Annotated[tuple[ClientIpNetwork, ...], NoDecode] = ()
 
@@ -113,6 +135,28 @@ class Settings(BaseSettings):
             return None
         if secret != secret.strip():
             raise ValueError("telegram_bot_token must not contain outer whitespace")
+        return SecretStr(secret)
+
+    @field_validator("otp_hmac_key", mode="before")
+    @classmethod
+    def validate_otp_hmac_key(cls, value: object) -> SecretStr | None:
+        if value is None:
+            return None
+        if isinstance(value, SecretStr):
+            secret = value.get_secret_value()
+        elif isinstance(value, str):
+            secret = value
+        else:
+            raise ValueError("otp_hmac_key must be a secret string")
+
+        if secret == "":
+            return None
+        if secret != secret.strip():
+            raise ValueError("otp_hmac_key must not contain outer whitespace")
+        if len(secret) < MIN_OTP_HMAC_KEY_LENGTH:
+            raise ValueError(
+                f"otp_hmac_key must be at least {MIN_OTP_HMAC_KEY_LENGTH} characters"
+            )
         return SecretStr(secret)
 
     @field_validator("trusted_proxy_cidrs", mode="before")
@@ -183,6 +227,22 @@ class Settings(BaseSettings):
             raise ValueError(
                 "trusted_proxy_cidrs requires client_ip_mode=trusted_proxy"
             )
+        if self.otp_login_resend_cooldown_seconds >= self.otp_login_ttl_seconds:
+            raise ValueError("otp_login_resend_cooldown_seconds must be below OTP TTL")
+        if self.otp_dispatch_stale_seconds <= self.otp_dispatch_heartbeat_seconds:
+            raise ValueError(
+                "otp_dispatch_stale_seconds must be greater than "
+                "otp_dispatch_heartbeat_seconds"
+            )
+        if self.otp_hmac_key is not None:
+            otp_secret = self.otp_hmac_key.get_secret_value()
+            if otp_secret == self.rate_limit_hmac_key.get_secret_value():
+                raise ValueError("otp_hmac_key must not reuse rate_limit_hmac_key")
+            if (
+                self.telegram_bot_token is not None
+                and otp_secret == self.telegram_bot_token.get_secret_value()
+            ):
+                raise ValueError("otp_hmac_key must not reuse telegram_bot_token")
         return self
 
     def require_telegram_worker_credentials(self) -> TelegramWorkerCredentials:
@@ -192,3 +252,8 @@ class Settings(BaseSettings):
             bot_token=self.telegram_bot_token,
             bot_username=self.telegram_bot_username,
         )
+
+    def require_otp_hmac_key(self) -> SecretStr:
+        if self.otp_hmac_key is None:
+            raise OtpHmacKeySettingsError()
+        return self.otp_hmac_key

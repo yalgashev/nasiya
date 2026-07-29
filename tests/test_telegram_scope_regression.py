@@ -136,9 +136,12 @@ def production_dependency_names() -> set[str]:
     return names
 
 
-def app_source_text() -> str:
+def app_source_text(*, excluded_prefixes: tuple[str, ...] = ()) -> str:
     source_parts = []
     for path in sorted((PROJECT_ROOT / "app").rglob("*.py")):
+        relative_path = path.relative_to(PROJECT_ROOT).as_posix()
+        if relative_path.startswith(excluded_prefixes):
+            continue
         source_parts.append(path.read_text(encoding="utf-8"))
     return "\n".join(source_parts)
 
@@ -215,7 +218,7 @@ def test_no_production_telegram_route_webhook_callback_or_public_csrf_bypass(
 
 def test_m6_runtime_keeps_unapproved_bot_sdk_otp_and_scheduler_out() -> None:
     dependency_names = production_dependency_names()
-    source_text = app_source_text().casefold()
+    source_text = app_source_text(excluded_prefixes=("app/otp/",)).casefold()
     settings_fields = set(Settings.model_fields)
     main_env_keys = app_main.SETTINGS_ENV_KEYS
     env_example_text = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
@@ -236,6 +239,32 @@ def test_m6_runtime_keeps_unapproved_bot_sdk_otp_and_scheduler_out() -> None:
 
     for marker in FORBIDDEN_APP_RUNTIME_MARKERS:
         assert marker not in source_text
+
+
+def test_m7_crypto_primitives_do_not_add_db_routes_or_dispatcher_scope() -> None:
+    otp_source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((PROJECT_ROOT / "app" / "otp").glob("*.py"))
+    ).casefold()
+
+    for marker in (
+        "sqlalchemy",
+        "fastapi",
+        "apirouter",
+        "httpx",
+        "telegram_bot_token",
+        "otp_challenges",
+        "otp_dispatches",
+        "otp_challenge_events",
+        "otp_dispatcher_state",
+        "otpdeliveryprovider",
+        "redis",
+        "scheduler",
+        "outbox",
+        "webhook",
+        "create_all",
+    ):
+        assert marker not in otp_source
 
 
 def test_otp_webhook_and_customer_activation_do_not_appear_in_ui() -> None:

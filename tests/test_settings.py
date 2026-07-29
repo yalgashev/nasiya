@@ -4,6 +4,7 @@ from pydantic import ValidationError
 from app.main import create_app
 from app.settings import (
     ClientIpMode,
+    OtpHmacKeySettingsError,
     Settings,
     TelegramWorkerCredentials,
     TelegramWorkerSettingsError,
@@ -11,6 +12,8 @@ from app.settings import (
 from app.telegram.bot import TelegramBotUsername
 
 TEST_RATE_LIMIT_HMAC_KEY = "test-rate-limit-hmac-key-for-settings-only"
+TEST_OTP_HMAC_KEY = "test-otp-hmac-key-for-settings-only-32-chars"
+TEST_TELEGRAM_BOT_TOKEN = "123456789:test-telegram-bot-token-for-settings"
 TEST_DATABASE_URL = "postgresql+psycopg://nasiya:pass@127.0.0.1:5432/nasiya"
 SETTINGS_ENV_KEYS = (
     "APP_ENVIRONMENT",
@@ -33,6 +36,22 @@ SETTINGS_ENV_KEYS = (
     "RATE_LIMIT_HMAC_KEY",
     "TELEGRAM_BOT_USERNAME",
     "TELEGRAM_BOT_TOKEN",
+    "OTP_HMAC_KEY",
+    "OTP_LOGIN_TTL_SECONDS",
+    "OTP_LOGIN_MAX_VERIFY_ATTEMPTS",
+    "OTP_LOGIN_RESEND_COOLDOWN_SECONDS",
+    "OTP_LOGIN_RATE_LIMIT_WINDOW_SECONDS",
+    "OTP_LOGIN_RATE_LIMIT_PHONE_ATTEMPTS",
+    "OTP_LOGIN_RATE_LIMIT_USER_ATTEMPTS",
+    "OTP_LOGIN_RATE_LIMIT_IP_ATTEMPTS",
+    "OTP_DISPATCH_POLL_SECONDS",
+    "OTP_DISPATCH_BATCH_SIZE",
+    "OTP_DISPATCH_CLAIM_STALE_SECONDS",
+    "OTP_DISPATCH_HEARTBEAT_SECONDS",
+    "OTP_DISPATCH_STALE_SECONDS",
+    "OTP_SEND_TIMEOUT_SECONDS",
+    "OTP_TERMINAL_RETENTION_DAYS",
+    "OTP_EVENT_RETENTION_DAYS",
     "CLIENT_IP_MODE",
     "TRUSTED_PROXY_CIDRS",
 )
@@ -88,6 +107,22 @@ def test_settings_created_with_required_values() -> None:
     assert settings.telegram_link_rate_limit_phone_attempts == 3
     assert settings.telegram_link_rate_limit_ip_attempts == 20
     assert settings.telegram_bot_username is None
+    assert settings.otp_hmac_key is None
+    assert settings.otp_login_ttl_seconds == 180
+    assert settings.otp_login_max_verify_attempts == 5
+    assert settings.otp_login_resend_cooldown_seconds == 60
+    assert settings.otp_login_rate_limit_window_seconds == 900
+    assert settings.otp_login_rate_limit_phone_attempts == 3
+    assert settings.otp_login_rate_limit_user_attempts == 3
+    assert settings.otp_login_rate_limit_ip_attempts == 20
+    assert settings.otp_dispatch_poll_seconds == 1
+    assert settings.otp_dispatch_batch_size == 20
+    assert settings.otp_dispatch_claim_stale_seconds == 60
+    assert settings.otp_dispatch_heartbeat_seconds == 10
+    assert settings.otp_dispatch_stale_seconds == 60
+    assert settings.otp_send_timeout_seconds == 5
+    assert settings.otp_terminal_retention_days == 30
+    assert settings.otp_event_retention_days == 90
     assert settings.client_ip_mode is ClientIpMode.DIRECT
     assert settings.trusted_proxy_cidrs == ()
 
@@ -139,6 +174,28 @@ def test_settings_requires_rate_limit_hmac_key() -> None:
         ("telegram_link_rate_limit_phone_attempts", -1),
         ("telegram_link_rate_limit_ip_attempts", 0),
         ("telegram_link_rate_limit_ip_attempts", -1),
+        ("otp_login_resend_cooldown_seconds", 0),
+        ("otp_login_resend_cooldown_seconds", -1),
+        ("otp_login_rate_limit_window_seconds", 0),
+        ("otp_login_rate_limit_window_seconds", -1),
+        ("otp_login_rate_limit_phone_attempts", 0),
+        ("otp_login_rate_limit_phone_attempts", -1),
+        ("otp_login_rate_limit_user_attempts", 0),
+        ("otp_login_rate_limit_user_attempts", -1),
+        ("otp_login_rate_limit_ip_attempts", 0),
+        ("otp_login_rate_limit_ip_attempts", -1),
+        ("otp_dispatch_poll_seconds", 0),
+        ("otp_dispatch_poll_seconds", -1),
+        ("otp_dispatch_claim_stale_seconds", 0),
+        ("otp_dispatch_claim_stale_seconds", -1),
+        ("otp_dispatch_heartbeat_seconds", 0),
+        ("otp_dispatch_heartbeat_seconds", -1),
+        ("otp_dispatch_stale_seconds", 0),
+        ("otp_dispatch_stale_seconds", -1),
+        ("otp_terminal_retention_days", 0),
+        ("otp_terminal_retention_days", -1),
+        ("otp_event_retention_days", 0),
+        ("otp_event_retention_days", -1),
     ],
 )
 def test_settings_requires_positive_ttl_and_limit_values(
@@ -295,6 +352,152 @@ def test_telegram_settings_do_not_add_unapproved_rate_limit_secrets() -> None:
 
     assert "rate_limit_hmac_key" in Settings.model_fields
     assert forbidden_fields.isdisjoint(Settings.model_fields)
+
+
+def test_otp_settings_use_approved_defaults_and_optional_secret() -> None:
+    settings = make_settings()
+
+    assert settings.otp_hmac_key is None
+    assert settings.otp_login_ttl_seconds == 180
+    assert settings.otp_login_max_verify_attempts == 5
+    assert settings.otp_login_resend_cooldown_seconds == 60
+    assert settings.otp_login_rate_limit_window_seconds == 900
+    assert settings.otp_login_rate_limit_phone_attempts == 3
+    assert settings.otp_login_rate_limit_user_attempts == 3
+    assert settings.otp_login_rate_limit_ip_attempts == 20
+    assert settings.otp_dispatch_poll_seconds == 1
+    assert settings.otp_dispatch_batch_size == 20
+    assert settings.otp_dispatch_claim_stale_seconds == 60
+    assert settings.otp_dispatch_heartbeat_seconds == 10
+    assert settings.otp_dispatch_stale_seconds == 60
+    assert settings.otp_send_timeout_seconds == 5
+    assert settings.otp_terminal_retention_days == 30
+    assert settings.otp_event_retention_days == 90
+
+
+def test_otp_settings_can_be_overridden_from_env(monkeypatch) -> None:
+    set_required_settings_env(monkeypatch)
+    monkeypatch.setenv("OTP_HMAC_KEY", TEST_OTP_HMAC_KEY)
+    monkeypatch.setenv("OTP_LOGIN_TTL_SECONDS", "240")
+    monkeypatch.setenv("OTP_LOGIN_MAX_VERIFY_ATTEMPTS", "4")
+    monkeypatch.setenv("OTP_LOGIN_RESEND_COOLDOWN_SECONDS", "45")
+    monkeypatch.setenv("OTP_LOGIN_RATE_LIMIT_WINDOW_SECONDS", "600")
+    monkeypatch.setenv("OTP_LOGIN_RATE_LIMIT_PHONE_ATTEMPTS", "2")
+    monkeypatch.setenv("OTP_LOGIN_RATE_LIMIT_USER_ATTEMPTS", "2")
+    monkeypatch.setenv("OTP_LOGIN_RATE_LIMIT_IP_ATTEMPTS", "10")
+    monkeypatch.setenv("OTP_DISPATCH_POLL_SECONDS", "2")
+    monkeypatch.setenv("OTP_DISPATCH_BATCH_SIZE", "30")
+    monkeypatch.setenv("OTP_DISPATCH_CLAIM_STALE_SECONDS", "70")
+    monkeypatch.setenv("OTP_DISPATCH_HEARTBEAT_SECONDS", "11")
+    monkeypatch.setenv("OTP_DISPATCH_STALE_SECONDS", "80")
+    monkeypatch.setenv("OTP_SEND_TIMEOUT_SECONDS", "6")
+    monkeypatch.setenv("OTP_TERMINAL_RETENTION_DAYS", "31")
+    monkeypatch.setenv("OTP_EVENT_RETENTION_DAYS", "91")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.otp_hmac_key is not None
+    assert settings.otp_hmac_key.get_secret_value() == TEST_OTP_HMAC_KEY
+    assert settings.otp_login_ttl_seconds == 240
+    assert settings.otp_login_max_verify_attempts == 4
+    assert settings.otp_login_resend_cooldown_seconds == 45
+    assert settings.otp_login_rate_limit_window_seconds == 600
+    assert settings.otp_login_rate_limit_phone_attempts == 2
+    assert settings.otp_login_rate_limit_user_attempts == 2
+    assert settings.otp_login_rate_limit_ip_attempts == 10
+    assert settings.otp_dispatch_poll_seconds == 2
+    assert settings.otp_dispatch_batch_size == 30
+    assert settings.otp_dispatch_claim_stale_seconds == 70
+    assert settings.otp_dispatch_heartbeat_seconds == 11
+    assert settings.otp_dispatch_stale_seconds == 80
+    assert settings.otp_send_timeout_seconds == 6
+    assert settings.otp_terminal_retention_days == 31
+    assert settings.otp_event_retention_days == 91
+
+
+@pytest.mark.parametrize(
+    ("env_key", "bad_value"),
+    [
+        ("OTP_LOGIN_TTL_SECONDS", ""),
+        ("OTP_LOGIN_TTL_SECONDS", "59"),
+        ("OTP_LOGIN_TTL_SECONDS", "601"),
+        ("OTP_LOGIN_TTL_SECONDS", "not-an-int"),
+        ("OTP_LOGIN_MAX_VERIFY_ATTEMPTS", ""),
+        ("OTP_LOGIN_MAX_VERIFY_ATTEMPTS", "0"),
+        ("OTP_LOGIN_MAX_VERIFY_ATTEMPTS", "11"),
+        ("OTP_LOGIN_MAX_VERIFY_ATTEMPTS", "not-an-int"),
+        ("OTP_LOGIN_RESEND_COOLDOWN_SECONDS", ""),
+        ("OTP_LOGIN_RESEND_COOLDOWN_SECONDS", "0"),
+        ("OTP_LOGIN_RESEND_COOLDOWN_SECONDS", "180"),
+        ("OTP_LOGIN_RATE_LIMIT_WINDOW_SECONDS", ""),
+        ("OTP_LOGIN_RATE_LIMIT_WINDOW_SECONDS", "0"),
+        ("OTP_LOGIN_RATE_LIMIT_PHONE_ATTEMPTS", ""),
+        ("OTP_LOGIN_RATE_LIMIT_PHONE_ATTEMPTS", "0"),
+        ("OTP_LOGIN_RATE_LIMIT_USER_ATTEMPTS", ""),
+        ("OTP_LOGIN_RATE_LIMIT_USER_ATTEMPTS", "0"),
+        ("OTP_LOGIN_RATE_LIMIT_IP_ATTEMPTS", ""),
+        ("OTP_LOGIN_RATE_LIMIT_IP_ATTEMPTS", "0"),
+        ("OTP_DISPATCH_POLL_SECONDS", ""),
+        ("OTP_DISPATCH_POLL_SECONDS", "0"),
+        ("OTP_DISPATCH_BATCH_SIZE", ""),
+        ("OTP_DISPATCH_BATCH_SIZE", "0"),
+        ("OTP_DISPATCH_BATCH_SIZE", "101"),
+        ("OTP_DISPATCH_CLAIM_STALE_SECONDS", ""),
+        ("OTP_DISPATCH_CLAIM_STALE_SECONDS", "0"),
+        ("OTP_DISPATCH_HEARTBEAT_SECONDS", ""),
+        ("OTP_DISPATCH_HEARTBEAT_SECONDS", "0"),
+        ("OTP_DISPATCH_STALE_SECONDS", ""),
+        ("OTP_DISPATCH_STALE_SECONDS", "10"),
+        ("OTP_SEND_TIMEOUT_SECONDS", ""),
+        ("OTP_SEND_TIMEOUT_SECONDS", "0"),
+        ("OTP_SEND_TIMEOUT_SECONDS", "16"),
+        ("OTP_TERMINAL_RETENTION_DAYS", ""),
+        ("OTP_TERMINAL_RETENTION_DAYS", "0"),
+        ("OTP_EVENT_RETENTION_DAYS", ""),
+        ("OTP_EVENT_RETENTION_DAYS", "0"),
+    ],
+)
+def test_invalid_otp_env_values_fail_fast(
+    monkeypatch,
+    env_key: str,
+    bad_value: str,
+) -> None:
+    set_required_settings_env(monkeypatch)
+    monkeypatch.setenv(env_key, bad_value)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_otp_hmac_key_can_be_required_by_otp_boundaries() -> None:
+    missing_settings = make_settings()
+    configured_settings = make_settings(otp_hmac_key=TEST_OTP_HMAC_KEY)
+
+    with pytest.raises(OtpHmacKeySettingsError) as exc_info:
+        missing_settings.require_otp_hmac_key()
+
+    assert "OTP HMAC key is not configured" in str(exc_info.value)
+    assert configured_settings.require_otp_hmac_key().get_secret_value() == (
+        TEST_OTP_HMAC_KEY
+    )
+
+
+def test_otp_hmac_key_is_redacted_and_separate_from_other_secrets() -> None:
+    settings = make_settings(otp_hmac_key=TEST_OTP_HMAC_KEY)
+
+    assert TEST_OTP_HMAC_KEY not in repr(settings.otp_hmac_key)
+    assert TEST_OTP_HMAC_KEY not in str(settings.otp_hmac_key)
+    assert settings.otp_hmac_key != settings.rate_limit_hmac_key
+
+    with pytest.raises(ValidationError, match="rate_limit_hmac_key"):
+        make_settings(otp_hmac_key=TEST_RATE_LIMIT_HMAC_KEY)
+
+    with pytest.raises(ValidationError, match="telegram_bot_token"):
+        make_settings(
+            telegram_bot_username="nasiya_linkbot",
+            telegram_bot_token=TEST_TELEGRAM_BOT_TOKEN,
+            otp_hmac_key=TEST_TELEGRAM_BOT_TOKEN,
+        )
 
 
 def test_client_ip_settings_default_to_direct_without_proxy_allowlist() -> None:
