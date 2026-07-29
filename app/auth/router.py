@@ -3,7 +3,6 @@ from datetime import UTC, datetime
 from html import escape
 from pathlib import Path
 from typing import Annotated
-from urllib.parse import urlsplit
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Form, Request, status
@@ -30,6 +29,7 @@ from app.auth.phone import (
     mask_phone_for_display,
     normalize_uzbekistan_phone,
 )
+from app.auth.redirects import get_safe_redirect_target
 from app.auth.service import authenticate, check_current_password
 from app.auth.sessions import (
     CreatedSession,
@@ -72,7 +72,6 @@ from app.telegram.web_presentation import (
 
 TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates"
 LOGIN_FAILED_MESSAGE = "Telefon raqam yoki parol noto'g'ri."
-ACCOUNT_PATH = "/auth/account"
 LOGIN_PATH = "/auth/login"
 TELEGRAM_PATH = "/auth/telegram"
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
@@ -218,7 +217,7 @@ def submit_login(
         settings=settings,
     )
     response = RedirectResponse(
-        _get_safe_redirect_target(next_url),
+        get_safe_redirect_target(next_url),
         status_code=status.HTTP_303_SEE_OTHER,
     )
     set_session_cookie(response, created_session.raw_token, settings)
@@ -1162,12 +1161,4 @@ def _is_login_input_valid(phone: str, password: str) -> bool:
 
 
 def _get_safe_redirect_target(next_url: str | None) -> str:
-    if not next_url:
-        return ACCOUNT_PATH
-
-    parsed = urlsplit(next_url)
-    if parsed.scheme or parsed.netloc:
-        return ACCOUNT_PATH
-    if not parsed.path.startswith("/") or parsed.path.startswith("//"):
-        return ACCOUNT_PATH
-    return next_url
+    return get_safe_redirect_target(next_url)

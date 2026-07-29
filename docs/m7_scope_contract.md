@@ -672,6 +672,106 @@ received the code.
 
 Parallel correct verifies produce exactly one successful session.
 
+### Verification Exact API/Order Appendix
+
+Approved repository boundary for M7.44-M7.50:
+
+```text
+app.otp.verification.verify_login_otp(
+    session,
+    *,
+    settings,
+    browser_binding_digest,
+    candidate_code_input,
+    now,
+)
+```
+
+Inputs and ownership:
+
+- `session` is the caller-owned SQLAlchemy session and remains first
+  positional;
+- `settings` supplies `OTP_HMAC_KEY`, TTL/attempt policy, and no route-selected
+  secret;
+- `browser_binding_digest` is derived by the route from the current anonymous
+  server-side session with `derive_browser_binding_digest`;
+- `candidate_code_input` is the only user code input and is parsed to `OtpCode`
+  inside the verification boundary;
+- `now` is injected by `app.auth.deps.get_current_time`;
+- the client never submits phone, user ID, challenge ID, dispatch ID, Telegram
+  link ID, chat ID, attempt count, purpose, or delivery status.
+
+Lookup and locking order:
+
+1. Load the outstanding LOGIN candidate by browser binding with
+   `load_verification_candidate_by_browser_for_update`.
+2. If no candidate exists, run the dummy MAC/constant-time path and return the
+   generic invalid internal outcome.
+3. Require `ACTIVE`; terminal statuses and `PENDING_DISPATCH` map to the same
+   generic invalid public response.
+4. If `expires_at <= now`, mark `EXPIRED`, append `EXPIRED`, run the dummy
+   compare-equivalent path, and return generic invalid.
+5. If `failed_attempts >= settings.otp_login_max_verify_attempts`, mark or keep
+   `BURNED`, append only the transition event that actually occurred, and
+   return generic invalid.
+6. Lock `users.id = challenge.user_id`.
+7. Lock `telegram_links.id = challenge.telegram_link_id`.
+8. Require user auth-active.
+9. Require Telegram link active, same ID, non-null private chat, and
+   `linked_at == challenge.telegram_linked_at`.
+10. On user/link mismatch, mark `INVALIDATED`, cancel any open dispatch only if
+    still non-terminal, append `INVALIDATED_BY_LINK_CHANGE` for link-generation
+    mismatch, and return generic invalid.
+
+Code and attempt order:
+
+1. Parse the candidate with `OtpCode.from_user_input`, which trims only outer
+   whitespace and accepts exactly six ASCII digits.
+2. Malformed input still runs dummy HMAC/`compare_digest` work and returns the
+   same generic invalid mapping.
+3. Valid input computes the versioned MAC with `compute_otp_code_mac` using
+   challenge UUID, user UUID, purpose LOGIN, and the candidate code.
+4. Compare only with `verify_otp_code_mac`, which uses `hmac.compare_digest`.
+5. Wrong code increments `failed_attempts`, appends `VERIFY_FAILED`, and when
+   the configured maximum is reached marks `BURNED` and appends `BURNED` in
+   that order.
+6. Correct code performs guarded `CONSUMED`, sets `consumed_at`/`terminal_at`,
+   appends `CONSUMED`, and returns the consumed user ID for the route adapter.
+7. Correct code after consumed/burned/expired/superseded/invalidated state is
+   a replay and maps to generic invalid.
+
+Session rotation and redirect semantics:
+
+- Domain verification does not create sessions and does not set cookies.
+- `POST /auth/otp/verify` calls `verify_login_otp`; only an
+  `OTP_CONSUMED` result proceeds to session login.
+- The route then calls `app.auth.sessions.rotate_session` in the same request
+  transaction. Existing semantics are reused: revoke current anonymous session
+  via `revoke_session`, create a new authenticated session via
+  `create_authenticated_session`, and therefore rotate both session token and
+  CSRF secret.
+- The response sets the new cookie with `app.auth.cookies.set_session_cookie`.
+- Redirect target uses the existing safe-relative helper
+  `app.auth.redirects.get_safe_redirect_target`; unsafe absolute or
+  protocol-relative values fall back to `/auth/account`.
+- `active_shop_id`, shop staff resolution, and customer activation are not read
+  or mutated by OTP verification.
+
+Failure and public mapping:
+
+- repository/service primitives never call `commit()`, full `rollback()`, or
+  `close()`;
+- event insert failure rolls back the state transition;
+- session rotation or cookie preparation failure rolls back consume because the
+  request transaction has not committed yet;
+- consume succeeds only after the outer request transaction commits;
+- malformed, missing, wrong, expired, superseded, burned, link-changed, inactive
+  user, and replay cases all map to the same localized invalid-code response;
+- no route exposes delivery status, challenge status, attempt count, provider
+  detail, Telegram chat identity, raw candidate code, session token, or
+  `OTP_HMAC_KEY`;
+- no Telegram network call occurs during verification.
+
 ## Outcome Contract
 
 Internal outcomes may distinguish:
