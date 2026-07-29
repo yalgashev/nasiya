@@ -68,5 +68,32 @@ services:
       start_period: 20s
     deploy:
       replicas: 1
+  otp-dispatcher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "app.otp.dispatcher", "run"]
+    environment:
+      APP_ENVIRONMENT: ${APP_ENVIRONMENT:-development}
+      DEBUG: "false"
+      DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql+psycopg://${POSTGRES_USER:-nasiya}:${POSTGRES_PASSWORD:-dev_pass}@db:5432/${POSTGRES_DB:-nasiya}}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      RATE_LIMIT_HMAC_KEY: ${RATE_LIMIT_HMAC_KEY:-change-me-local-rate-limit-hmac-key-at-least-32-chars}
+      OTP_HMAC_KEY: ${OTP_HMAC_KEY:-}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    stop_grace_period: 45s
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.otp.dispatcher", "healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      replicas: 1
 volumes:
   db-data:

@@ -241,7 +241,7 @@ def test_m6_runtime_keeps_unapproved_bot_sdk_otp_and_scheduler_out() -> None:
         assert marker not in source_text
 
 
-def test_m7_otp_persistence_does_not_add_routes_provider_or_generic_queue_scope() -> (
+def test_m7_otp_package_keeps_dispatcher_narrow_without_routes_or_generic_queue() -> (
     None
 ):
     otp_source = "\n".join(
@@ -258,8 +258,11 @@ def test_m7_otp_persistence_does_not_add_routes_provider_or_generic_queue_scope(
         "apirouter",
         "httpx",
         "telegram_bot_token",
-        "otpdeliveryprovider",
+        "smsotpprovider",
+        "providerregistry",
         "redis",
+        "celery",
+        "dramatiq",
         "scheduler",
         "outbox",
         "webhook",

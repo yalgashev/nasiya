@@ -352,10 +352,12 @@ def test_get_updates_rejects_unapproved_request_parameters(
 
 def test_send_message_posts_only_chat_and_localized_text() -> None:
     captured_payload = {}
+    captured_timeout = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal captured_payload
+        nonlocal captured_payload, captured_timeout
         captured_payload = json.loads(request.content)
+        captured_timeout = request.extensions["timeout"]
         return json_response(
             200,
             {"ok": True, "result": {"message_id": 77, "text": "ignored"}},
@@ -365,12 +367,19 @@ def test_send_message_posts_only_chat_and_localized_text() -> None:
         return await client.send_message(
             chat_id=VerifiedPrivateTelegramChatIdentity(99887766),
             text="Telegram bog'landi.",
+            timeout_seconds=4,
         )
 
     assert run(with_client(handler, scenario)) is None
     assert captured_payload == {
         "chat_id": 99887766,
         "text": "Telegram bog'landi.",
+    }
+    assert captured_timeout == {
+        "connect": 4,
+        "read": 4,
+        "write": 4,
+        "pool": 4,
     }
 
 

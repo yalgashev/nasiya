@@ -516,6 +516,116 @@ mapping.
 
 ## Dispatcher Protocol
 
+### Dispatcher Exact Processing Appendix
+
+Command/module:
+
+```text
+python -m app.otp.dispatcher run
+python -m app.otp.dispatcher healthcheck
+compose service: otp-dispatcher
+```
+
+Single-owner strategy:
+
+- the dispatcher uses a stable PostgreSQL advisory lock key dedicated to OTP;
+- the lock key is a source constant, not Python `hash()` and not secret-derived;
+- lock acquisition is bounded and cancelled on SIGTERM;
+- the lock connection is dedicated to ownership only;
+- item processing uses short-lived sessions from the normal engine/session
+  factory, never the lock connection.
+
+Polling:
+
+```text
+OTP_DISPATCH_POLL_SECONDS=1
+OTP_DISPATCH_BATCH_SIZE=20
+OTP_DISPATCH_CLAIM_STALE_SECONDS=60
+OTP_DISPATCH_HEARTBEAT_SECONDS=10
+OTP_DISPATCH_STALE_SECONDS=60
+```
+
+Claim order:
+
+1. claim `PENDING` rows ordered by `created_at ASC, id ASC`;
+2. row-lock with `FOR UPDATE SKIP LOCKED`;
+3. set `claimed_at` using the current dispatcher clock;
+4. reclaim `PENDING` only if `claimed_at` is null or older than the claim
+   stale threshold;
+5. never claim `PREPARED` for send.
+
+TX-D1:
+
+1. lock the claimed dispatch and its challenge;
+2. lock the user and the current Telegram link row;
+3. require challenge `PENDING_DISPATCH`;
+4. require user auth-active;
+5. require link ID equals `telegram_link_id`, link is active, and `linked_at`
+   equals the challenge snapshot;
+6. if any validation fails, set dispatch `CANCELLED`, terminalize challenge
+   where appropriate, append a safe event, and commit no send envelope;
+7. generate the six-digit OTP only in memory;
+8. compute the HMAC MAC;
+9. set challenge `ACTIVE`, `failed_attempts=0`, `activated_at=now`,
+   `expires_at=now+OTP_LOGIN_TTL_SECONDS`;
+10. set dispatch `PREPARED`;
+11. append `DISPATCH_PREPARED`;
+12. commit and return an in-memory prepared envelope.
+
+Send boundary:
+
+1. send happens only after TX-D1 commit succeeds;
+2. no SQLAlchemy transaction or session is open during the HTTP call;
+3. target resolution uses the current locked Telegram link data captured in
+   the prepared envelope;
+4. provider is Telegram-only in M7 and sends exactly once;
+5. raw OTP lifetime is the method scope around TX-D1/send only;
+6. no automatic retry and no public delivery status.
+
+TX-D2:
+
+1. open a fresh transaction;
+2. lock the dispatch;
+3. `PREPARED -> SENT`, `FAILED`, or `UNKNOWN`;
+4. set `sent_at` for `SENT`, `terminal_at` for all terminal results, and a
+   sanitized failure code for `FAILED`/`UNKNOWN`;
+5. append `DISPATCH_RESULT`;
+6. commit;
+7. TX-D2 failure never rolls back the already-active challenge and never
+   triggers automatic resend.
+
+Stale recovery:
+
+- `PREPARED` older than `OTP_DISPATCH_STALE_SECONDS` becomes `UNKNOWN`;
+- recovery appends `DISPATCH_RESULT` with a sanitized stale code;
+- recovery never reconstructs or resends the OTP;
+- `SENT`, `FAILED`, `UNKNOWN`, and `CANCELLED` are terminal.
+
+Heartbeat and health:
+
+- dispatcher writes heartbeat to `otp_dispatcher_state`;
+- ready requires heartbeat;
+- healthcheck returns OK only when ready and fresh under
+  `OTP_DISPATCH_STALE_SECONDS`;
+- web `/health` remains independent of dispatcher state.
+
+SIGTERM behavior:
+
+- request shutdown;
+- finish no new claim after shutdown request;
+- cancel heartbeat task;
+- release advisory lock;
+- dispose engine/client resources.
+
+Forbidden:
+
+- no changes to M6 getUpdates worker role;
+- no web startup background task;
+- no raw code/message/chat persistence;
+- no generic queue/outbox/scheduler/Redis;
+- no SMS provider/registry;
+- no public delivery status endpoint.
+
 TX-D1:
 
 1. Claim one pending dispatch with a lock.
@@ -529,7 +639,7 @@ TX-D1:
 
 External boundary:
 
-1. Resolve active Telegram target after commit.
+1. Use the prepared envelope target only after TX-D1 commit succeeds.
 2. Render localized OTP message.
 3. Call `TelegramOtpProvider.send_otp`.
 4. No DB transaction is open during the HTTP call.

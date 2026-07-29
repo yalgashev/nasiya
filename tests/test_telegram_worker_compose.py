@@ -18,35 +18,50 @@ def service_block(text: str, service_name: str, next_service_name: str) -> str:
     )[0]
 
 
-def test_compose_migration_orders_web_and_worker_without_web_token() -> None:
+def test_compose_migration_orders_web_worker_and_dispatcher_without_web_token() -> None:
     text = compose_text()
     migration = service_block(text, "migrate", "web")
     web = service_block(text, "web", "telegram-worker")
-    worker = text.split("  telegram-worker:", 1)[1].split("\nvolumes:", 1)[0]
+    worker = service_block(text, "telegram-worker", "otp-dispatcher")
+    dispatcher = text.split("  otp-dispatcher:", 1)[1].split("\nvolumes:", 1)[0]
 
     assert 'command: ["alembic", "upgrade", "head"]' in migration
     assert "condition: service_healthy" in migration
     assert 'restart: "no"' in migration
     assert "condition: service_completed_successfully" in web
     assert "condition: service_completed_successfully" in worker
+    assert "condition: service_completed_successfully" in dispatcher
     assert "TELEGRAM_BOT_TOKEN" not in web
+    assert "OTP_HMAC_KEY" not in web
     assert "TELEGRAM_BOT_TOKEN:" in worker
+    assert "TELEGRAM_BOT_TOKEN:" in dispatcher
+    assert "OTP_HMAC_KEY:" in dispatcher
 
 
-def test_compose_worker_uses_same_image_contract_and_exact_lifecycle_values() -> None:
+def test_compose_workers_use_same_image_contract_and_exact_lifecycle_values() -> None:
     text = compose_text()
     web = service_block(text, "web", "telegram-worker")
-    worker = text.split("  telegram-worker:", 1)[1].split("\nvolumes:", 1)[0]
+    worker = service_block(text, "telegram-worker", "otp-dispatcher")
+    dispatcher = text.split("  otp-dispatcher:", 1)[1].split("\nvolumes:", 1)[0]
 
     for build_line in ("build:", "context: .", "dockerfile: Dockerfile"):
         assert build_line in web
         assert build_line in worker
+        assert build_line in dispatcher
     assert 'command: ["python", "-m", "app.telegram.worker", "run"]' in worker
+    assert 'command: ["python", "-m", "app.otp.dispatcher", "run"]' in dispatcher
     assert "restart: unless-stopped" in worker
+    assert "restart: unless-stopped" in dispatcher
     assert "stop_grace_period: 45s" in worker
+    assert "stop_grace_period: 45s" in dispatcher
     assert "replicas: 1" in worker
+    assert "replicas: 1" in dispatcher
     assert (
         'test: ["CMD", "python", "-m", "app.telegram.worker", "healthcheck"]' in worker
+    )
+    assert (
+        'test: ["CMD", "python", "-m", "app.otp.dispatcher", "healthcheck"]'
+        in dispatcher
     )
     for health_value in (
         "interval: 15s",
@@ -55,6 +70,7 @@ def test_compose_worker_uses_same_image_contract_and_exact_lifecycle_values() ->
         "start_period: 20s",
     ):
         assert health_value in worker
+        assert health_value in dispatcher
 
 
 def test_web_container_disables_raw_client_ip_access_logging() -> None:

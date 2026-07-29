@@ -233,6 +233,7 @@ class TelegramBotApiClient:
         *,
         chat_id: VerifiedPrivateTelegramChatIdentity,
         text: str,
+        timeout_seconds: float | None = None,
     ) -> None:
         if not isinstance(text, str) or not text.strip() or len(text) > 4096:
             raise ValueError("Telegram message text must be non-empty and bounded")
@@ -243,6 +244,7 @@ class TelegramBotApiClient:
                 "chat_id": chat_id.as_bigint(),
                 "text": text,
             },
+            timeout_seconds=timeout_seconds,
         )
         if not isinstance(result, Mapping):
             raise _protocol_error()
@@ -254,14 +256,15 @@ class TelegramBotApiClient:
         ):
             raise _protocol_error()
 
-    async def _post(self, method: str, payload: Mapping[str, object]) -> Any:
+    async def _post(
+        self,
+        method: str,
+        payload: Mapping[str, object],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> Any:
         request_url = f"{TELEGRAM_API_BASE_URL}/{method}"
-        timeout = httpx.Timeout(
-            connect=TELEGRAM_HTTP_CONNECT_TIMEOUT_SECONDS,
-            read=TELEGRAM_HTTP_READ_TIMEOUT_SECONDS,
-            write=TELEGRAM_HTTP_CONNECT_TIMEOUT_SECONDS,
-            pool=TELEGRAM_HTTP_CONNECT_TIMEOUT_SECONDS,
-        )
+        timeout = _telegram_request_timeout(timeout_seconds)
         try:
             response = await self._http_client.post(
                 request_url,
@@ -289,6 +292,24 @@ class TelegramBotApiClient:
         if "result" not in body:
             raise _protocol_error()
         return body["result"]
+
+
+def _telegram_request_timeout(timeout_seconds: float | None) -> httpx.Timeout:
+    if timeout_seconds is not None:
+        if timeout_seconds <= 0:
+            raise ValueError("Telegram send timeout must be positive")
+        return httpx.Timeout(
+            connect=timeout_seconds,
+            read=timeout_seconds,
+            write=timeout_seconds,
+            pool=timeout_seconds,
+        )
+    return httpx.Timeout(
+        connect=TELEGRAM_HTTP_CONNECT_TIMEOUT_SECONDS,
+        read=TELEGRAM_HTTP_READ_TIMEOUT_SECONDS,
+        write=TELEGRAM_HTTP_CONNECT_TIMEOUT_SECONDS,
+        pool=TELEGRAM_HTTP_CONNECT_TIMEOUT_SECONDS,
+    )
 
 
 def create_telegram_http_client(

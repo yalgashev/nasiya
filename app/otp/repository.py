@@ -95,6 +95,16 @@ class OtpPurgeResult:
     events_deleted: int
 
 
+@dataclass(frozen=True)
+class OtpDispatcherHealth:
+    heartbeat_at: datetime | None
+    ready_at: datetime | None
+
+
+class OtpDispatcherStateMissingError(RuntimeError):
+    pass
+
+
 def load_outstanding_challenge_by_user_for_update(
     session: Session,
     *,
@@ -569,17 +579,29 @@ def mark_dispatcher_heartbeat(
     session: Session,
     *,
     now: datetime,
-    ready: bool = False,
+    ready: bool | None = False,
 ) -> OtpDispatcherState:
     current_time = _as_utc(now)
     state = get_or_create_dispatcher_state_for_update(session, now=current_time)
     state.heartbeat_at = current_time
-    if ready:
+    if ready is True:
         state.ready_at = state.ready_at or current_time
+    elif ready is False:
+        state.ready_at = None
     state.updated_at = current_time
     session.add(state)
     session.flush()
     return state
+
+
+def read_dispatcher_health(session: Session) -> OtpDispatcherHealth:
+    state = session.get(OtpDispatcherState, 1)
+    if state is None:
+        raise OtpDispatcherStateMissingError("OTP dispatcher state is missing")
+    return OtpDispatcherHealth(
+        heartbeat_at=state.heartbeat_at,
+        ready_at=state.ready_at,
+    )
 
 
 def append_challenge_event(
