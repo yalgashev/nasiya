@@ -272,6 +272,44 @@ kerak. Secret yo'q muhitda faqat webni ishga tushiring; workerning fail-closed
 chiqishi expected. Batafsil deployment, rotation va incident amallari
 `docs/m6_worker_runbook.md`da.
 
+## Telegram Login OTP (M7)
+
+M7 mavjud active user va uning active Telegram linki uchun optional
+`LOGIN` OTP oqimini qo'shadi. Password login saqlanadi va dispatcher yoki
+Telegram vaqtincha unavailable bo'lsa ham ishlaydi. Registration, activation,
+recovery, password reset, phone change, SMS va generic notification/outbox
+M7 scope'iga kirmaydi.
+
+Web OTP challenge va durable dispatch intentni PostgreSQLda yaratadi, lekin
+Telegram networkni chaqirmaydi. Alohida dispatcher pending ishni yuboradi:
+
+```bash
+docker compose --env-file .env.local up -d db migrate web
+docker compose --env-file .env.local up -d telegram-worker otp-dispatcher
+docker compose --env-file .env.local exec otp-dispatcher \
+  python -m app.otp.dispatcher healthcheck
+```
+
+Expected migration head `e7f8a9b0c1d2`. Real dev/test acceptance
+credentiallari faqat ignored, mode `600` bo'lgan `.env.local` kabi untracked
+runtime manbasida saqlanadi. Uning mazmunini hech qachon terminalga, logga,
+reportga yoki CIga chiqarmang va tracked qilmang. Webga bot token berilmaydi;
+OTP-enabled web va dispatcher bir xil dedicated `OTP_HMAC_KEY`dan foydalanadi.
+
+Automated dev/test real credential yoki Telegram network ishlatmaydi:
+
+```bash
+uv run pytest -q \
+  tests/test_otp_dispatcher.py \
+  tests/test_otp_concurrency_containment_matrix.py \
+  tests/test_otp_enumeration_matrix.py \
+  tests/test_otp_sensitive_data_audit.py
+```
+
+Fake transport real network/device acceptance o'rnini bosmaydi. Dispatcher
+deployment, health, `UNKNOWN` holati, rotation va sanitized acceptance
+amallari `docs/m7_dispatcher_runbook.md`da.
+
 ## Validation (Xubuntu Terminal)
 
 ```bash
@@ -328,8 +366,8 @@ PostgreSQL test database orqali customer migration testlari bilan birga M4
 Telegram migration/replay/concurrency/retention va M5 shop
 persistence/tenant/lifecycle/HTTP containment testlarini, shuningdek M6 Bot
 API fake transport, polling persistence, worker recovery, QR va account web
-flow testlarini ham avtomatik bajaradi. Real Telegram credential yoki network
-talab qilinmaydi.
+flow hamda M7 OTP dispatcher, containment, security va web flow testlarini ham
+avtomatik bajaradi. Real Telegram credential yoki network talab qilinmaydi.
 
 ## Stop Services
 

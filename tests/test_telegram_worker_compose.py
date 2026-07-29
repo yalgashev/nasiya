@@ -18,7 +18,7 @@ def service_block(text: str, service_name: str, next_service_name: str) -> str:
     )[0]
 
 
-def test_compose_migration_orders_web_worker_and_dispatcher_without_web_token() -> None:
+def test_compose_wires_web_otp_key_without_web_bot_token() -> None:
     text = compose_text()
     migration = service_block(text, "migrate", "web")
     web = service_block(text, "web", "telegram-worker")
@@ -32,7 +32,7 @@ def test_compose_migration_orders_web_worker_and_dispatcher_without_web_token() 
     assert "condition: service_completed_successfully" in worker
     assert "condition: service_completed_successfully" in dispatcher
     assert "TELEGRAM_BOT_TOKEN" not in web
-    assert "OTP_HMAC_KEY" not in web
+    assert "OTP_HMAC_KEY: ${OTP_HMAC_KEY:-}" in web
     assert "TELEGRAM_BOT_TOKEN:" in worker
     assert "TELEGRAM_BOT_TOKEN:" in dispatcher
     assert "OTP_HMAC_KEY:" in dispatcher

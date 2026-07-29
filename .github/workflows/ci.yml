@@ -81,5 +81,41 @@ jobs:
       - name: Run M5 containment guard
         run: uv run pytest -q tests/test_shop_containment_guard.py
 
+      - name: Run M5 historical regressions
+        run: |
+          uv run pytest -q \
+            tests/test_shop_session_desync_http.py \
+            tests/test_shop_get_leakage_xss_audit.py
+
+      - name: Run M6 Telegram fake-runtime guard
+        run: |
+          uv run pytest -q \
+            tests/test_telegram_bot_api.py \
+            tests/test_telegram_worker.py \
+            tests/test_telegram_worker_lock_postgresql.py \
+            tests/test_telegram_update_processing_postgresql.py \
+            tests/test_telegram_post_commit_reply.py
+
+      - name: Run M7 OTP containment and fake-runtime guard
+        run: |
+          uv run pytest -q \
+            tests/test_otp_dispatcher.py \
+            tests/test_otp_concurrency_containment_matrix.py \
+            tests/test_otp_enumeration_matrix.py \
+            tests/test_otp_sensitive_data_audit.py
+
       - name: Run full pytest
-        run: uv run pytest -ra
+        run: |
+          set +e
+          test_output="$(uv run pytest -ra)"
+          test_status=$?
+          set -e
+          printf '%s\n' "$test_output"
+          if [ "$test_status" -ne 0 ]; then
+            exit "$test_status"
+          fi
+          if grep -Eq '(^|, )[0-9]+ (skipped|xfailed|xpassed)(,| in|$)' \
+            <<<"$test_output"; then
+            echo "Full suite must have zero skipped, xfailed, or xpassed tests."
+            exit 1
+          fi

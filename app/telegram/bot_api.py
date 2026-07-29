@@ -15,6 +15,7 @@ TELEGRAM_API_BASE_URL = "https://api.telegram.org"
 TELEGRAM_LONG_POLL_SECONDS = 25
 TELEGRAM_HTTP_READ_TIMEOUT_SECONDS = 35
 TELEGRAM_HTTP_CONNECT_TIMEOUT_SECONDS = 10
+TELEGRAM_HTTP_CONNECT_RETRIES = 1
 TELEGRAM_ALLOWED_UPDATES = ("message",)
 TELEGRAM_BACKOFF_BASE_SECONDS = 1.0
 TELEGRAM_BACKOFF_CAP_SECONDS = 30.0
@@ -317,7 +318,10 @@ def create_telegram_http_client(
     *,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> httpx.AsyncClient:
-    inner_transport = transport or httpx.AsyncHTTPTransport()
+    # HTTPX limits this retry to connection setup, before request bytes are sent.
+    inner_transport = transport or httpx.AsyncHTTPTransport(
+        retries=TELEGRAM_HTTP_CONNECT_RETRIES
+    )
     token_transport = _TelegramTokenPathTransport(
         token=credentials.bot_token.get_secret_value(),
         inner_transport=inner_transport,

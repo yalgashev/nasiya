@@ -356,6 +356,87 @@ def test_parallel_issue_requests_have_exactly_one_final_outstanding(
 
 
 @pytest.mark.integration
+def test_parallel_new_code_requests_keep_one_outstanding_challenge(
+    m2_test_database: Engine,
+) -> None:
+    settings = make_settings(m2_test_database)
+    session_factory = create_database_session_factory(m2_test_database)
+    digest = "9" * 64
+    with session_factory.begin() as session:
+        user = add_user(session, "+998900008091")
+        add_link(session, user, telegram_chat_id=9_980_100_091)
+        initial = issue(
+            session,
+            settings,
+            phone_input="+998900008091",
+            digest=digest,
+            now=NOW - timedelta(seconds=70),
+        )
+        assert initial.accepted is True
+
+    barrier = Barrier(2)
+
+    def request_candidate(index: int) -> str:
+        with session_factory.begin() as session:
+            barrier.wait()
+            result = request_new_login_code(
+                session,
+                settings,
+                browser_binding_digest=digest,
+                client_ip=ResolvedClientIp(f"203.0.113.{30 + index}"),
+                locale="uz-Latn",
+                now=NOW,
+            )
+            return result.outcome.value
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(request_candidate, range(2)))
+
+    with session_factory() as session:
+        outstanding_count = (
+            session.scalar(
+                select(func.count())
+                .select_from(OtpChallenge)
+                .where(
+                    OtpChallenge.status.in_(
+                        [
+                            OtpChallengeStatus.PENDING_DISPATCH.value,
+                            OtpChallengeStatus.ACTIVE.value,
+                        ]
+                    )
+                )
+            )
+            or 0
+        )
+        open_dispatch_count = (
+            session.scalar(
+                select(func.count())
+                .select_from(OtpDispatch)
+                .where(
+                    OtpDispatch.status.in_(
+                        [
+                            OtpDispatchStatus.PENDING.value,
+                            OtpDispatchStatus.PREPARED.value,
+                        ]
+                    )
+                )
+            )
+            or 0
+        )
+
+    assert outcomes.count(OtpInternalOutcome.OTP_PENDING.value) >= 1
+    assert set(outcomes).issubset(
+        {
+            OtpInternalOutcome.OTP_NOT_ELIGIBLE.value,
+            OtpInternalOutcome.OTP_PENDING.value,
+            OtpInternalOutcome.RATE_LIMITED.value,
+        }
+    )
+    assert outstanding_count == 1
+    assert open_dispatch_count == 1
+
+
+@pytest.mark.integration
 def test_same_browser_second_user_supersedes_old_without_cross_user_outstanding(
     db_session: Session,
     m2_test_database: Engine,

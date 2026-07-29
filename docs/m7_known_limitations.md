@@ -1,21 +1,21 @@
 # Nasiya M7 Known Limitations
 
-Status: approved known limitations for M7.
+Status: approved known limitations for M7 closeout preparation.
 Source authority: `/home/yalgashev/projects/nasiya_m7_00_final_scope_freeze.md`
 and M7.04 feasibility audit.
 
-## KL-M7-01 - Real Bot Credential Acceptance
+## KL-M7-01 - Eligibility And Login-Only Scope
 
-Automated tests and CI use fake Telegram transport only. Real Telegram OTP
-delivery requires a separate dev/prod bot token and username outside tracked
-files, and is accepted only in M7.64.
+M7 Telegram OTP is available only to an existing active user with an active
+Telegram link. Its only purpose is `LOGIN`.
 
 Impact:
 
-- CI must not require `TELEGRAM_BOT_TOKEN`.
-- Web startup and password login remain independent of bot availability.
-- Manual acceptance records only safe evidence, never token, chat ID, phone,
-  OTP, message payload, or session cookie.
+- Registration, public linking, activation, account recovery, password reset,
+  and phone change are outside M7.
+- A user who is not already eligible receives the same enumeration-safe public
+  response and can continue to use the existing password flow where
+  applicable.
 
 ## KL-M7-02 - Async Delivery May Be Unknown
 
@@ -45,12 +45,40 @@ Impact:
 - No client-visible challenge secret or challenge UUID is introduced to relax
   this boundary.
 
-## Operational Notes
+## KL-M7-04 - Provider Acceptance Is Not Device Delivery
 
-- `OTP_HMAC_KEY` rotation invalidates outstanding challenges after process
-  restart; there is no fallback key chain in M7.
-- Dispatcher outage does not make `/health` or password login fail.
-- M7 does not claim Telegram `DELIVERED` or `READ`; only send attempt result is
-  stored.
-- Retention purge is an internal primitive. There is no scheduler, admin UI, or
-  public purge/status endpoint in M7.
+`SENT` means that Telegram Bot API accepted the request. Telegram does not
+provide this flow with an end-device delivery or read receipt.
+
+Impact:
+
+- Product and operations must not present `SENT` as delivered or read.
+- A Telegram outage or provider failure can make OTP login unavailable while
+  web `/health` and password login remain available.
+
+## KL-M7-05 - Dispatcher Is Deliberately Narrow
+
+The dispatcher is an M7-specific Telegram OTP process, not a general delivery
+platform.
+
+Impact:
+
+- SMS is deferred to Phase 2.
+- Generic notifications, outbox infrastructure, and a purge scheduler are
+  outside M7.
+- Retention purge remains an internal primitive with no scheduler, admin UI,
+  or public purge/status endpoint.
+
+## KL-M7-06 - Production Provisioning Remains External
+
+Automated tests and CI use fake Telegram transport and deterministic test-only
+secrets. Production rollout still requires separate production credential
+provisioning, access control, monitoring, and rotation outside tracked files.
+
+Impact:
+
+- `OTP_HMAC_KEY` rotation invalidates outstanding challenges; M7 has no
+  fallback key chain.
+- CI must not require a real Telegram credential or network.
+- Real network/device acceptance is `GREEN`; remote CI for the final M7
+  closeout is still `PENDING`.

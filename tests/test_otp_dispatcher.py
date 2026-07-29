@@ -1,7 +1,9 @@
 import asyncio
 import inspect
 from collections.abc import Awaitable, Generator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from threading import Lock
 from uuid import uuid4
 
 import httpx
@@ -139,6 +141,18 @@ class RaisingProvider:
         self.calls += 1
         self.shutdown.request()
         raise RuntimeError("sensitive provider failure")
+
+
+class ThreadSafeRecordingProvider:
+    def __init__(self) -> None:
+        self.calls = []
+        self._lock = Lock()
+
+    async def send_otp(self, **kwargs) -> OtpDeliverySendResult:
+        with self._lock:
+            self.calls.append(kwargs)
+        await asyncio.sleep(0)
+        return OtpDeliverySendResult(status=OtpDeliverySendStatus.SENT)
 
 
 def add_user_and_link(
@@ -352,6 +366,49 @@ def test_dispatch_loop_sends_only_after_tx_d1_commit_and_records_result(
         assert challenge.status == OtpChallengeStatus.ACTIVE.value
         assert dispatch.status == OtpDispatchStatus.SENT.value
         assert dispatch.sent_at == NOW + timedelta(seconds=1)
+
+
+@pytest.mark.integration
+def test_parallel_dispatch_loops_claim_one_pending_dispatch_for_one_send(
+    m2_test_database: Engine,
+) -> None:
+    settings = make_settings(
+        m2_test_database,
+        otp_dispatch_batch_size=1,
+        otp_dispatch_poll_seconds=1,
+    )
+    session_factory = create_database_session_factory(m2_test_database)
+    challenge_id, dispatch_id = seed_pending_dispatch(
+        m2_test_database,
+        phone="+998900009104",
+        chat_id=9_981_000_104,
+    )
+    provider = ThreadSafeRecordingProvider()
+
+    def run_candidate(_index: int) -> None:
+        run(
+            run_dispatch_loop(
+                provider,
+                session_factory=session_factory,
+                otp_hmac_key=settings.require_otp_hmac_key(),
+                settings=settings,
+                shutdown=ImmediateShutdownController(stop_after_waits=1),
+                now_factory=lambda: NOW + timedelta(seconds=1),
+            )
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        list(executor.map(run_candidate, range(2)))
+
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["target"].chat_identity.as_bigint() == 9_981_000_104
+    with session_factory() as session:
+        challenge = session.get(OtpChallenge, challenge_id)
+        dispatch = session.get(OtpDispatch, dispatch_id)
+        assert challenge is not None
+        assert dispatch is not None
+        assert challenge.status == OtpChallengeStatus.ACTIVE.value
+        assert dispatch.status == OtpDispatchStatus.SENT.value
 
 
 @pytest.mark.integration

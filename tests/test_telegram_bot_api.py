@@ -15,6 +15,7 @@ from app.telegram.bot import TelegramBotUsername
 from app.telegram.bot_api import (
     TELEGRAM_ALLOWED_UPDATES,
     TELEGRAM_BACKOFF_CAP_SECONDS,
+    TELEGRAM_HTTP_CONNECT_RETRIES,
     TELEGRAM_HTTP_READ_TIMEOUT_SECONDS,
     TELEGRAM_LONG_POLL_SECONDS,
     TELEGRAM_RETRY_AFTER_CAP_SECONDS,
@@ -44,6 +45,28 @@ def credentials() -> TelegramWorkerCredentials:
         bot_token=SecretStr(RAW_TOKEN),
         bot_username=BOT_USERNAME,
     )
+
+
+def test_default_transport_retries_connection_setup_once(monkeypatch) -> None:
+    captured_retries = []
+    inner_transport = httpx.MockTransport(
+        lambda _request: json_response(500, {"ok": False})
+    )
+
+    def build_transport(*, retries: int):
+        captured_retries.append(retries)
+        return inner_transport
+
+    monkeypatch.setattr(bot_api_module.httpx, "AsyncHTTPTransport", build_transport)
+
+    async def scenario() -> None:
+        async with create_telegram_http_client(credentials()):
+            pass
+
+    run(scenario())
+
+    assert TELEGRAM_HTTP_CONNECT_RETRIES == 1
+    assert captured_retries == [1]
 
 
 async def with_client(
