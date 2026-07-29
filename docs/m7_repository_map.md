@@ -54,8 +54,8 @@ Unresolved contradiction: none.
 |---|---|---|
 | Telegram link model, ID, generation | `app/telegram/models.py:25` `TelegramLink`; `id` at `app/telegram/models.py:49`; `linked_at` at `app/telegram/models.py:60`; active-state rule at `app/telegram/models.py:29` | REUSE |
 | Active link lookup | `app/telegram/repository.py:38` `has_active_telegram_link`; `app/telegram/repository.py:51` `get_telegram_link_by_user`; `app/telegram/repository.py:59` lock | REUSE |
-| Unlink caller-owned service | `app/telegram/service.py:357` `unlink`; mutation at `app/telegram/repository.py:142` | REUSE with M7 invalidation hook |
-| Successful relink service boundary | `app/telegram/service.py:272` `consume_start_token`; `app/telegram/repository.py:119` `relink_verified_private_chat` | REUSE with M7 invalidation hook |
+| Unlink caller-owned service | `app/telegram/service.py:357` `unlink`; mutation at `app/telegram/repository.py:142`; OTP hook `invalidate_login_otp_challenges_for_link_change` | REUSE with M7 invalidation hook implemented |
+| Successful relink service boundary | `app/telegram/service.py:272` `consume_start_token`; `app/telegram/repository.py:119` `relink_verified_private_chat`; OTP hook `invalidate_login_otp_challenges_for_link_change` | REUSE with M7 invalidation hook implemented |
 | Bot API send_message | `app/telegram/bot_api.py:231` `TelegramBotApiClient.send_message` | REUSE behind provider |
 | Transport injection | `app/telegram/bot_api.py:294` `create_telegram_http_client`; `app/telegram/worker.py:150` `transport` argument | REUSE |
 | Timeout/error classes | `app/telegram/bot_api.py:15`, `app/telegram/bot_api.py:45`, `app/telegram/bot_api.py:348` | REUSE; send-specific timeout is missing |
@@ -110,9 +110,9 @@ required, and no blocker was found.
 
 ## Implementation Notes For M7.07+
 
-- `app/otp` now contains typed crypto/contracts plus persistence models and
-  repository primitives. Dispatcher, provider, and routes are still later M7
-  steps.
+- `app/otp` now contains typed crypto/contracts, persistence models,
+  repository primitives, and issuance services. Dispatcher, provider, and
+  routes are still later M7 steps.
 - M7 models are imported in `alembic/env.py`; M7 migration head is
   `e7f8a9b0c1d2` with parent `d4e5f6a7b8c9`.
 - `tests/postgresql.py` cleanup allowlist includes OTP tables in child-first
@@ -136,3 +136,16 @@ required, and no blocker was found.
 | Retention purge | `app/otp/repository.py` `purge_terminal_otp_records` | IMPLEMENTED |
 | Dispatcher singleton state | `app/otp/repository.py` `get_or_create_dispatcher_state_for_update`, `mark_dispatcher_heartbeat` | IMPLEMENTED |
 | Persistence tests | `tests/test_otp_model_metadata.py`, `tests/test_otp_migration.py`, `tests/test_otp_repository_postgresql.py` | IMPLEMENTED |
+
+## M7.23-M7.30 Issuance Map
+
+| Primitive | File / symbol | Status |
+|---|---|---|
+| Neutral eligibility lookup | `app/otp/issuance.py` `lookup_login_otp_eligibility`, `OtpEligibilityResult`, `OtpEligibleTarget` | IMPLEMENTED |
+| OTP issue limiter scopes | `app/otp/issuance.py` `record_login_otp_issue_limits`, `record_login_otp_user_issue_limit` | IMPLEMENTED |
+| Unknown-path dummy work | `app/otp/issuance.py` `perform_neutral_otp_request_work` | IMPLEMENTED |
+| Atomic issue service | `app/otp/issuance.py` `request_login_otp` | IMPLEMENTED |
+| New-code service | `app/otp/issuance.py` `request_new_login_code` | IMPLEMENTED |
+| Supersession/cancel helpers | `app/otp/issuance.py` `_terminalize_existing_outstanding`, `_cancel_dispatch_if_open` | IMPLEMENTED |
+| Link-change invalidation | `app/otp/issuance.py` `invalidate_login_otp_challenges_for_link_change`; `app/telegram/service.py` unlink/relink hooks | IMPLEMENTED |
+| Issuance tests | `tests/test_otp_issuance_postgresql.py`; updated `tests/test_telegram_scope_regression.py` | IMPLEMENTED |

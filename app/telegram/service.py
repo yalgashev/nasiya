@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session as DatabaseSession
 
 from app.auth.error_codes import ErrorCode, get_public_error_body
 from app.auth.models import User
+from app.otp.issuance import invalidate_login_otp_challenges_for_link_change
 from app.settings import Settings
 from app.telegram.client_ip import ResolvedClientIp
 from app.telegram.events import append_telegram_link_event
@@ -324,6 +325,12 @@ def consume_start_token(
         session.flush()
         event = None
         if event_action is not None:
+            if event_action == "relinked":
+                invalidate_login_otp_challenges_for_link_change(
+                    session,
+                    user_id=token_user.id,
+                    now=current_time,
+                )
             event = append_telegram_link_event(
                 session,
                 token.user_id,
@@ -370,6 +377,11 @@ def unlink(
             session,
             canonical_user,
             current_time,
+        )
+        invalidate_login_otp_challenges_for_link_change(
+            session,
+            user_id=canonical_user.id,
+            now=current_time,
         )
         event = append_telegram_link_event(
             session,

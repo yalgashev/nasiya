@@ -192,7 +192,6 @@ class OtpChallenge(Base):
         DateTime(timezone=True),
         nullable=False,
         default=utc_now,
-        onupdate=utc_now,
         server_default=sqlalchemy_text("CURRENT_TIMESTAMP"),
     )
 
@@ -306,7 +305,6 @@ class OtpDispatch(Base):
         DateTime(timezone=True),
         nullable=False,
         default=utc_now,
-        onupdate=utc_now,
         server_default=sqlalchemy_text("CURRENT_TIMESTAMP"),
     )
 
@@ -396,6 +394,5 @@ class OtpDispatcherState(Base):
         DateTime(timezone=True),
         nullable=False,
         default=utc_now,
-        onupdate=utc_now,
         server_default=sqlalchemy_text("CURRENT_TIMESTAMP"),
     )

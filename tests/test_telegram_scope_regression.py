@@ -55,7 +55,6 @@ FORBIDDEN_APP_RUNTIME_MARKERS = (
     "cron",
     "redis",
     "otpdeliveryprovider",
-    "otp_challenge",
     "otp_code",
     "x-forwarded-for",
     "proxy_middleware",
@@ -236,6 +235,7 @@ def test_m6_runtime_keeps_unapproved_bot_sdk_otp_and_scheduler_out() -> None:
     assert "TELEGRAM_BOT_TOKEN" not in web_compose
     assert "CLIENT_IP_MODE" not in env_example_text
     assert "TRUSTED_PROXY_CIDRS" not in env_example_text
+    assert "invalidate_login_otp_challenges_for_link_change" in source_text
 
     for marker in FORBIDDEN_APP_RUNTIME_MARKERS:
         assert marker not in source_text

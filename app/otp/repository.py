@@ -157,6 +157,25 @@ def load_challenge_by_id_for_update(
     )
 
 
+def load_outstanding_challenges_by_user_for_update(
+    session: Session,
+    *,
+    user_id: UUID,
+    purpose: OtpPurpose | str,
+) -> list[OtpChallenge]:
+    statement = (
+        select(OtpChallenge)
+        .where(
+            OtpChallenge.user_id == _validate_uuid(user_id, "OTP user id"),
+            OtpChallenge.purpose == _purpose_value(purpose),
+            OtpChallenge.status.in_(_OUTSTANDING_CHALLENGE_STATUSES),
+        )
+        .order_by(OtpChallenge.created_at.asc(), OtpChallenge.id.asc())
+        .with_for_update()
+    )
+    return list(session.scalars(statement).all())
+
+
 def create_pending_challenge(
     session: Session,
     *,
@@ -346,6 +365,21 @@ def create_pending_dispatch(
             raise OtpDispatchInsertConflict("OTP dispatch insert conflict") from None
         raise
     return dispatch
+
+
+def load_dispatch_by_challenge_for_update(
+    session: Session,
+    *,
+    challenge_id: UUID,
+) -> OtpDispatch | None:
+    statement = (
+        select(OtpDispatch)
+        .where(
+            OtpDispatch.challenge_id == _validate_uuid(challenge_id, "OTP challenge id")
+        )
+        .with_for_update()
+    )
+    return session.scalar(statement)
 
 
 def claim_next_pending_dispatch_for_update(
