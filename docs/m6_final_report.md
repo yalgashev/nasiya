@@ -1,8 +1,15 @@
 # M6 Final Report
 
-Status: **M6 TECHNICAL GREEN — REMOTE CI PENDING**
+Status: **M6 REMOTE GREEN — CLOSED**
 
 Date: 2026-07-28
+
+## Closure Status Summary
+
+- Technical: GREEN.
+- Real-bot acceptance: GREEN.
+- Remote CI: GREEN.
+- Milestone: CLOSED.
 
 ## Baseline And Scope
 
@@ -243,6 +250,19 @@ not substituted for the real network/device checks.
 
 ### REMOTE-CI Gate
 
-GitHub Actions has not yet run for the final checkpoint SHA. Remote status is
-therefore **REMOTE CI PENDING**. M6 is technical/local GREEN but is not
-remote-closed.
+Status: **GREEN — CLOSED**
+
+- Implementation SHA:
+  `54df18846663f9eb19ce21a131f796a5b3178bf5`.
+- GitHub Actions run: `30383047949`.
+- Workflow/job: `CI / dependency-sync`.
+- Conclusion: `success`.
+- Alembic head: `d4e5f6a7b8c9`.
+- Full pytest:
+  `1373 passed, 1 warning, 0 failed, 0 skipped, 0 xfail`.
+- Validated baseline sync:
+  `HEAD == origin/main`, divergence `0 0`, clean worktree.
+
+Historical note: this report was initially prepared before GitHub Actions ran
+for the final implementation checkpoint. Run `30383047949` subsequently
+validated that exact SHA and closed the remote gate.

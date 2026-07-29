@@ -29,8 +29,13 @@ Impact:
   recovery and no-leak checks.
 - The REAL-BOT gate is `M6 ACCEPTANCE GREEN`; no fake-transport result was
   classified as real acceptance.
-- Production rollout remains gated by the final exact-SHA remote CI closeout
-  and production-specific credential provisioning/rotation.
+- Remote CI gate:
+  `SATISFIED — exact implementation SHA remote CI success`.
+  Implementation SHA:
+  `54df18846663f9eb19ce21a131f796a5b3178bf5`; GitHub Actions run:
+  `30383047949`.
+- Production rollout continues to require production-specific credential
+  provisioning and rotation.
 
 Mitigation:
 
