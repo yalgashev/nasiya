@@ -241,22 +241,23 @@ def test_m6_runtime_keeps_unapproved_bot_sdk_otp_and_scheduler_out() -> None:
         assert marker not in source_text
 
 
-def test_m7_crypto_primitives_do_not_add_db_routes_or_dispatcher_scope() -> None:
+def test_m7_otp_persistence_does_not_add_routes_provider_or_generic_queue_scope() -> (
+    None
+):
     otp_source = "\n".join(
         path.read_text(encoding="utf-8")
         for path in sorted((PROJECT_ROOT / "app" / "otp").glob("*.py"))
     ).casefold()
 
+    assert "otp_challenges" in otp_source
+    assert "otp_dispatches" in otp_source
+    assert "otp_challenge_events" in otp_source
+    assert "otp_dispatcher_state" in otp_source
     for marker in (
-        "sqlalchemy",
         "fastapi",
         "apirouter",
         "httpx",
         "telegram_bot_token",
-        "otp_challenges",
-        "otp_dispatches",
-        "otp_challenge_events",
-        "otp_dispatcher_state",
         "otpdeliveryprovider",
         "redis",
         "scheduler",

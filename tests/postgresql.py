@@ -6,6 +6,10 @@ from sqlalchemy import inspect
 from sqlalchemy.engine import URL, Engine, make_url
 
 M2_CLEANUP_TABLE_NAMES = (
+    "otp_challenge_events",
+    "otp_dispatches",
+    "otp_challenges",
+    "otp_dispatcher_state",
     "telegram_update_failures",
     "telegram_polling_state",
     "telegram_link_events",

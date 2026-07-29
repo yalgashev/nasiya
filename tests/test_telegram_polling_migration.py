@@ -22,7 +22,6 @@ def test_polling_migration_is_single_linear_child_of_verified_m5_head() -> None:
     script = ScriptDirectory.from_config(Config(str(PROJECT_ROOT / "alembic.ini")))
     revision = script.get_revision("d4e5f6a7b8c9")
 
-    assert script.get_heads() == ["d4e5f6a7b8c9"]
     assert revision is not None
     assert revision.down_revision == "a6b4c2d8e9f1"
 
@@ -55,7 +54,10 @@ def test_polling_migration_downgrade_and_reupgrade_real_postgresql(
         assert operational_tables.isdisjoint(
             inspect(test_database_engine).get_table_names()
         )
-    finally:
         command.upgrade(config, "d4e5f6a7b8c9")
 
-    assert operational_tables.issubset(inspect(test_database_engine).get_table_names())
+        assert operational_tables.issubset(
+            inspect(test_database_engine).get_table_names()
+        )
+    finally:
+        command.upgrade(config, "head")

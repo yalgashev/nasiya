@@ -17,7 +17,7 @@ map, and M7.04 feasibility audit.
 | No raw secret/identifier leakage | TT 8; M6; M7 scope | Inherited and M7-new | `app/auth/sessions.py:24`, `app/auth/csrf.py:12`, `app/telegram/bot_api.py:82`, `app/telegram/bot_api.py:147` | OTP values need redacted value objects and leakage tests. | OK |
 | Single-job CI and containment | M6 decisions; M7 validation | Inherited | `.github/workflows/ci.yml:12`, `.github/workflows/ci.yml:65`, `.github/workflows/ci.yml:76`, `.github/workflows/ci.yml:81`, `.github/workflows/ci.yml:84` | Update exact Alembic head only after M7 migration; preserve job shape. | OK |
 | PO-M7 21/21 decisions | M7 freeze section 6 | M7-new | `docs/m7_decisions.md` | Implementation follows frozen decisions only. | OK |
-| Four-table boundary | M7 freeze section 9 | M7-new | `alembic/versions/d4e5f6a7b8c9_create_m6_telegram_polling_tables.py:1` parent exists | Add exactly four M7 tables. | OK |
+| Four-table boundary | M7 freeze section 9 | M7-new | `alembic/versions/e7f8a9b0c1d2_create_m7_otp_persistence_tables.py` creates `otp_challenges`, `otp_dispatches`, `otp_challenge_events`, `otp_dispatcher_state` | Exactly four M7 tables added on M6 parent. | OK |
 | Durable narrow dispatcher | M7 PO-M7-12/13 | M7-new | `compose.yaml:45`, `app/telegram/worker.py:125`, `app/telegram/worker_lock.py:8` patterns | Add OTP-specific command, state, lock, provider; no generic queue. | OK |
 | Sync web send superseded | M7 freeze superseded material and PO-M7-12 | M7-new | `app/auth/router.py:357` current web only issues link token; no OTP route yet | Web creates dispatch only; no Telegram network in request. | OK |
 | Same-code resend superseded | M7 PO-M7-7/13 | M7-new | No current OTP code exists | New-code creates new challenge; stale prepared no resend. | OK |
@@ -73,7 +73,7 @@ Unresolved contradiction: none.
 | Real PostgreSQL fixtures | `tests/conftest.py:15`, `tests/postgresql.py:25`, `tests/test_postgresql_guards.py:19` | REUSE |
 | FOR UPDATE patterns | `app/auth/rate_limit.py:92`, `app/telegram/repository.py:59`, `app/telegram/polling_repository.py:48` | REUSE |
 | Savepoint/concurrency patterns | `app/telegram/repository.py:281`, `app/telegram/service.py:451`, `tests/test_shop_service_concurrency.py:413` | REUSE |
-| Alembic cleanup/head walk | `tests/postgresql.py:40` `get_alembic_head`; CI migration/current at `.github/workflows/ci.yml:65` | REUSE; full walk tests must be added for M7 |
+| Alembic cleanup/head walk | `tests/postgresql.py:40` `get_alembic_head`; CI migration/current at `.github/workflows/ci.yml:65`; M7 tests in `tests/test_otp_migration.py` | REUSE; M7 head is `e7f8a9b0c1d2` |
 | M5/M6 containment guards | `tests/test_shop_containment_guard.py:50`, `tests/test_telegram_scope_regression.py:216` | REUSE and update for M7 |
 | Current CI job/head assertion/Ruff/full pytest | `.github/workflows/ci.yml:12`, `.github/workflows/ci.yml:71`, `.github/workflows/ci.yml:76`, `.github/workflows/ci.yml:84` | REUSE |
 
@@ -110,14 +110,29 @@ required, and no blocker was found.
 
 ## Implementation Notes For M7.07+
 
-- Add package `app/otp` for typed crypto, domain contracts, repositories,
-  dispatcher, provider, and routes. This keeps the M6 Telegram link domain
-  stable while reusing Telegram primitives.
-- Import M7 models into `alembic/env.py` before creating the M7 migration.
-- Extend `tests/postgresql.py` cleanup allowlist with OTP tables in child-first
-  order after M7 models exist.
-- Keep `.github/workflows/ci.yml` one-job shape; update only the expected
-  Alembic head after M7 migration lands.
+- `app/otp` now contains typed crypto/contracts plus persistence models and
+  repository primitives. Dispatcher, provider, and routes are still later M7
+  steps.
+- M7 models are imported in `alembic/env.py`; M7 migration head is
+  `e7f8a9b0c1d2` with parent `d4e5f6a7b8c9`.
+- `tests/postgresql.py` cleanup allowlist includes OTP tables in child-first
+  order.
+- `.github/workflows/ci.yml` keeps the one-job shape and now verifies the M7
+  Alembic head.
 - Extend M6 scope regression tests so M7 allows only `app.otp`,
   `/auth/otp/*`, and the four approved tables, not generic notification,
   outbox, scheduler, webhook, Redis, SMS, or recovery.
+
+## M7.14-M7.20 Persistence Map
+
+| Primitive | File / symbol | Status |
+|---|---|---|
+| Exact four-table appendix | `docs/m7_scope_contract.md` `Exact Schema Appendix` | IMPLEMENTED |
+| ORM metadata | `app/otp/models.py` `OtpChallenge`, `OtpDispatch`, `OtpChallengeEvent`, `OtpDispatcherState` | IMPLEMENTED |
+| Linear Alembic revision | `alembic/versions/e7f8a9b0c1d2_create_m7_otp_persistence_tables.py` | IMPLEMENTED |
+| Challenge repository | `app/otp/repository.py` `load_outstanding_*`, `create_pending_challenge`, `activate_challenge`, terminal transitions, attempts | IMPLEMENTED |
+| Dispatch repository | `app/otp/repository.py` `create_pending_dispatch`, `claim_next_pending_dispatch_for_update`, prepare/result/stale transitions | IMPLEMENTED |
+| Append-only events | `app/otp/repository.py` `append_challenge_event` | IMPLEMENTED |
+| Retention purge | `app/otp/repository.py` `purge_terminal_otp_records` | IMPLEMENTED |
+| Dispatcher singleton state | `app/otp/repository.py` `get_or_create_dispatcher_state_for_update`, `mark_dispatcher_heartbeat` | IMPLEMENTED |
+| Persistence tests | `tests/test_otp_model_metadata.py`, `tests/test_otp_migration.py`, `tests/test_otp_repository_postgresql.py` | IMPLEMENTED |

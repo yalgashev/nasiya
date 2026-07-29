@@ -203,6 +203,280 @@ updated_at TIMESTAMPTZ NOT NULL
 
 Singleton state only. No cursor, secret, token, or worker identity.
 
+### Exact Schema Appendix
+
+M7 database checks use a hard `failed_attempts` cap of `0..10`. Runtime
+configuration must stay inside that range; the approved default service cap is
+`5`, so the service can burn a challenge before the database hard cap.
+
+#### `otp_challenges` Exact Schema
+
+Columns:
+
+```text
+id UUID PRIMARY KEY
+user_id UUID NULL
+purpose VARCHAR(16) NOT NULL
+telegram_link_id UUID NULL
+telegram_linked_at TIMESTAMPTZ NULL
+browser_binding_digest VARCHAR(64) NOT NULL
+code_mac VARCHAR(64) NULL
+status VARCHAR(32) NOT NULL
+failed_attempts INTEGER NOT NULL DEFAULT 0
+created_at TIMESTAMPTZ NOT NULL
+activated_at TIMESTAMPTZ NULL
+expires_at TIMESTAMPTZ NULL
+consumed_at TIMESTAMPTZ NULL
+terminal_at TIMESTAMPTZ NULL
+updated_at TIMESTAMPTZ NOT NULL
+```
+
+Foreign keys:
+
+```text
+fk_otp_challenges_user_id_users_id:
+  user_id -> users.id ON DELETE RESTRICT
+fk_otp_challenges_telegram_link_id_telegram_links_id:
+  telegram_link_id -> telegram_links.id ON DELETE RESTRICT
+```
+
+Checks:
+
+```text
+ck_otp_challenges_purpose_login:
+  purpose = 'LOGIN'
+ck_otp_challenges_browser_binding_digest_hmac_sha256_hex:
+  browser_binding_digest ~ '^[0-9a-f]{64}$'
+ck_otp_challenges_code_mac_hmac_sha256_hex:
+  code_mac IS NULL OR code_mac ~ '^[0-9a-f]{64}$'
+ck_otp_challenges_status_allowed:
+  status IN (
+    'PENDING_DISPATCH', 'ACTIVE', 'CONSUMED', 'SUPERSEDED',
+    'EXPIRED', 'BURNED', 'INVALIDATED'
+  )
+ck_otp_challenges_failed_attempts_cap:
+  failed_attempts BETWEEN 0 AND 10
+ck_otp_challenges_real_identity_consistent:
+  (user_id IS NULL AND telegram_link_id IS NULL AND telegram_linked_at IS NULL)
+  OR (user_id IS NOT NULL AND telegram_link_id IS NOT NULL AND telegram_linked_at IS NOT NULL)
+ck_otp_challenges_pending_dispatch_state:
+  status != 'PENDING_DISPATCH'
+  OR (
+    code_mac IS NULL AND activated_at IS NULL AND expires_at IS NULL
+    AND consumed_at IS NULL AND terminal_at IS NULL
+  )
+ck_otp_challenges_active_state:
+  status != 'ACTIVE'
+  OR (
+    user_id IS NOT NULL AND telegram_link_id IS NOT NULL
+    AND telegram_linked_at IS NOT NULL AND code_mac IS NOT NULL
+    AND activated_at IS NOT NULL AND expires_at IS NOT NULL
+    AND expires_at > activated_at AND consumed_at IS NULL
+    AND terminal_at IS NULL
+  )
+ck_otp_challenges_terminal_state:
+  (
+    status IN ('PENDING_DISPATCH', 'ACTIVE')
+    AND terminal_at IS NULL AND consumed_at IS NULL
+  )
+  OR (
+    status = 'CONSUMED'
+    AND terminal_at IS NOT NULL AND consumed_at IS NOT NULL
+  )
+  OR (
+    status IN ('SUPERSEDED', 'EXPIRED', 'BURNED', 'INVALIDATED')
+    AND terminal_at IS NOT NULL AND consumed_at IS NULL
+  )
+ck_otp_challenges_timestamp_order:
+  updated_at >= created_at
+  AND (activated_at IS NULL OR activated_at >= created_at)
+  AND (expires_at IS NULL OR activated_at IS NOT NULL)
+  AND (consumed_at IS NULL OR activated_at IS NOT NULL)
+  AND (terminal_at IS NULL OR terminal_at >= created_at)
+```
+
+Indexes:
+
+```text
+uq_otp_challenges_one_outstanding_per_user_purpose:
+  UNIQUE (user_id, purpose)
+  WHERE status IN ('PENDING_DISPATCH', 'ACTIVE') AND user_id IS NOT NULL
+uq_otp_challenges_one_outstanding_per_browser_purpose:
+  UNIQUE (browser_binding_digest, purpose)
+  WHERE status IN ('PENDING_DISPATCH', 'ACTIVE')
+ix_otp_challenges_terminal_at:
+  terminal_at
+```
+
+Forbidden columns: raw OTP, phone, IP, Telegram chat ID, message text, session
+cookie, arbitrary JSON/metadata, deleted marker, and client-visible challenge
+secret.
+
+#### `otp_dispatches` Exact Schema
+
+Columns:
+
+```text
+id UUID PRIMARY KEY
+challenge_id UUID NOT NULL UNIQUE
+status VARCHAR(32) NOT NULL
+locale VARCHAR(16) NOT NULL
+claimed_at TIMESTAMPTZ NULL
+prepared_at TIMESTAMPTZ NULL
+sent_at TIMESTAMPTZ NULL
+terminal_at TIMESTAMPTZ NULL
+failure_code VARCHAR(64) NULL
+created_at TIMESTAMPTZ NOT NULL
+updated_at TIMESTAMPTZ NOT NULL
+```
+
+Foreign key:
+
+```text
+fk_otp_dispatches_challenge_id_otp_challenges_id:
+  challenge_id -> otp_challenges.id ON DELETE RESTRICT
+```
+
+Unique constraint:
+
+```text
+uq_otp_dispatches_challenge_id:
+  UNIQUE (challenge_id)
+```
+
+Checks:
+
+```text
+ck_otp_dispatches_status_allowed:
+  status IN ('PENDING', 'PREPARED', 'SENT', 'FAILED', 'UNKNOWN', 'CANCELLED')
+ck_otp_dispatches_locale_allowed:
+  locale IN ('uz-Latn', 'ru')
+ck_otp_dispatches_failure_code_format:
+  failure_code IS NULL OR failure_code ~ '^[A-Z][A-Z0-9_]{0,63}$'
+ck_otp_dispatches_state_consistent:
+  (
+    status = 'PENDING'
+    AND prepared_at IS NULL AND sent_at IS NULL
+    AND terminal_at IS NULL AND failure_code IS NULL
+  )
+  OR (
+    status = 'PREPARED'
+    AND claimed_at IS NOT NULL AND prepared_at IS NOT NULL
+    AND sent_at IS NULL AND terminal_at IS NULL
+    AND failure_code IS NULL
+  )
+  OR (
+    status = 'SENT'
+    AND prepared_at IS NOT NULL AND sent_at IS NOT NULL
+    AND terminal_at IS NOT NULL AND failure_code IS NULL
+  )
+  OR (
+    status IN ('FAILED', 'UNKNOWN')
+    AND prepared_at IS NOT NULL AND terminal_at IS NOT NULL
+    AND sent_at IS NULL AND failure_code IS NOT NULL
+  )
+  OR (
+    status = 'CANCELLED'
+    AND terminal_at IS NOT NULL AND sent_at IS NULL
+    AND failure_code IS NULL
+  )
+ck_otp_dispatches_timestamp_order:
+  updated_at >= created_at
+  AND (claimed_at IS NULL OR claimed_at >= created_at)
+  AND (prepared_at IS NULL OR claimed_at IS NOT NULL)
+  AND (sent_at IS NULL OR prepared_at IS NOT NULL)
+  AND (terminal_at IS NULL OR terminal_at >= created_at)
+```
+
+Indexes:
+
+```text
+ix_otp_dispatches_status_created_at:
+  status, created_at
+ix_otp_dispatches_terminal_at:
+  terminal_at
+```
+
+Forbidden columns: raw OTP, message text/payload, phone, IP, Telegram chat ID,
+bot token, arbitrary JSON, outbox/job/scheduler fields.
+
+#### `otp_challenge_events` Exact Schema
+
+Columns:
+
+```text
+id UUID PRIMARY KEY
+challenge_id UUID NOT NULL
+user_id UUID NULL
+action VARCHAR(40) NOT NULL
+occurred_at TIMESTAMPTZ NOT NULL
+safe_code VARCHAR(64) NULL
+```
+
+Foreign keys:
+
+```text
+fk_otp_challenge_events_user_id_users_id:
+  user_id -> users.id ON DELETE RESTRICT
+```
+
+`challenge_id` is a logical immutable reference rather than a database FK.
+This keeps the approved 90-day event retention compatible with the approved
+30-day terminal challenge/dispatch purge.
+
+Checks:
+
+```text
+ck_otp_challenge_events_action_allowed:
+  action IN (
+    'ISSUED', 'DISPATCH_PREPARED', 'DISPATCH_RESULT', 'VERIFY_FAILED',
+    'CONSUMED', 'SUPERSEDED', 'EXPIRED', 'BURNED',
+    'INVALIDATED_BY_LINK_CHANGE'
+  )
+ck_otp_challenge_events_safe_code_format:
+  safe_code IS NULL OR safe_code ~ '^[A-Z][A-Z0-9_]{0,63}$'
+```
+
+Indexes:
+
+```text
+ix_otp_challenge_events_challenge_id_occurred_at:
+  challenge_id, occurred_at
+ix_otp_challenge_events_occurred_at:
+  occurred_at
+```
+
+Forbidden columns: raw OTP, OTP MAC, phone, IP, Telegram chat ID, session
+cookie, arbitrary JSON/metadata, message payload, bot token.
+
+#### `otp_dispatcher_state` Exact Schema
+
+Columns:
+
+```text
+id SMALLINT PRIMARY KEY
+heartbeat_at TIMESTAMPTZ NULL
+ready_at TIMESTAMPTZ NULL
+updated_at TIMESTAMPTZ NOT NULL
+```
+
+Checks:
+
+```text
+ck_otp_dispatcher_state_singleton:
+  id = 1
+ck_otp_dispatcher_state_ready_requires_heartbeat:
+  ready_at IS NULL OR heartbeat_at IS NOT NULL
+ck_otp_dispatcher_state_heartbeat_not_before_ready:
+  heartbeat_at IS NULL OR ready_at IS NULL OR heartbeat_at >= ready_at
+```
+
+No migration seed is required; repository primitives use an idempotent fixed-key
+insert for `id = 1`. Dispatcher state is never deleted by retention purge.
+
+Forbidden columns: cursor, raw OTP, message payload, phone, IP, Telegram chat
+ID, token/secret, worker identity, arbitrary JSON/metadata.
+
 ## Challenge Lifecycle
 
 ```text

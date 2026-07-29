@@ -112,6 +112,11 @@ def test_client_repr_and_errors_do_not_expose_token(caplog) -> None:
 
 
 def test_successful_httpx_info_log_uses_safe_url_without_token(caplog) -> None:
+    logging.disable(logging.NOTSET)
+    httpx_logger = logging.getLogger("httpx")
+    httpx_logger.disabled = False
+    httpx_logger.propagate = True
+
     def handler(_request: httpx.Request) -> httpx.Response:
         return json_response(
             200,
