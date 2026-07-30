@@ -1,6 +1,8 @@
 import os
 import re
+import stat
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -11,9 +13,99 @@ RUNBOOK = PROJECT_ROOT / "docs/m8_storage_runbook.md"
 DEFAULT_ROOT_USER = "local-minio-root"
 DEFAULT_ROOT_PASSWORD = "change-me-local-minio-root-secret-at-least-32-chars"
 DEFAULT_BUCKET = "nasiya-private"
+CI_EVIDENCE_ENV = "M8_STORAGE_BACKUP_EVIDENCE_FILE"
+CI_EVIDENCE_PREFIX = "nasiya-storage-backup-evidence."
+SAFE_SUCCESS = (
+    "STORAGE_BACKUP_RESTORE_PASS "
+    "source=1 backup=1 restored=1 "
+    "checksum=VERIFIED privacy=PRIVATE"
+)
+SAFE_EVIDENCE_ERROR = "STORAGE_BACKUP_RESTORE_FAILED code=EVIDENCE"
+SAFE_OUTPUT_ERROR = "STORAGE_BACKUP_RESTORE_FAILED code=OUTPUT"
+ROOT_ONLY_ENV = (
+    "MINIO_ROOT_USER",
+    "MINIO_ROOT_PASSWORD",
+    "M8_MINIO_ROOT_ENV_FILE",
+)
 
 
-def test_backup_restore_script_and_runbook_are_safe_and_complete() -> None:
+class _CIEvidenceError(AssertionError):
+    pass
+
+
+def _fail_ci_evidence() -> None:
+    raise _CIEvidenceError(SAFE_EVIDENCE_ERROR) from None
+
+
+def _validate_ci_evidence(environment: Mapping[str, str]) -> None:
+    if any(name in environment for name in ROOT_ONLY_ENV):
+        _fail_ci_evidence()
+
+    raw_evidence_path = environment.get(CI_EVIDENCE_ENV)
+    raw_runner_temp = environment.get("RUNNER_TEMP")
+    if not raw_evidence_path or not raw_runner_temp:
+        _fail_ci_evidence()
+
+    evidence_path = Path(raw_evidence_path)
+    runner_temp = Path(raw_runner_temp)
+    try:
+        resolved_runner_temp = runner_temp.resolve(strict=True)
+        resolved_parent = evidence_path.parent.resolve(strict=True)
+    except OSError:
+        _fail_ci_evidence()
+    if (
+        not evidence_path.is_absolute()
+        or resolved_parent != resolved_runner_temp
+        or not evidence_path.name.startswith(CI_EVIDENCE_PREFIX)
+    ):
+        _fail_ci_evidence()
+
+    expected_bytes = f"{SAFE_SUCCESS}\n".encode()
+    if evidence_path.is_symlink():
+        _fail_ci_evidence()
+    try:
+        descriptor = os.open(
+            evidence_path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        )
+    except OSError:
+        _fail_ci_evidence()
+    try:
+        file_stat = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(file_stat.st_mode)
+            or stat.S_IMODE(file_stat.st_mode) != 0o600
+            or file_stat.st_uid != os.getuid()
+            or file_stat.st_nlink != 1
+            or file_stat.st_size != len(expected_bytes)
+        ):
+            _fail_ci_evidence()
+        evidence = os.read(descriptor, len(expected_bytes) + 1)
+    except OSError:
+        _fail_ci_evidence()
+    finally:
+        os.close(descriptor)
+    if evidence != expected_bytes:
+        _fail_ci_evidence()
+    forbidden_markers = (
+        b"MINIO_",
+        b"http://",
+        b"https://",
+        b"s3://",
+        b"bucket=",
+        b"key=",
+        b"v1/objects/",
+    )
+    if any(marker in evidence for marker in forbidden_markers) or re.search(
+        rb"\b[0-9a-fA-F]{64}\b",
+        evidence,
+    ):
+        _fail_ci_evidence()
+
+
+def test_backup_restore_script_and_runbook_are_safe_and_complete(
+    tmp_path: Path,
+) -> None:
     script = SCRIPT.read_text()
     runbook = RUNBOOK.read_text()
 
@@ -44,19 +136,43 @@ def test_backup_restore_script_and_runbook_are_safe_and_complete() -> None:
     assert "RTO" in runbook
     assert "STORAGE_BACKUP_RESTORE_PASS" in runbook
 
+    runner_temp = tmp_path / "runner"
+    runner_temp.mkdir()
+    evidence_path = runner_temp / f"{CI_EVIDENCE_PREFIX}contract"
+    valid_environment = {
+        CI_EVIDENCE_ENV: str(evidence_path),
+        "RUNNER_TEMP": str(runner_temp),
+    }
+    with pytest.raises(_CIEvidenceError, match=SAFE_EVIDENCE_ERROR):
+        _validate_ci_evidence({})
+    evidence_path.write_text("malformed evidence\n", encoding="utf-8")
+    evidence_path.chmod(0o600)
+    with pytest.raises(_CIEvidenceError, match=SAFE_EVIDENCE_ERROR):
+        _validate_ci_evidence(valid_environment)
+    evidence_path.write_text(f"{SAFE_SUCCESS}\n", encoding="utf-8")
+    evidence_path.chmod(0o640)
+    with pytest.raises(_CIEvidenceError, match=SAFE_EVIDENCE_ERROR):
+        _validate_ci_evidence(valid_environment)
+    evidence_path.chmod(0o600)
+    with pytest.raises(_CIEvidenceError, match=SAFE_EVIDENCE_ERROR):
+        _validate_ci_evidence(
+            {
+                **valid_environment,
+                "MINIO_ROOT_USER": "must-not-reach-full-pytest",
+            }
+        )
+    _validate_ci_evidence(valid_environment)
+
 
 @pytest.mark.integration
 def test_real_minio_backup_restore_exercise_is_sanitized_and_cleans_temp_data() -> None:
     environment = os.environ.copy()
     if environment.get("GITHUB_ACTIONS") == "true":
-        endpoint = environment.get(
-            "M8_MINIO_TEST_ENDPOINT",
-            "http://127.0.0.1:9000",
-        )
-        network = "host"
-    else:
-        endpoint = "http://minio:9000"
-        network = "nasiya_default"
+        _validate_ci_evidence(environment)
+        return
+
+    endpoint = "http://minio:9000"
+    network = "nasiya_default"
     root_user = environment.get("MINIO_ROOT_USER", DEFAULT_ROOT_USER)
     root_password = environment.get(
         "MINIO_ROOT_PASSWORD",
@@ -86,18 +202,14 @@ def test_real_minio_backup_restore_exercise_is_sanitized_and_cleans_temp_data() 
     )
 
     after_temp_dirs = set(PROJECT_ROOT.glob(".m8-storage-backup.*"))
-    assert completed.returncode == 0
-    assert completed.stderr == ""
-    assert re.fullmatch(
-        (
-            r"STORAGE_BACKUP_RESTORE_PASS "
-            r"source=(\d+) backup=\1 restored=\1 "
-            r"checksum=VERIFIED privacy=PRIVATE\n"
-        ),
-        completed.stdout,
-    )
-    assert before_temp_dirs == after_temp_dirs
-    for hidden in (
+    if (
+        completed.returncode != 0
+        or completed.stderr != ""
+        or completed.stdout != f"{SAFE_SUCCESS}\n"
+        or before_temp_dirs != after_temp_dirs
+    ):
+        pytest.fail(SAFE_OUTPUT_ERROR, pytrace=False)
+    hidden_values = (
         endpoint,
         root_user,
         root_password,
@@ -105,5 +217,7 @@ def test_real_minio_backup_restore_exercise_is_sanitized_and_cleans_temp_data() 
         "v1/objects/",
         "nasiya-backup-source-",
         "nasiya-restore-",
-    ):
-        assert hidden not in f"{completed.stdout} {completed.stderr}"
+    )
+    rendered = f"{completed.stdout} {completed.stderr}"
+    if any(hidden in rendered for hidden in hidden_values):
+        pytest.fail(SAFE_OUTPUT_ERROR, pytrace=False)

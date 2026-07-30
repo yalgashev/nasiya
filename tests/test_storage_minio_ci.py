@@ -39,9 +39,11 @@ def test_credentials_are_generated_and_masked_before_runtime_use() -> None:
     mask_step = workflow.index("Generate and mask MinIO test credentials")
     start_step = workflow.index("Start bounded pinned MinIO runtime")
     init_step = workflow.index("Initialize private MinIO policy twice")
+    admin_step = workflow.index("Run admin-plane MinIO backup restore acceptance")
+    narrow_step = workflow.index("Run narrow private MinIO integration")
     credential_step = workflow[mask_step:start_step]
 
-    assert mask_step < start_step < init_step
+    assert mask_step < start_step < init_step < admin_step < narrow_step
     assert "openssl rand -hex 32" in workflow
     assert "openssl rand -hex 8" in workflow
     assert 'echo "::add-mask::$masked_value"' in workflow
@@ -67,7 +69,7 @@ def test_credentials_are_generated_and_masked_before_runtime_use() -> None:
             "M8_MINIO_ROOT_ENV_FILE: "
             "${{ steps.minio-credentials.outputs.root_env_file }}"
         )
-        == 3
+        == 4
     )
     assert workflow.count('--env-file "$M8_MINIO_ROOT_ENV_FILE"') == 2
     assert "--env MINIO_ROOT_USER" not in workflow
@@ -75,8 +77,26 @@ def test_credentials_are_generated_and_masked_before_runtime_use() -> None:
     assert "AWS_ACCESS_KEY_ID" not in workflow
     assert "AWS_SECRET_ACCESS_KEY" not in workflow
 
-    init_slice = workflow[init_step : workflow.index("Run narrow private MinIO")]
-    assert "trap 'rm -f -- \"$M8_MINIO_ROOT_ENV_FILE\"' EXIT" in init_slice
+    init_slice = workflow[init_step:admin_step]
+    admin_slice = workflow[admin_step:narrow_step]
+    assert 'rm -f -- "$M8_MINIO_ROOT_ENV_FILE"' not in init_slice
+    assert "trap cleanup_admin EXIT" in admin_slice
+    assert '. "$M8_MINIO_ROOT_ENV_FILE"' in admin_slice
+    assert (
+        "deploy/minio-backup-restore-exercise.sh "
+        '\\\n            >"$stdout_file" 2>"$stderr_file"'
+    ) in admin_slice
+    assert "unset MINIO_ROOT_USER MINIO_ROOT_PASSWORD" in admin_slice
+    assert 'rm -f -- "$M8_MINIO_ROOT_ENV_FILE"' in admin_slice
+    assert (
+        "printf 'M8_STORAGE_BACKUP_EVIDENCE_FILE=%s\\n' "
+        '\\\n            "$evidence_file" >>"$GITHUB_ENV"'
+    ) in admin_slice
+    for line in workflow.splitlines():
+        if "GITHUB_ENV" in line:
+            assert "MINIO_ROOT_USER" not in line
+            assert "MINIO_ROOT_PASSWORD" not in line
+            assert "M8_MINIO_ROOT_ENV_FILE" not in line
 
 
 def test_ci_runtime_is_pinned_bounded_and_health_checked() -> None:
@@ -96,16 +116,22 @@ def test_ci_runtime_is_pinned_bounded_and_health_checked() -> None:
 
 def test_ci_runs_narrow_matrix_then_full_suite_and_always_cleans_up() -> None:
     workflow = _workflow()
+    init = workflow.index("Initialize private MinIO policy twice")
+    admin = workflow.index("Run admin-plane MinIO backup restore acceptance")
     narrow = workflow.index("Run narrow private MinIO integration")
     full = workflow.index("Run full pytest")
     cleanup = workflow.index("Clean up MinIO test runtime")
 
-    assert narrow < full < cleanup
+    assert init < admin < narrow < full < cleanup
     assert "uv run pytest -q tests/test_storage_minio_integration.py" in workflow
+    admin_slice = workflow[admin:narrow]
+    assert "M8_STORAGE_BACKUP_EVIDENCE_FILE" in admin_slice
+    assert "STORAGE_BACKUP_RESTORE_PASS" in admin_slice
     assert "if: always()" in workflow[cleanup:]
     assert "docker rm --force nasiya-ci-minio" in workflow[cleanup:]
     assert 'docker volume rm "$M8_MINIO_CI_VOLUME"' in workflow[cleanup:]
     assert 'rm -f -- "$M8_MINIO_ROOT_ENV_FILE"' in workflow[cleanup:]
+    assert 'rm -f -- "$M8_STORAGE_BACKUP_EVIDENCE_FILE"' in workflow[cleanup:]
 
 
 def test_root_credentials_are_not_inherited_by_application_test_steps() -> None:
@@ -118,6 +144,7 @@ def test_root_credentials_are_not_inherited_by_application_test_steps() -> None:
     assert "MINIO_ROOT_PASSWORD" not in application_steps
     assert "M8_MINIO_ROOT_ENV_FILE" not in application_steps
     assert "nasiya-minio-root." not in application_steps
+    assert "--deselect" not in application_steps
 
 
 def test_ci_does_not_print_generated_credentials_or_provider_details() -> None:

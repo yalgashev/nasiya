@@ -154,7 +154,6 @@ jobs:
         env:
           M8_MINIO_ROOT_ENV_FILE: ${{ steps.minio-credentials.outputs.root_env_file }}
         run: |
-          trap 'rm -f -- "$M8_MINIO_ROOT_ENV_FILE"' EXIT
           run_minio_init() {
             docker run --rm \
               --network host \
@@ -171,6 +170,107 @@ jobs:
           }
           run_minio_init
           run_minio_init
+
+      - name: Run admin-plane MinIO backup restore acceptance
+        env:
+          M8_MINIO_ROOT_ENV_FILE: ${{ steps.minio-credentials.outputs.root_env_file }}
+        run: |
+          set -eu
+          evidence_file=""
+          evidence_published=false
+          stdout_file=""
+          stderr_file=""
+          cleanup_admin() {
+            unset MINIO_ROOT_USER MINIO_ROOT_PASSWORD
+            rm -f -- "$M8_MINIO_ROOT_ENV_FILE" || true
+            if [ -n "$stdout_file" ]; then
+              rm -f -- "$stdout_file" || true
+            fi
+            if [ -n "$stderr_file" ]; then
+              rm -f -- "$stderr_file" || true
+            fi
+            if [ "$evidence_published" != "true" ] \
+              && [ -n "$evidence_file" ]; then
+              rm -f -- "$evidence_file" || true
+            fi
+          }
+          fail_admin() {
+            printf '%s\n' \
+              "STORAGE_BACKUP_RESTORE_FAILED code=CI_VALIDATION" >&2
+            exit 1
+          }
+          trap cleanup_admin EXIT
+          trap 'exit 1' HUP INT TERM
+
+          if [ ! -f "$M8_MINIO_ROOT_ENV_FILE" ] \
+            || [ -L "$M8_MINIO_ROOT_ENV_FILE" ] \
+            || [ "$(stat -c '%a' "$M8_MINIO_ROOT_ENV_FILE")" != "600" ]; then
+            fail_admin
+          fi
+          if [ "$(wc -l <"$M8_MINIO_ROOT_ENV_FILE")" -ne 2 ] \
+            || ! grep -Eq \
+              '^MINIO_ROOT_USER=ci-minio-root-[0-9]+-[0-9]+$' \
+              "$M8_MINIO_ROOT_ENV_FILE" \
+            || ! grep -Eq \
+              '^MINIO_ROOT_PASSWORD=[0-9a-f]{64}$' \
+              "$M8_MINIO_ROOT_ENV_FILE"; then
+            fail_admin
+          fi
+
+          set -a
+          . "$M8_MINIO_ROOT_ENV_FILE"
+          set +a
+          export MINIO_ENDPOINT=http://127.0.0.1:9000
+          export MINIO_DOCKER_NETWORK=host
+          export M8_STORAGE_BACKUP_PARENT="$RUNNER_TEMP"
+          stdout_file="$(
+            mktemp "$RUNNER_TEMP/nasiya-storage-backup.stdout.XXXXXX"
+          )"
+          stderr_file="$(
+            mktemp "$RUNNER_TEMP/nasiya-storage-backup.stderr.XXXXXX"
+          )"
+          chmod 600 "$stdout_file" "$stderr_file"
+
+          set +e
+          deploy/minio-backup-restore-exercise.sh \
+            >"$stdout_file" 2>"$stderr_file"
+          exercise_status=$?
+          set -e
+          if [ "$exercise_status" -ne 0 ]; then
+            safe_failure="$(
+              sed -n '1p' "$stderr_file"
+            )"
+            if [ ! -s "$stdout_file" ] \
+              && [ "$(wc -l <"$stderr_file")" -eq 1 ] \
+              && printf '%s\n' "$safe_failure" | grep -Eq \
+                '^STORAGE_BACKUP_RESTORE_FAILED code=(CONFIG|SOURCE_WRITE|READY|CONFIGURED_PRIVACY|SOURCE_BUCKET|SEED_COPY|BACKUP|RESTORE_BUCKET|RESTORE|SOURCE_COUNT|RESTORE_COUNT|COUNT_MATCH|METADATA|CONTENT|PRIVACY)$'; then
+              printf '%s\n' "$safe_failure" >&2
+              exit "$exercise_status"
+            fi
+            fail_admin
+          fi
+
+          expected="STORAGE_BACKUP_RESTORE_PASS source=1 backup=1 restored=1 checksum=VERIFIED privacy=PRIVATE"
+          if [ -s "$stderr_file" ] \
+            || [ "$(wc -l <"$stdout_file")" -ne 1 ] \
+            || [ "$(sed -n '1p' "$stdout_file")" != "$expected" ]; then
+            fail_admin
+          fi
+
+          umask 077
+          evidence_file="$(
+            mktemp "$RUNNER_TEMP/nasiya-storage-backup-evidence.XXXXXX"
+          )"
+          printf '%s\n' "$expected" >"$evidence_file"
+          chmod 600 "$evidence_file"
+          unset MINIO_ROOT_USER MINIO_ROOT_PASSWORD
+          rm -f -- "$M8_MINIO_ROOT_ENV_FILE"
+          if [ -e "$M8_MINIO_ROOT_ENV_FILE" ]; then
+            fail_admin
+          fi
+          printf 'M8_STORAGE_BACKUP_EVIDENCE_FILE=%s\n' \
+            "$evidence_file" >>"$GITHUB_ENV"
+          evidence_published=true
 
       - name: Run narrow private MinIO integration
         run: uv run pytest -q tests/test_storage_minio_integration.py
@@ -225,3 +325,6 @@ jobs:
           docker rm --force nasiya-ci-minio >/dev/null 2>&1 || true
           docker volume rm "$M8_MINIO_CI_VOLUME" >/dev/null 2>&1 || true
           rm -f -- "$M8_MINIO_ROOT_ENV_FILE"
+          if [ -n "${M8_STORAGE_BACKUP_EVIDENCE_FILE:-}" ]; then
+            rm -f -- "$M8_STORAGE_BACKUP_EVIDENCE_FILE"
+          fi
