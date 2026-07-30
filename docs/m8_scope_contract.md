@@ -235,6 +235,180 @@ The typed sanitized result contains only canonical content type/extension,
 size, width, height, checksum, and an explicitly revealed in-memory sanitized
 byte wrapper. Default `str`/`repr` hides bytes and full checksum.
 
+## Exact Image Sanitizer Appendix (M8.16)
+
+This appendix freezes the implementation details for M8.17–M8.25 against
+Pillow `12.3.0`. It does not add a route, database operation, storage call, or
+source-file persistence.
+
+### Input ownership and bounded read
+
+- The source is the existing Starlette `UploadFile`/spooled object yielded by
+  the bounded multipart context; no second temporary file is created.
+- The reader treats the source as an async `read(size)`/`seek(offset)` object,
+  seeks to byte zero once, and requests chunks of at most `65_536` bytes.
+- The accumulated source buffer can contain at most `10_485_761` bytes. Each
+  request is capped at the remaining bytes through limit+1, so a compliant
+  source is never read past that boundary.
+- Zero bytes are rejected. Exactly `10_485_760` bytes are allowed;
+  `10_485_761` bytes are `FILE_TOO_LARGE`.
+- `read()` must return `bytes`; a read/seek failure becomes a safe boundary
+  failure without the exception text, filename, claimed MIME, body, or spool
+  path.
+- The reader borrows the file object. The M8.13 multipart context is its owner
+  and closes the `UploadFile` in `finally`, including parse, read, validation,
+  sanitizer, and downstream failures. Direct test doubles are closed by their
+  creating fixture.
+- The source bytes exist only in a function-local bounded buffer and a
+  function-local `BytesIO`; neither is stored, logged, included in an error,
+  or exposed by default `repr`/`str`.
+
+The ASGI envelope remains `11_010_048` bytes, the single file-part and reader
+limit remain `10_485_760` bytes, and the decoded limits remain `16_384` per
+dimension and `40_000_000` pixels.
+
+### Pillow decode sequence
+
+Every Pillow operation that can decode input runs inside a local
+`warnings.catch_warnings()` block with
+`Image.DecompressionBombWarning` promoted to an exception. The implementation
+does not mutate `Image.MAX_IMAGE_PIXELS` or enable
+`ImageFile.LOAD_TRUNCATED_IMAGES`.
+
+The exact sequence is:
+
+1. Construct a fresh `BytesIO` over the bounded immutable source bytes.
+2. Call `Image.open()`. Capture `image.format`; it must be exactly `JPEG`,
+   `PNG`, or `WEBP`. Filename extension and submitted content type are never
+   consulted.
+3. Read `image.size`, validate each dimension in `1..16_384`, and validate
+   `width * height <= 40_000_000`.
+4. Treat `getattr(image, "n_frames", 1) != 1` or
+   `getattr(image, "is_animated", False) is True` as unsupported animation.
+   This fallback is required because a Pillow JPEG object has no `n_frames`
+   attribute.
+5. Call `image.verify()`, close that image, seek a new `BytesIO` to byte zero,
+   and call `Image.open()` again. The first object is never reused after
+   `verify()`.
+6. Recheck actual format, dimensions, pixel product, frame count, and
+   animation status on the reopened image, then call `image.load()` for a full
+   decode.
+7. Recheck dimensions and pixel product after `load()`.
+8. Apply `ImageOps.exif_transpose()` to the fully loaded image. Malformed EXIF
+   is a safe sanitizer failure; raw EXIF or its exception detail is never
+   rendered.
+9. Recheck transformed dimensions and pixel product because orientations
+   `5..8` can swap width and height.
+
+`UnidentifiedImageError`, syntax/value failures, or a failed `verify()` map to
+`IMAGE_CORRUPT`. An `OSError` during verify/reopen/load maps to
+`IMAGE_TRUNCATED`. Pillow decompression warnings/errors and explicit pixel
+overflow map to `IMAGE_PIXEL_LIMIT_EXCEEDED`; a per-axis overflow maps to
+`IMAGE_DIMENSION_LIMIT_EXCEEDED`. Frame violations map to
+`IMAGE_ANIMATION_UNSUPPORTED`. All of these publicize only
+`UNSUPPORTED_FILE_TYPE`.
+
+Structurally valid trailing container bytes, if accepted by both Pillow
+verification and full decode, are never copied: only decoded pixels enter the
+fresh output. Structural corruption is rejected. M8 does not add a second
+hand-written JPEG/PNG/WebP container parser.
+
+### Canonical pixel-only image
+
+The source format fixes the output family:
+
+| Source `Image.format` | Output MIME | Extension | Fresh mode |
+|---|---|---|---|
+| `JPEG` | `image/jpeg` | `jpg` | always `RGB` |
+| `PNG` | `image/png` | `png` | `RGBA` when transparency exists, otherwise `RGB` |
+| `WEBP` | `image/webp` | `webp` | `RGBA` when transparency exists, otherwise `RGB` |
+
+For PNG/WebP, transparency is decided after orientation from Pillow
+`image.has_transparency_data`; this covers alpha modes and palette
+transparency. The oriented image is converted to the selected canonical mode,
+then a new image is created with
+`Image.frombytes(mode, size, converted.tobytes())`. The fresh image receives
+no source `.info`, palette, EXIF, ICC profile, XMP, GPS, comment, thumbnail,
+text chunk, filename, or claimed MIME.
+
+There is no first-frame selection, resize, crop, quality retry, mode fallback,
+or conversion to a different format family.
+
+### Fixed encode and bounded output
+
+The fresh image is saved to a function-local in-memory output using exactly:
+
+```text
+JPEG: format="JPEG", quality=90, optimize=True, progressive=False
+PNG:  format="PNG", optimize=True, compress_level=9
+WEBP: format="WEBP", lossless=True, method=6
+```
+
+No `exif`, `icc_profile`, `xmp`, `comment`, `pnginfo`, or source `info`
+argument is passed. Encoding is deterministic for the same canonical pixels,
+Pillow/codec version, platform image, and fixed arguments; cross-version
+byte identity is not promised.
+
+The encoder output is observed through a capped in-memory writer. It retains
+at most `10_485_761` bytes and aborts further writes once limit+1 is known.
+Output of exactly `10_485_760` bytes is allowed; limit+1 maps through
+`SANITIZED_OUTPUT_TOO_LARGE` to `FILE_TOO_LARGE`. There is no quality or
+compression fallback.
+
+### Output reopen and metadata verification
+
+Before returning, the exact encoded bytes are reopened in a new `BytesIO`,
+fully loaded under the same fatal decompression-warning policy, and checked:
+
+- format, canonical mode, dimensions, pixel product, `n_frames == 1`, and
+  `is_animated is False` match the expected result;
+- `len(image.getexif()) == 0`;
+- EXIF, GPS, XMP, ICC, comment, thumbnail, and source text keys are absent;
+- for PNG, `image.text` is empty;
+- JPEG encoder-owned JFIF fields and static WebP structural
+  `background`/`duration`/`loop`/`timestamp` fields are allowed, but they are
+  not copied from source metadata;
+- a second full decode succeeds.
+
+An output reopen or verification mismatch fails closed as
+`IMAGE_CORRUPT`/`UNSUPPORTED_FILE_TYPE`; no partially sanitized bytes are
+returned.
+
+### Typed success and failure surface
+
+On success, the sanitizer returns exactly `SanitizedImage`:
+
+```text
+metadata.content_type
+metadata.canonical_extension
+metadata.size_bytes
+metadata.width_px
+metadata.height_px
+metadata.checksum_sha256
+sanitized_bytes
+```
+
+The checksum is lowercase SHA-256 over the exact bytes that passed output
+reopen verification. `ObjectChecksumSha256` and `SanitizedImageBytes` keep
+their values redacted from default `repr`/`str`; only their existing narrow
+internal reveal methods expose them to the later key/storage coordinator.
+
+The frozen failure mapping is:
+
+| Boundary | Safe internal/public outcome |
+|---|---|
+| empty input, unidentified/corrupt format, failed output verification | `IMAGE_CORRUPT` → `UNSUPPORTED_FILE_TYPE` |
+| truncated/full-decode `OSError` | `IMAGE_TRUNCATED` → `UNSUPPORTED_FILE_TYPE` |
+| dimension overflow | `IMAGE_DIMENSION_LIMIT_EXCEEDED` → `UNSUPPORTED_FILE_TYPE` |
+| pixel/decompression-bomb violation | `IMAGE_PIXEL_LIMIT_EXCEEDED` → `UNSUPPORTED_FILE_TYPE` |
+| multi-frame/animated input | `IMAGE_ANIMATION_UNSUPPORTED` → `UNSUPPORTED_FILE_TYPE` |
+| input or encoded output limit+1 | `FILE_TOO_LARGE` |
+| source read/seek infrastructure failure | `FILE_STORAGE_ERROR` |
+
+No failure includes source bytes, raw metadata, filename, claimed MIME, a
+temporary path, full checksum, or a partially encoded result. No raw or
+sanitized image is written to the database or filesystem by the sanitizer.
+
 ## Persistence Contract
 
 M8 creates exactly one table in one Alembic revision whose parent is
