@@ -25,6 +25,7 @@ __all__ = (
     "load_available_object_file",
     "load_object_file",
     "load_object_file_for_update",
+    "mark_delete_outcome_unknown",
     "mark_object_file_available",
     "mark_object_file_delete_pending",
     "mark_object_file_deleted",
@@ -269,6 +270,29 @@ def mark_object_file_deleted(
     object_file.status = ObjectFileStatus.DELETED.value
     object_file.terminal_at = transition_time
     object_file.deleted_at = transition_time
+    object_file.updated_at = transition_time
+    session.flush()
+    return object_file
+
+
+def mark_delete_outcome_unknown(
+    session: Session,
+    *,
+    object_file_id: UUID,
+    now: datetime,
+) -> ObjectFile | None:
+    object_file = _lock_transition_row(
+        session,
+        object_file_id=object_file_id,
+    )
+    if object_file is None:
+        return None
+    transition_time = _transition_time(object_file, now)
+    _require_status(object_file, ObjectFileStatus.DELETE_PENDING)
+    if object_file.failure_code == StorageInternalCode.DELETE_OUTCOME_UNKNOWN.value:
+        return object_file
+
+    object_file.failure_code = StorageInternalCode.DELETE_OUTCOME_UNKNOWN.value
     object_file.updated_at = transition_time
     session.flush()
     return object_file

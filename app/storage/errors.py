@@ -66,5 +66,33 @@ class StorageAccessDeniedError(RuntimeError):
         return "StorageAccessDeniedError(code='FILE_ACCESS_DENIED')"
 
 
+class StorageUploadError(RuntimeError):
+    def __init__(
+        self,
+        code: ErrorCode,
+        *,
+        internal_code: StorageInternalCode | None = None,
+    ) -> None:
+        if code not in {
+            ErrorCode.RATE_LIMITED,
+            ErrorCode.FILE_STORAGE_ERROR,
+        }:
+            raise ValueError("Unsupported storage upload error code")
+        if (
+            internal_code is not None
+            and get_storage_public_error_code(internal_code) is not code
+        ):
+            raise ValueError("Storage upload internal/public code mismatch")
+        self.code = code
+        self.internal_code = internal_code
+        super().__init__(code.value)
+
+    def __repr__(self) -> str:
+        internal = self.internal_code.value if self.internal_code else None
+        return (
+            f"StorageUploadError(code={self.code.value!r}, internal_code={internal!r})"
+        )
+
+
 def get_storage_public_error_code(code: StorageInternalCode) -> ErrorCode:
     return _INTERNAL_TO_PUBLIC[code]

@@ -18,7 +18,7 @@ from app.auth.service import (
     set_user_password,
 )
 from app.db import create_database_engine, create_database_session_factory
-from app.settings import Settings
+from app.settings import ObjectStorageSettingsError, Settings
 from app.shop import repository as shop_repository
 from app.shop.enums import ShopRole, ShopStatus
 from app.shop.service import (
@@ -34,6 +34,21 @@ from app.shop.service import (
     suspend_shop,
 )
 from app.shop.values import ShopId, ShopStaffId, UserId
+from app.storage.contracts import (
+    BucketName,
+    ObjectStorageService,
+    StorageProviderError,
+    StorageProviderOperationResult,
+)
+from app.storage.errors import StorageUploadError
+from app.storage.s3 import S3ObjectStorageService, create_s3_client
+from app.storage.service import (
+    StorageDeleteBatchResult,
+    StorageReconcileResult,
+    delete_available_object,
+    reconcile_stale_object_deletes,
+    reconcile_stale_object_uploads,
+)
 
 LOCAL_ENVIRONMENTS = frozenset({"development", "local", "testing"})
 DEMO_USER_PASSWORD = "DemoPassword123"
@@ -96,6 +111,26 @@ def build_parser() -> argparse.ArgumentParser:
     demo = subparsers.add_parser("demo")
     demo_subparsers = demo.add_subparsers(dest="demo_command", required=True)
     demo_subparsers.add_parser("seed")
+
+    storage = subparsers.add_parser("storage")
+    storage_subparsers = storage.add_subparsers(
+        dest="storage_command",
+        required=True,
+    )
+    storage_subparsers.add_parser("preflight")
+    storage_subparsers.add_parser("health")
+    storage_reconcile = storage_subparsers.add_parser("reconcile")
+    storage_reconcile.add_argument(
+        "--batch-size",
+        type=_storage_batch_size,
+        default=100,
+    )
+    storage_delete = storage_subparsers.add_parser("delete")
+    storage_delete.add_argument(
+        "--object-id",
+        type=_nonzero_uuid,
+        required=True,
+    )
     return parser
 
 
@@ -286,6 +321,104 @@ def seed_demo(args: argparse.Namespace, settings: Settings) -> int:
         return 1
     finally:
         engine.dispose()
+
+
+def storage_preflight_command(
+    args: argparse.Namespace,
+    settings: Settings,
+) -> int:
+    _ = args
+    configured = _configure_storage_service(settings)
+    if configured is None:
+        return 1
+    storage, bucket = configured
+    provider_failed = False
+    result: StorageProviderOperationResult | None = None
+    try:
+        result = storage.ensure_private_bucket(bucket=bucket)
+    except StorageProviderError:
+        provider_failed = True
+    if provider_failed or result is not StorageProviderOperationResult.SUCCESS:
+        print("STORAGE_PROVIDER_UNAVAILABLE", file=sys.stderr)
+        return 1
+    print("STORAGE_PREFLIGHT_OK")
+    return 0
+
+
+def storage_reconcile_command(
+    args: argparse.Namespace,
+    settings: Settings,
+) -> int:
+    configured = _configure_storage_service(settings)
+    if configured is None:
+        return 1
+    storage, _bucket = configured
+    engine = None
+    upload_result: StorageReconcileResult | None = None
+    delete_result: StorageDeleteBatchResult | None = None
+    workflow_failed = False
+    try:
+        engine = create_database_engine(settings)
+        session_factory = create_database_session_factory(engine)
+        current_time = datetime.now(UTC)
+        upload_result = reconcile_stale_object_uploads(
+            session_factory,
+            storage=storage,
+            now=current_time,
+            stale_seconds=settings.object_storage_reconcile_stale_seconds,
+            batch_size=args.batch_size,
+        )
+        delete_result = reconcile_stale_object_deletes(
+            session_factory,
+            storage=storage,
+            now=current_time,
+            stale_seconds=settings.object_storage_reconcile_stale_seconds,
+            batch_size=args.batch_size,
+        )
+    except (SQLAlchemyError, StorageProviderError, StorageUploadError):
+        workflow_failed = True
+    finally:
+        if engine is not None:
+            engine.dispose()
+    if workflow_failed or upload_result is None or delete_result is None:
+        print("STORAGE_RECONCILE_FAILED", file=sys.stderr)
+        return 1
+    print(_format_storage_reconcile_result(upload_result, delete_result))
+    return 0
+
+
+def storage_delete_command(
+    args: argparse.Namespace,
+    settings: Settings,
+) -> int:
+    ensure_local_environment(settings)
+    configured = _configure_storage_service(settings)
+    if configured is None:
+        return 1
+    storage, _bucket = configured
+    engine = None
+    result = None
+    workflow_failed = False
+    try:
+        engine = create_database_engine(settings)
+        session_factory = create_database_session_factory(engine)
+        result = delete_available_object(
+            session_factory,
+            object_file_id=args.object_id,
+            storage=storage,
+            now=datetime.now(UTC),
+        )
+    except (SQLAlchemyError, StorageProviderError, StorageUploadError):
+        workflow_failed = True
+    finally:
+        if engine is not None:
+            engine.dispose()
+    if workflow_failed or result is None:
+        print("STORAGE_DELETE_FAILED", file=sys.stderr)
+        return 1
+    safe_code = result.safe_code.value if result.safe_code is not None else "NONE"
+    print(f"STORAGE_DELETE status={result.status.value} code={safe_code}")
+    return 0
 
 
 def _run_shop_status_transition(
@@ -480,6 +613,64 @@ def _normalize_cli_reason(reason: str | None) -> str | None:
     return normalized_reason
 
 
+def _storage_batch_size(value: str) -> int:
+    try:
+        batch_size = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "storage batch size must be an integer"
+        ) from None
+    if batch_size < 1 or batch_size > 5000:
+        raise argparse.ArgumentTypeError(
+            "storage batch size must be between 1 and 5000"
+        )
+    return batch_size
+
+
+def _nonzero_uuid(value: str) -> UUID:
+    try:
+        parsed = UUID(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("object id must be a UUID") from None
+    if parsed.int == 0:
+        raise argparse.ArgumentTypeError("object id must be a non-zero UUID")
+    return parsed
+
+
+def _configure_storage_service(
+    settings: Settings,
+) -> tuple[ObjectStorageService, BucketName] | None:
+    try:
+        config = settings.require_object_storage_config()
+        storage = S3ObjectStorageService(create_s3_client(config))
+        bucket = BucketName(config.bucket)
+    except (ObjectStorageSettingsError, StorageProviderError, ValueError):
+        print("STORAGE_CONFIGURATION_UNAVAILABLE", file=sys.stderr)
+        return None
+    return storage, bucket
+
+
+def _format_storage_reconcile_result(
+    upload: StorageReconcileResult,
+    delete: StorageDeleteBatchResult,
+) -> str:
+    safe_codes = tuple(code.value for code in (*upload.safe_codes, *delete.safe_codes))
+    rendered_codes = ",".join(safe_codes) if safe_codes else "NONE"
+    return (
+        "STORAGE_RECONCILE_OK "
+        f"upload_claimed={upload.claimed_count} "
+        f"available={upload.available_count} "
+        f"failed={upload.failed_count} "
+        f"pending={upload.pending_count} "
+        f"deleted={upload.deleted_count} "
+        f"delete_pending={upload.delete_pending_count} "
+        f"delete_claimed={delete.claimed_count} "
+        f"delete_completed={delete.deleted_count} "
+        f"delete_unresolved={delete.pending_count} "
+        f"codes={rendered_codes}"
+    )
+
+
 def _print_shop_create_error(error: ProvisionActiveShopError) -> int:
     if error is ProvisionActiveShopError.INVALID_NAME:
         print("Invalid shop name", file=sys.stderr)
@@ -525,6 +716,13 @@ def main(
                 return reactivate_shop_command(args, effective_settings)
         if args.command == "demo" and args.demo_command == "seed":
             return seed_demo(args, effective_settings)
+        if args.command == "storage":
+            if args.storage_command in {"preflight", "health"}:
+                return storage_preflight_command(args, effective_settings)
+            if args.storage_command == "reconcile":
+                return storage_reconcile_command(args, effective_settings)
+            if args.storage_command == "delete":
+                return storage_delete_command(args, effective_settings)
     except CliError as exc:
         print(str(exc), file=stderr or sys.stderr)
         return 1

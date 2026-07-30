@@ -42,7 +42,7 @@ Unresolved contradiction: none.
 | No-store | `app/security_headers.py:61` | REUSE |
 | Authenticated user | `app/auth/deps.py:152` `require_user` | REUSE for future adapter only |
 | Trusted IP | `app/request_client_ip.py:19` | REUSE |
-| HMAC rate limiter | `app/auth/rate_limit.py:32`, `app/auth/rate_limit.py:183` | REUSE with storage scopes |
+| HMAC rate limiter | `app/auth/rate_limit.py:AuthRateLimiter`, `app/storage/rate_limit.py:StorageUploadRateLimitPolicy` | IMPLEMENTED with storage-only UUID/IP scopes |
 
 ### Upload Boundaries
 
@@ -92,7 +92,7 @@ feasible without another parser dependency.
 
 | Item | File / symbol | Status |
 |---|---|---|
-| Main argparse CLI | `app/cli.py:68`, `app/cli.py:508` | EXTEND for internal storage commands |
+| Main argparse CLI | `app/cli.py:build_parser`, `app/cli.py:main` | IMPLEMENTED with bounded internal storage preflight/health, reconcile, and dev-only delete commands |
 | Dedicated process CLI pattern | `app/telegram/worker.py:125`, `app/otp/dispatcher.py:116` | REUSE pattern only |
 | Same runtime image | `Dockerfile:23`, `Dockerfile:32` | REUSE |
 | Compose DB/migrate/web | `compose.yaml:2`, `compose.yaml:18`, `compose.yaml:29` | REUSE |
@@ -160,13 +160,53 @@ The minimal placement remains one `app/storage/s3.py` module:
 | narrow adapter implementing `ObjectStorageService` | `app/storage/s3.py` | contracts inward; boto3 client outward |
 | exception classifier | private helper in `app/storage/s3.py` | exact pinned botocore classes |
 | fake programmable adapter | test support only | same contracts; no production global state |
-| private bucket CLI coordinator | later storage CLI/service task | calls protocol; no SDK types in CLI |
+| private bucket CLI coordinator | `app/cli.py:storage_preflight_command` | calls the narrow storage protocol and emits one fixed safe status |
 
 No repository, ORM model, router, settings field, provider registry, base
 adapter, plugin framework, background process, or second storage dependency is
 needed. The exact factory kwargs, PutObject/HeadObject/DeleteObject/presign
 calls, checksum metadata key, missing semantics, and failure table are frozen
 in `docs/m8_scope_contract.md`.
+
+## M8.49 Upload Coordinator Placement And Transaction Patterns
+
+`ingest_sanitized_image` belongs in the existing
+`app/storage/service.py` module beside the authorization-gated presign
+coordinator. It is an internal coordinator, not a repository primitive,
+router, dependency, provider base class, or domain attachment service.
+
+| Required behavior | Existing repository evidence | Exact reuse |
+|---|---|---|
+| Engine-to-factory composition | `app/db.py:create_database_session_factory` | Composition roots create one `sessionmaker[Session]` and inject it; the upload coordinator does not create an engine. |
+| Request composition stores the factory | `app/main.py:create_app` | A future adapter obtains the existing application session factory; M8 adds no route. |
+| CLI creates engine/factory and disposes engine | `app/cli.py:storage_reconcile_command`, `app/cli.py:storage_delete_command` | The internal storage CLI constructs dependencies at the edge, disposes the engine, and does not pass an open Session across provider I/O. |
+| Short outer-owned DB phase | `app/otp/dispatcher.py:_prepare_next_item` | `with session_factory.begin()` supplies a fresh Session and owns commit/rollback/close. |
+| External work after the DB context | `app/otp/dispatcher.py:_send_prepared_otp` | PUT/HEAD uses a detached, redacted in-memory envelope after TX-S1 has closed. |
+| Fresh result transaction | `app/otp/dispatcher.py:_record_delivery_result` | TX-S2 opens a different `session_factory.begin()` context and locks/transitions the row. |
+| Factory-owned transaction helper | `app/telegram/update_processing.py:process_telegram_update_tx_a` | The coordinator returns detached safe values only after the context commit succeeds. |
+| Caller-owned persistence primitives | `app/storage/repository.py:create_pending_object_file`, `app/storage/repository.py:mark_object_file_available`, `app/storage/repository.py:mark_object_file_failed` | Repositories flush only; coordinator contexts own transaction completion. |
+| Borrowed bounded source and sanitizer | `app/storage/image.py:read_bounded_image`, `app/storage/image.py:sanitize_bounded_image` | Both complete before TX-S1; the multipart/request owner closes the borrowed source. |
+| Trusted IP value | `app/request_client_ip.py:resolve_client_ip`, `app/telegram/client_ip.py:ResolvedClientIp` | Coordinator accepts only the resolved wrapper and passes its raw form solely to the HMAC limiter. |
+| Upload attempt limiter | `app/storage/rate_limit.py:record_storage_upload_attempt` | Stable user-then-IP HMAC buckets are recorded in a short caller-owned transaction before source decode. |
+| Injected storage boundary | `app/storage/contracts.py:ObjectStorageService` | Coordinator invokes one PUT and bounded HEAD/delete operations; it never constructs or closes the provider. |
+
+Exact dependency direction:
+
+```text
+future request adapter / implemented internal CLI adapter
+  -> Settings + session_factory + authenticated UUID + ResolvedClientIp
+  -> ingest_sanitized_image
+       -> existing HMAC rate-limit primitive (short DB-only phase)
+       -> image reader/sanitizer (no Session)
+       -> storage repository primitives (TX-S1/TX-S2)
+       -> injected ObjectStorageService (between closed DB phases)
+  -> IngestedImageResult (UUID + safe metadata only)
+```
+
+The coordinator owns every Session it opens and no provider/client/source it
+receives. No repository symbol gains `commit()`, full `rollback()`, or
+`close()`. No route, domain-owner field, generic DTO layer, event, outbox,
+scheduler, second table, or generic framework module is needed for this API.
 
 ## M8.07 Resolved Dependency Map
 
@@ -200,7 +240,7 @@ app/storage/
   s3.py             boto3 factory and adapter
   authorization.py  domain-parent authorizer protocol/service seam
   service.py        upload/reconcile/delete/download coordinators
-  cli.py            storage internal command adapters if main CLI delegation helps
+app/cli.py           bounded internal storage command adapters
 ```
 
 Files are created only when their task contains real code. No empty package

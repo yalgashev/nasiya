@@ -172,6 +172,44 @@ Rules:
   reveal endpoint or credentials;
 - there is no secret hot reload or local-disk fallback.
 
+## Storage Upload Rate-Limit Contract
+
+`app/storage/rate_limit.py` reuses `AuthRateLimiter` and the existing
+`auth_rate_limits` table with exactly two non-colliding scopes:
+
+```text
+scope storage_upload_user
+raw HMAC input storage_upload:user:<authenticated UUID>
+allowed attempts default/cap 5
+
+scope storage_upload_ip
+raw HMAC input storage_upload:ip:<ResolvedClientIp canonical value>
+allowed attempts default/cap 20
+
+window default/minimum 900 seconds
+```
+
+The policy converts each configured allowed-attempt count to the existing
+limiter's exclusive rejection threshold by adding one. Therefore attempts
+1..5 for a user and 1..20 for an IP are allowed; attempts 6 and 21 are
+rejected, including under concurrent transactions. The window resets only at
+`window_started_at + 900s`, not one second earlier. Safer configured lower
+attempt caps or a longer window remain valid.
+
+`check_storage_upload_rate_limit` is read-only.
+`record_storage_upload_attempt` checks user then IP in stable order and, only
+when both prechecks allow, records both in the caller-owned transaction. The
+policy never commits, rolls back, or closes the Session. Only HMAC-SHA256
+key hashes and the two fixed scopes reach the database; raw UUID/IP values do
+not. User and IP rejection return the same `RATE_LIMITED` code/body and never
+name the limiting scope.
+
+The upload coordinator completes this short DB-only preflight before reading
+or decoding the borrowed image source. A rejected attempt creates no
+`object_files` row and performs no sanitizer, PUT, HEAD, DELETE, or presign
+call. There is no byte weighting, global quota, bucket quota, additional
+table, or clear-on-success behavior.
+
 ## Upload Body Contract
 
 The ASGI body guard is path-opt-in and executes before Starlette form parsing:
@@ -697,35 +735,113 @@ constraint expressions, names, index order, and FK action without weakening.
 
 ## Upload And Failure Protocol
 
-Happy path:
+### Exact upload coordinator API
 
-```text
-bounded read + sanitize (no DB transaction)
-generate UUID/key
-TX-S1: create PENDING_UPLOAD; outer coordinator commits and closes session
-external PUT exact sanitized bytes
-external HEAD same key and verify size/content-type/checksum
-TX-S2: lock row, mark AVAILABLE; outer coordinator commits
+The only M8 upload entry point is the internal asynchronous coordinator:
+
+```python
+async def ingest_sanitized_image(
+    session_factory: sessionmaker[Session],
+    *,
+    source: AsyncImageSource,
+    actor_user_id: UUID,
+    client_ip: ResolvedClientIp,
+    now: datetime,
+    settings: Settings,
+    storage: ObjectStorageService,
+) -> IngestedImageResult
 ```
 
-TX-S1 failure causes zero provider calls. No SQLAlchemy session or transaction
-is open during PUT, HEAD, DELETE, presign, or an HTTP fetch. A successful
-result exposes object UUID and safe metadata only.
+`IngestedImageResult` contains exactly:
 
-Definite no-send/provider rejection:
+```python
+object_file_id: UUID
+content_type: Literal["image/jpeg", "image/png", "image/webp"]
+size_bytes: int
+width_px: int
+height_px: int
+checksum_sha256: ObjectChecksumSha256
+```
 
-- one PUT attempt at most;
-- fresh TX-S2 marks `FAILED` with an allowlisted safe code;
-- a TX-S2 failure leaves a stale pending row for reconciliation.
+Its `repr` redacts the checksum. It has no bucket, key, URL, filename,
+provider value, actor/IP, raw/sanitized bytes, ORM entity, or domain-parent
+field.
 
-Ambiguous timeout/post-send outcome:
+Input and ownership are exact:
 
-- never resend PUT and never generate a new key/row;
-- immediate HEAD of the same key;
-- exact match -> `AVAILABLE`;
-- missing -> remain `PENDING_UPLOAD` with `UPLOAD_OUTCOME_UNKNOWN`;
-- mismatch -> `DELETE_PENDING`, external delete, then `DELETED`;
-- delete uncertainty leaves `DELETE_PENDING` with `DELETE_OUTCOME_UNKNOWN`.
+| Input | Meaning and ownership |
+|---|---|
+| `session_factory` | A caller-composed `sessionmaker[Session]`. The coordinator owns every session it opens and uses `session_factory.begin()` as the commit/rollback/close boundary. It never accepts or reuses a request `Session`. |
+| `source` | A borrowed `AsyncImageSource` passed to `read_bounded_image`; the request/multipart adapter owns and closes it. The coordinator reads it but never logs, persists, returns, or closes it. |
+| `actor_user_id` | The authenticated user UUID copied only to `created_by_user_id` for audit/accountability and used in the user limiter. It is not domain ownership or read authorization. |
+| `client_ip` | A trusted `ResolvedClientIp` already produced by `resolve_client_ip`. It is used only as HMAC limiter input and is never persisted raw, logged, or returned. |
+| `now` | A caller-injected timezone-aware timestamp used for rate-limit and lifecycle writes; the coordinator does not read the wall clock. |
+| `settings` | A borrowed immutable settings snapshot. The coordinator obtains one complete `StorageConfig` from it and uses its exact bucket, image limits, and rate policy. It never mutates or closes settings. |
+| `storage` | A caller-owned injected `ObjectStorageService`, constructed from the same config snapshot. The coordinator invokes the narrow protocol but never constructs, retries, or closes the provider/client. |
+
+The coordinator generates one `object_file_id` UUID4 and one independent
+UUID4-backed `ObjectKey` after successful sanitization and before TX-S1.
+Neither value comes from a filename, form field, actor, IP, domain entity, or
+provider response.
+
+### Exact order and transaction ownership
+
+The complete order is:
+
+```text
+1. Validate typed inputs and require the complete storage config (no DB/provider I/O).
+2. Run the storage user/IP limiter in its own short DB-only transaction.
+3. Read max+1 and sanitize/re-encode the image (no Session exists).
+4. Generate object UUID/key in memory.
+5. TX-S1: with session_factory.begin():
+     create PENDING_UPLOAD with actor_user_id and sanitized metadata.
+   Context exit commits; rollback/close are owned by the context.
+6. The TX-S1 context is fully exited and its Session is closed.
+7. External phase:
+     PUT exactly once with exact sanitized bytes;
+     HEAD the same bucket/key when verification/reconciliation requires it;
+     compare exact size/content-type/checksum in memory.
+   No SQLAlchemy Session or transaction exists in this phase.
+8. TX-S2: with a fresh session_factory.begin():
+     lock the same row and write the verified lifecycle result.
+   Context exit commits and closes the fresh Session.
+9. Only after the required TX-S2 commit succeeds, materialize and return
+   IngestedImageResult from safe in-memory metadata.
+```
+
+The limiter phase is not TX-S1: it creates no object capability and completes
+before source decoding. Sanitization and key generation never occur inside a
+SQLAlchemy transaction. TX-S1 and TX-S2 are different Session instances.
+Repository primitives receive only a Session and continue to own no commit,
+full rollback, or close. No SQLAlchemy session or transaction is open during
+PUT, HEAD, DELETE, presign, or an HTTP fetch.
+
+### Exact failure outcomes
+
+| Failure point/outcome | Required result |
+|---|---|
+| Invalid/missing config | Fail closed as `FILE_STORAGE_ERROR` before source read, object row, or provider call. |
+| Rate-limit denial | Raise the closed upload outcome with public code `RATE_LIMITED` before decode, object row, or provider call; return no object. |
+| Bounded read/sanitization | Propagate its existing safe typed file error; create no row and call no provider. |
+| TX-S1 flush/commit | Context rollback/close completes; make zero PUT/HEAD/DELETE calls and return no object. |
+| Definite PUT rejection/no-send | Do not retry or HEAD. In a fresh TX-S2, lock `PENDING_UPLOAD` and mark `FAILED/STORAGE_PROVIDER_UNAVAILABLE`; then raise the closed file error. |
+| Ambiguous PUT | Never issue a second PUT. HEAD the exact same key outside a session: exact metadata proceeds to AVAILABLE; missing records `UPLOAD_OUTCOME_UNKNOWN` while remaining pending; mismatch follows `DELETE_PENDING` and bounded delete; a HEAD failure remains pending/unknown. |
+| PUT success, HEAD exact | Fresh TX-S2 locks the row and marks `AVAILABLE/available_at`; return only after commit. |
+| PUT success, HEAD missing | Fresh TX-S2 marks `FAILED/OBJECT_MISSING_AFTER_UPLOAD`; return no object. |
+| PUT success, HEAD mismatch | Fresh result TX marks `DELETE_PENDING/OBJECT_METADATA_MISMATCH`; delete outside a session, then a fresh TX marks `DELETED`; return no object. |
+| PUT success, HEAD provider failure | Never repeat PUT. Fresh TX records `UPLOAD_OUTCOME_UNKNOWN` while the row remains `PENDING_UPLOAD`; return no object for stale reconciliation. |
+| Any required TX-S2 flush/commit | Raise the closed file error and return no object. Never repeat PUT. The last committed lifecycle state remains visible for bounded reconciliation. |
+| Delete ambiguity while cleaning mismatch | Leave committed `DELETE_PENDING/DELETE_OUTCOME_UNKNOWN`; return no object and let internal delete reconciliation continue. |
+
+Provider exceptions are classified before lifecycle handling and are never
+chained, persisted, logged, or returned. Failure handling never generates a
+new object UUID/key/row, presigns, or reports hidden success.
+
+`ingest_sanitized_image` is an internal transport capability only. It does not
+mount a route, parse a domain attachment, create a customer/document/owner
+record, authorize a read, or persist polymorphic ownership. A future
+domain-specific caller must attach the returned object UUID in its own
+separate approved transaction and authorization model.
 
 ## Reconciliation And Delete Contract
 
@@ -749,6 +865,22 @@ AVAILABLE -> DELETE_PENDING -> external DELETE/HEAD -> DELETED
 Provider missing is delete success. Timeout stays `DELETE_PENDING` with a safe
 code for later bounded reconciliation. Delete and reconcile are idempotent and
 concurrent-safe. M8 adds no public delete route and no automatic retention.
+
+The main internal CLI exposes only:
+
+```text
+storage preflight | health
+storage reconcile --batch-size 1..5000
+storage delete --object-id <UUID>   # development/local/testing only
+```
+
+Preflight/health verifies the private bucket policy through the narrow
+provider contract. Reconcile runs both bounded stale-upload and stale-delete
+coordinators. Delete delegates to the internal lifecycle service and fails
+before dependency construction in production. Output contains fixed status,
+counts, and allowlisted safe codes only; it never prints object UUID/key,
+bucket, endpoint, credential, provider response, or URL. There is no upload
+command, manual SQL, public route, scheduler, or automatic AVAILABLE purge.
 
 ## Adapter Contract
 

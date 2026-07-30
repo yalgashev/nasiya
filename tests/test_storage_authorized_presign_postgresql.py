@@ -14,6 +14,7 @@ from alembic import command
 from app.auth.error_codes import ErrorCode
 from app.auth.models import User
 from app.db import create_database_session_factory
+from app.settings import Settings
 from app.storage.contracts import (
     BucketName,
     ObjectChecksumSha256,
@@ -22,16 +23,25 @@ from app.storage.contracts import (
     ObjectReadAuthorizationResult,
     SanitizedImageMetadata,
 )
-from app.storage.errors import StorageAccessDeniedError
+from app.storage.errors import (
+    StorageAccessDeniedError,
+    StorageInternalCode,
+    StorageUploadError,
+)
+from app.storage.models import ObjectFileStatus
 from app.storage.repository import (
     create_pending_object_file,
     mark_object_file_available,
+    mark_object_file_delete_pending,
+    mark_object_file_deleted,
+    mark_object_file_failed,
 )
 from app.storage.service import create_authorized_presigned_get_url
 from tests.storage_fake import FakeObjectStorageService, FakeStorageOperation
 
 NOW = datetime(2026, 7, 30, 20, 0, tzinfo=UTC)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+RATE_LIMIT_KEY = "test-rate-limit-hmac-key-for-authorized-storage-read"
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -55,7 +65,13 @@ class FakeAuthorizer:
 
 
 class ParentBindingAuthorizer:
-    def __init__(self, *, expected_object_file_id: UUID) -> None:
+    def __init__(
+        self,
+        *,
+        expected_actor_user_id: UUID,
+        expected_object_file_id: UUID,
+    ) -> None:
+        self.expected_actor_user_id = expected_actor_user_id
         self.expected_object_file_id = expected_object_file_id
         self.calls = 0
 
@@ -65,7 +81,8 @@ class ParentBindingAuthorizer:
     ) -> ObjectReadAuthorizationResult:
         self.calls += 1
         if (
-            request.object_file_id == self.expected_object_file_id
+            request.actor_user_id == self.expected_actor_user_id
+            and request.object_file_id == self.expected_object_file_id
             and request.domain_parent_reference == self.expected_object_file_id
         ):
             return ObjectReadAuthorizationResult.ALLOWED
@@ -121,6 +138,55 @@ def _request(
     )
 
 
+def _settings(*, ttl_seconds: int = 300) -> Settings:
+    return Settings(
+        _env_file=None,
+        debug=False,
+        database_url="postgresql+psycopg://nasiya:test@127.0.0.1/nasiya_test",
+        session_cookie_secure=False,
+        rate_limit_hmac_key=RATE_LIMIT_KEY,
+        object_storage_endpoint_url="https://storage-read.invalid",
+        object_storage_region="region-1",
+        object_storage_bucket="nasiya-private-test",
+        object_storage_access_key="synthetic-storage-read-access",
+        object_storage_secret_key="synthetic-storage-read-secret",
+        object_storage_use_ssl=True,
+        object_storage_presigned_ttl_seconds=ttl_seconds,
+    )
+
+
+def _seed_terminal_object(
+    engine: Engine,
+    *,
+    status: ObjectFileStatus,
+) -> tuple[UUID, UUID]:
+    actor_id, object_file_id = _seed_object(engine, available=False)
+    session_factory = create_database_session_factory(engine)
+    with session_factory.begin() as session:
+        if status is ObjectFileStatus.FAILED:
+            mark_object_file_failed(
+                session,
+                object_file_id=object_file_id,
+                failure_code=StorageInternalCode.OBJECT_MISSING_AFTER_UPLOAD,
+                now=NOW,
+            )
+        elif status is ObjectFileStatus.DELETED:
+            mark_object_file_delete_pending(
+                session,
+                object_file_id=object_file_id,
+                failure_code=StorageInternalCode.OBJECT_METADATA_MISMATCH,
+                now=NOW,
+            )
+            mark_object_file_deleted(
+                session,
+                object_file_id=object_file_id,
+                now=NOW,
+            )
+        else:
+            raise AssertionError("Unsupported terminal test status")
+    return actor_id, object_file_id
+
+
 @pytest.mark.integration
 def test_allowed_available_object_presigns_after_authorization(
     m2_test_database: Engine,
@@ -130,6 +196,7 @@ def test_allowed_available_object_presigns_after_authorization(
         available=True,
     )
     authorizer = ParentBindingAuthorizer(
+        expected_actor_user_id=actor_id,
         expected_object_file_id=object_file_id,
     )
     fake_storage = FakeObjectStorageService()
@@ -143,13 +210,14 @@ def test_allowed_available_object_presigns_after_authorization(
         ),
         authorizer=authorizer,
         storage=fake_storage,
-        ttl_seconds=300,
+        settings=_settings(),
     )
 
     assert authorizer.calls == 1
     assert [call.operation for call in fake_storage.calls] == [
         FakeStorageOperation.PRESIGN_GET
     ]
+    assert fake_storage.calls[0].ttl_seconds == 300
     assert all(
         call.operation is not FakeStorageOperation.HEAD for call in fake_storage.calls
     )
@@ -177,7 +245,7 @@ def test_creator_denied_performs_zero_sdk_calls(
             ),
             authorizer=authorizer,
             storage=fake_storage,
-            ttl_seconds=300,
+            settings=_settings(),
         )
 
     assert exc_info.value.code is ErrorCode.FILE_ACCESS_DENIED
@@ -195,6 +263,7 @@ def test_foreign_parent_object_is_denied_before_sdk(
     )
     foreign_object_id = uuid4()
     authorizer = ParentBindingAuthorizer(
+        expected_actor_user_id=actor_id,
         expected_object_file_id=object_file_id,
     )
     fake_storage = FakeObjectStorageService()
@@ -204,12 +273,43 @@ def test_foreign_parent_object_is_denied_before_sdk(
             create_database_session_factory(m2_test_database),
             request=_request(
                 actor_user_id=actor_id,
-                object_file_id=foreign_object_id,
+                object_file_id=object_file_id,
+                parent_reference=foreign_object_id,
+            ),
+            authorizer=authorizer,
+            storage=fake_storage,
+            settings=_settings(),
+        )
+
+    assert authorizer.calls == 1
+    assert fake_storage.calls == ()
+
+
+@pytest.mark.integration
+def test_foreign_actor_is_denied_before_sdk(
+    m2_test_database: Engine,
+) -> None:
+    actor_id, object_file_id = _seed_object(
+        m2_test_database,
+        available=True,
+    )
+    authorizer = ParentBindingAuthorizer(
+        expected_actor_user_id=actor_id,
+        expected_object_file_id=object_file_id,
+    )
+    fake_storage = FakeObjectStorageService()
+
+    with pytest.raises(StorageAccessDeniedError):
+        create_authorized_presigned_get_url(
+            create_database_session_factory(m2_test_database),
+            request=_request(
+                actor_user_id=uuid4(),
+                object_file_id=object_file_id,
                 parent_reference=object_file_id,
             ),
             authorizer=authorizer,
             storage=fake_storage,
-            ttl_seconds=300,
+            settings=_settings(),
         )
 
     assert authorizer.calls == 1
@@ -239,11 +339,97 @@ def test_missing_and_non_available_are_same_closed_access_error(
             ),
             authorizer=FakeAuthorizer(ObjectReadAuthorizationResult.ALLOWED),
             storage=fake_storage,
-            ttl_seconds=300,
+            settings=_settings(),
         )
 
     assert exc_info.value.code is ErrorCode.FILE_ACCESS_DENIED
     assert str(exc_info.value) == ErrorCode.FILE_ACCESS_DENIED.value
+    assert fake_storage.calls == ()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "status",
+    (ObjectFileStatus.FAILED, ObjectFileStatus.DELETED),
+)
+def test_failed_and_deleted_objects_are_same_closed_access_error(
+    m2_test_database: Engine,
+    status: ObjectFileStatus,
+) -> None:
+    actor_id, object_file_id = _seed_terminal_object(
+        m2_test_database,
+        status=status,
+    )
+    fake_storage = FakeObjectStorageService()
+
+    with pytest.raises(StorageAccessDeniedError) as exc_info:
+        create_authorized_presigned_get_url(
+            create_database_session_factory(m2_test_database),
+            request=_request(
+                actor_user_id=actor_id,
+                object_file_id=object_file_id,
+                parent_reference=object_file_id,
+            ),
+            authorizer=FakeAuthorizer(ObjectReadAuthorizationResult.ALLOWED),
+            storage=fake_storage,
+            settings=_settings(),
+        )
+
+    assert exc_info.value.code is ErrorCode.FILE_ACCESS_DENIED
+    assert fake_storage.calls == ()
+
+
+@pytest.mark.integration
+def test_presign_uses_current_configured_expiry(
+    m2_test_database: Engine,
+) -> None:
+    actor_id, object_file_id = _seed_object(
+        m2_test_database,
+        available=True,
+    )
+    fake_storage = FakeObjectStorageService()
+
+    create_authorized_presigned_get_url(
+        create_database_session_factory(m2_test_database),
+        request=_request(
+            actor_user_id=actor_id,
+            object_file_id=object_file_id,
+            parent_reference=object_file_id,
+        ),
+        authorizer=FakeAuthorizer(ObjectReadAuthorizationResult.ALLOWED),
+        storage=fake_storage,
+        settings=_settings(ttl_seconds=600),
+    )
+
+    assert fake_storage.calls[0].ttl_seconds == 600
+
+
+@pytest.mark.integration
+def test_unavailable_presign_config_fails_closed_without_sdk_call(
+    m2_test_database: Engine,
+) -> None:
+    actor_id, object_file_id = _seed_object(
+        m2_test_database,
+        available=True,
+    )
+    settings = _settings()
+    settings.object_storage_secret_key = None
+    fake_storage = FakeObjectStorageService()
+
+    with pytest.raises(StorageUploadError) as exc_info:
+        create_authorized_presigned_get_url(
+            create_database_session_factory(m2_test_database),
+            request=_request(
+                actor_user_id=actor_id,
+                object_file_id=object_file_id,
+                parent_reference=object_file_id,
+            ),
+            authorizer=FakeAuthorizer(ObjectReadAuthorizationResult.ALLOWED),
+            storage=fake_storage,
+            settings=settings,
+        )
+
+    assert exc_info.value.code is ErrorCode.FILE_STORAGE_ERROR
     assert fake_storage.calls == ()
 
 
@@ -295,7 +481,7 @@ def test_coordinator_closes_db_phase_before_presign(
         ),
         authorizer=OrderedAuthorizer(ObjectReadAuthorizationResult.ALLOWED),
         storage=OrderedStorage(),
-        ttl_seconds=300,
+        settings=_settings(),
     )
 
     assert events == ["authorize", "db_open", "db_closed", "presign"]
@@ -320,7 +506,7 @@ def test_presigned_url_is_not_persisted_or_logged(
         ),
         authorizer=FakeAuthorizer(ObjectReadAuthorizationResult.ALLOWED),
         storage=fake_storage,
-        ttl_seconds=300,
+        settings=_settings(),
     ).as_response_value()
 
     columns = {
@@ -334,14 +520,17 @@ def test_presigned_url_is_not_persisted_or_logged(
 
 def test_service_has_no_route_log_or_creator_authorization_shortcut() -> None:
     source = inspect.getsource(storage_service)
+    presign_source = inspect.getsource(
+        storage_service.create_authorized_presigned_get_url
+    )
 
     assert "APIRouter" not in source
     assert "FastAPI" not in source
     assert "logger" not in source
     assert "logging" not in source
     assert "print(" not in source
-    assert "created_by_user_id" not in source
-    assert "head_object" not in source
+    assert "created_by_user_id" not in presign_source
+    assert "head_object" not in presign_source
     assert ".commit(" not in source
     assert ".rollback(" not in source
     assert ".close(" not in source
