@@ -75,6 +75,12 @@ FORBIDDEN_COLUMNS = {
     "metadata_json",
     "provider_response",
     "provider_error_body",
+    "gps",
+    "comment",
+    "iptc",
+    "client_ip",
+    "session_id",
+    "user_ip",
 }
 
 

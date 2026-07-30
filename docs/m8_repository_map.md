@@ -21,7 +21,7 @@ rechecked its repository claims.
 | Session CSRF | TT 8; M8 PO-M8-20 | Inherited and M8-new | `app/auth/deps.py:164`, `app/auth/deps.py:241`, `app/auth/deps.py:265` | Body guard must precede existing multipart form parse. | OK |
 | No-store | TT 8 | Inherited | `app/security_headers.py:61` | Future domain response uses existing helper; no M8 route. | OK |
 | Single-job CI | M6/M7; M8 PO-M8-22 | Inherited | `.github/workflows/ci.yml:12` | Add MinIO within `dependency-sync`. | OK |
-| Exactly one M8 table | M8 persistence contract | M8-new | Current head `e7f8a9b0c1d2`; `tests/postgresql.py:8` lists 18 existing tables | Add only `object_files`. | OK |
+| Exactly one M8 table | M8 persistence contract | M8-new | M7 head `e7f8a9b0c1d2` has 17 inherited tables; M8 head `f8a9b0c1d2e3` adds only `object_files` | Keep exactly one M8 table. | OK |
 | No public route/domain consumer | M8 PO-M8-1/18 | M8-new boundary | `app/main.py:48` includes only auth/customer/shop routers; no storage code | Add internal service/CLI only. | OK |
 | PO-M8 decisions | M8 freeze section 6 | M8-new | `docs/m8_decisions.md` | All `24/24` are frozen. | OK |
 
@@ -86,35 +86,35 @@ feasible without another parser dependency.
 | SHA-256 hex values | `app/otp/crypto.py:14`, `app/otp/crypto.py:172` | REUSE pattern |
 | Redacted dataclasses | `app/settings.py:31`, `app/auth/rate_limit.py:15` | REUSE pattern |
 | Explicit secret reveal | `app/settings.py:98`, `app/auth/rate_limit.py:187` | REUSE only at narrow boundary |
-| Storage protocols/wrappers | Not present | MINIMAL NEW in `app/storage/contracts.py` |
+| Storage protocols/wrappers | `app/storage/contracts.py` | IMPLEMENTED with narrow provider/authorization protocols and redacted values |
 
 ### CLI, Deployment, CI, And Tests
 
 | Item | File / symbol | Status |
 |---|---|---|
-| Main argparse CLI | `app/cli.py:build_parser`, `app/cli.py:main` | IMPLEMENTED with bounded internal storage preflight/health, reconcile, and dev-only delete commands |
+| Main argparse CLI | `app/cli.py:build_parser`, `app/cli.py:main` | IMPLEMENTED with bounded internal storage preflight/health, reconcile, dev-only delete, and synthetic smoke commands |
 | Dedicated process CLI pattern | `app/telegram/worker.py:125`, `app/otp/dispatcher.py:116` | REUSE pattern only |
 | Same runtime image | `Dockerfile:23`, `Dockerfile:32` | REUSE |
 | Compose DB/migrate/web | `compose.yaml:2`, `compose.yaml:18`, `compose.yaml:29` | REUSE |
 | M6 worker | `compose.yaml:46` | KEEP UNCHANGED |
 | M7 dispatcher | `compose.yaml:72` | KEEP UNCHANGED |
-| MinIO/init/volume | Not present | MINIMAL NEW |
+| MinIO/init/volume | `compose.yaml`, `deploy/minio-init.sh` | IMPLEMENTED with pinned images, private policy, scoped app identity, and persistent named volume |
 | Single CI job | `.github/workflows/ci.yml:12` | REUSE / EXTEND |
 | PostgreSQL CI service | `.github/workflows/ci.yml:35` | REUSE |
 | Full-suite no skip guard | `.github/workflows/ci.yml:107` | REUSE |
 | Containment tests | `tests/test_shop_containment_guard.py`, `tests/test_telegram_scope_regression.py`, `tests/test_otp_sensitive_data_audit.py` | REUSE / EXTEND |
 | Real PostgreSQL fixture | `tests/conftest.py:15`, `tests/conftest.py:35` | REUSE |
-| Fake storage adapter | Not present | MINIMAL NEW in test support |
+| Fake storage adapter | `tests/storage_fake.py` | IMPLEMENTED in test support only |
 
 ### Storage/Image Primitives
 
 | Item | Status | Minimal solution |
 |---|---|---|
-| Pillow | IMPLEMENTED dependency | Direct `Pillow>=12.3.0,<13`, resolved `12.3.0`; sanitizer code remains later. |
-| boto3/botocore | IMPLEMENTED dependency | Direct boto3 `1.43.59`; botocore `1.43.59` transitive; adapter code remains later. |
+| Pillow | IMPLEMENTED dependency | Direct `Pillow>=12.3.0,<13`, resolved `12.3.0`; bounded sanitizer is implemented in `app/storage/image.py`. |
+| boto3/botocore | IMPLEMENTED dependency | Direct boto3 `1.43.59`; botocore `1.43.59` transitive; single-attempt adapter is implemented in `app/storage/s3.py`. |
 | MinIO Python SDK | TOPILMADI | Keep absent; use boto3 adapter and pinned container/`mc`. |
 | libmagic/python-magic | TOPILMADI | Keep absent; use Pillow fully decoded `Image.format`. |
-| S3 adapter | CONTRACT FROZEN | Add only the injected API and classification from the M8.37 appendix. |
+| S3 adapter | IMPLEMENTED | `app/storage/s3.py` provides only the injected API and failure classification from the M8.37 appendix. |
 | Image sanitizer | IMPLEMENTED | `app/storage/image.py` performs bounded decode, fresh-pixel render, and deterministic re-encode. |
 | Object lifecycle model/repository | IMPLEMENTED | `app/storage/models.py` and `app/storage/repository.py`; one table and caller-owned primitives. |
 | Public file endpoints | TOPILMADI | Keep absent. |
@@ -238,11 +238,16 @@ app/storage/
   models.py         ObjectFile only
   repository.py     caller-owned lifecycle primitives
   s3.py             boto3 factory and adapter
-  authorization.py  domain-parent authorizer protocol/service seam
-  service.py        upload/reconcile/delete/download coordinators
+  service.py        upload/reconcile/delete/authorized-GET coordinators
+  smoke.py          development/test-only synthetic acceptance coordinator
 app/cli.py           bounded internal storage command adapters
+deploy/
+  minio-init.sh      idempotent private local/CI provisioning
+  minio-backup-restore-exercise.sh
+                     local synthetic backup/restore exercise
 ```
 
-Files are created only when their task contains real code. No empty package
-scaffold, generic registry, base repository, event bus, or placeholder module
-is approved.
+The authorization seam is the narrow protocol in `contracts.py` plus its
+coordinator in `service.py`; no empty `authorization.py` placeholder is
+needed. Files are created only when their task contains real code. No generic
+registry, base repository, event bus, or placeholder module is approved.

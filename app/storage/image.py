@@ -400,7 +400,7 @@ def decode_bounded_image(
         raise ImageSanitizationError.from_internal(
             StorageInternalCode.IMAGE_TRUNCATED
         ) from None
-    except (SyntaxError, ValueError, TypeError):
+    except (OverflowError, RuntimeError, SyntaxError, ValueError, TypeError):
         raise ImageSanitizationError.from_internal(
             StorageInternalCode.IMAGE_CORRUPT
         ) from None
@@ -443,7 +443,7 @@ def decode_bounded_image(
         raise ImageSanitizationError.from_internal(
             StorageInternalCode.IMAGE_TRUNCATED
         ) from None
-    except (SyntaxError, ValueError, TypeError):
+    except (OverflowError, RuntimeError, SyntaxError, ValueError, TypeError):
         if decoded_image is not None:
             decoded_image.close()
         raise ImageSanitizationError.from_internal(

@@ -139,10 +139,15 @@ def test_storage_preflight_and_health_print_safe_status_only(
     command: str,
 ) -> None:
     storage = FakeObjectStorageService()
+    close_calls: list[str] = []
     monkeypatch.setattr(
         cli,
         "_configure_storage_service",
-        lambda _settings: (storage, BUCKET),
+        lambda _settings: (
+            storage,
+            BUCKET,
+            lambda: close_calls.append("closed"),
+        ),
     )
 
     exit_code = cli.main(
@@ -157,6 +162,7 @@ def test_storage_preflight_and_health_print_safe_status_only(
     assert [call.operation for call in storage.calls] == [
         FakeStorageOperation.ENSURE_PRIVATE_BUCKET,
     ]
+    assert close_calls == ["closed"]
 
 
 def test_storage_preflight_provider_failure_is_sanitized(
@@ -169,7 +175,7 @@ def test_storage_preflight_provider_failure_is_sanitized(
     monkeypatch.setattr(
         cli,
         "_configure_storage_service",
-        lambda _settings: (storage, BUCKET),
+        lambda _settings: (storage, BUCKET, lambda: None),
     )
 
     exit_code = cli.main(
@@ -205,7 +211,7 @@ def test_storage_reconcile_cli_outputs_counts_and_safe_codes_only(
     monkeypatch.setattr(
         cli,
         "_configure_storage_service",
-        lambda _settings: (storage, BUCKET),
+        lambda _settings: (storage, BUCKET, lambda: None),
     )
 
     exit_code = cli.main(
@@ -263,7 +269,7 @@ def test_storage_delete_cli_uses_internal_service_and_hides_identity(
     monkeypatch.setattr(
         cli,
         "_configure_storage_service",
-        lambda _settings: (storage, BUCKET),
+        lambda _settings: (storage, BUCKET, lambda: None),
     )
 
     exit_code = cli.main(

@@ -299,8 +299,8 @@ class ObjectReadAuthorizationRequest:
     def __repr__(self) -> str:
         return (
             "ObjectReadAuthorizationRequest("
-            f"actor_user_id={self.actor_user_id!r}, "
-            f"object_file_id={self.object_file_id!r}, "
+            "actor_user_id=<redacted>, "
+            "object_file_id=<redacted>, "
             "domain_parent_reference=<redacted>"
             ")"
         )

@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import getpass
 import sys
 from collections.abc import Callable, Sequence
@@ -49,6 +50,8 @@ from app.storage.service import (
     reconcile_stale_object_deletes,
     reconcile_stale_object_uploads,
 )
+from app.storage.smoke import fetch_presigned_smoke_object, run_storage_smoke
+from app.telegram.client_ip import ResolvedClientIp
 
 LOCAL_ENVIRONMENTS = frozenset({"development", "local", "testing"})
 DEMO_USER_PASSWORD = "DemoPassword123"
@@ -128,6 +131,12 @@ def build_parser() -> argparse.ArgumentParser:
     storage_delete = storage_subparsers.add_parser("delete")
     storage_delete.add_argument(
         "--object-id",
+        type=_nonzero_uuid,
+        required=True,
+    )
+    storage_smoke = storage_subparsers.add_parser("smoke")
+    storage_smoke.add_argument(
+        "--actor-id",
         type=_nonzero_uuid,
         required=True,
     )
@@ -331,13 +340,15 @@ def storage_preflight_command(
     configured = _configure_storage_service(settings)
     if configured is None:
         return 1
-    storage, bucket = configured
+    storage, bucket, close_storage = configured
     provider_failed = False
     result: StorageProviderOperationResult | None = None
     try:
         result = storage.ensure_private_bucket(bucket=bucket)
     except StorageProviderError:
         provider_failed = True
+    finally:
+        _close_storage_connection(close_storage)
     if provider_failed or result is not StorageProviderOperationResult.SUCCESS:
         print("STORAGE_PROVIDER_UNAVAILABLE", file=sys.stderr)
         return 1
@@ -352,7 +363,7 @@ def storage_reconcile_command(
     configured = _configure_storage_service(settings)
     if configured is None:
         return 1
-    storage, _bucket = configured
+    storage, _bucket, close_storage = configured
     engine = None
     upload_result: StorageReconcileResult | None = None
     delete_result: StorageDeleteBatchResult | None = None
@@ -380,6 +391,7 @@ def storage_reconcile_command(
     finally:
         if engine is not None:
             engine.dispose()
+        _close_storage_connection(close_storage)
     if workflow_failed or upload_result is None or delete_result is None:
         print("STORAGE_RECONCILE_FAILED", file=sys.stderr)
         return 1
@@ -395,7 +407,7 @@ def storage_delete_command(
     configured = _configure_storage_service(settings)
     if configured is None:
         return 1
-    storage, _bucket = configured
+    storage, _bucket, close_storage = configured
     engine = None
     result = None
     workflow_failed = False
@@ -413,11 +425,51 @@ def storage_delete_command(
     finally:
         if engine is not None:
             engine.dispose()
+        _close_storage_connection(close_storage)
     if workflow_failed or result is None:
         print("STORAGE_DELETE_FAILED", file=sys.stderr)
         return 1
     safe_code = result.safe_code.value if result.safe_code is not None else "NONE"
     print(f"STORAGE_DELETE status={result.status.value} code={safe_code}")
+    return 0
+
+
+def storage_smoke_command(
+    args: argparse.Namespace,
+    settings: Settings,
+) -> int:
+    ensure_local_environment(settings)
+    configured = _configure_storage_service(settings)
+    if configured is None:
+        return 1
+    storage, _bucket, close_storage = configured
+    engine = None
+    result = None
+    smoke_failed = False
+    try:
+        engine = create_database_engine(settings)
+        session_factory = create_database_session_factory(engine)
+        result = asyncio.run(
+            run_storage_smoke(
+                session_factory,
+                actor_user_id=args.actor_id,
+                client_ip=ResolvedClientIp("192.0.2.1"),
+                now=datetime.now(UTC),
+                settings=settings,
+                storage=storage,
+                fetch_presigned=fetch_presigned_smoke_object,
+            )
+        )
+    except (SQLAlchemyError, StorageProviderError, StorageUploadError):
+        smoke_failed = True
+    finally:
+        if engine is not None:
+            engine.dispose()
+        _close_storage_connection(close_storage)
+    if smoke_failed or result is None or result.passed_checks != result.expected_checks:
+        print("STORAGE_SMOKE_FAILED", file=sys.stderr)
+        return 1
+    print(f"STORAGE_SMOKE_PASS checks={result.passed_checks}")
     return 0
 
 
@@ -639,15 +691,23 @@ def _nonzero_uuid(value: str) -> UUID:
 
 def _configure_storage_service(
     settings: Settings,
-) -> tuple[ObjectStorageService, BucketName] | None:
+) -> tuple[ObjectStorageService, BucketName, Callable[[], None]] | None:
     try:
         config = settings.require_object_storage_config()
-        storage = S3ObjectStorageService(create_s3_client(config))
+        client = create_s3_client(config)
+        storage = S3ObjectStorageService(client)
         bucket = BucketName(config.bucket)
     except (ObjectStorageSettingsError, StorageProviderError, ValueError):
         print("STORAGE_CONFIGURATION_UNAVAILABLE", file=sys.stderr)
         return None
-    return storage, bucket
+    return storage, bucket, client.close
+
+
+def _close_storage_connection(close_storage: Callable[[], None]) -> None:
+    try:
+        close_storage()
+    except Exception:
+        pass
 
 
 def _format_storage_reconcile_result(
@@ -723,6 +783,8 @@ def main(
                 return storage_reconcile_command(args, effective_settings)
             if args.storage_command == "delete":
                 return storage_delete_command(args, effective_settings)
+            if args.storage_command == "smoke":
+                return storage_smoke_command(args, effective_settings)
     except CliError as exc:
         print(str(exc), file=stderr or sys.stderr)
         return 1

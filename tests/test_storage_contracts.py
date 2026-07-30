@@ -194,4 +194,7 @@ def test_authorization_request_redacts_domain_parent_and_protocol_is_narrow() ->
 
     assert isinstance(authorizer, ObjectFileAccessAuthorizer)
     assert authorizer.authorize(request) is ObjectReadAuthorizationResult.ALLOWED
-    assert parent_reference not in repr(request)
+    rendered = repr(request)
+    assert parent_reference not in rendered
+    assert str(request.actor_user_id) not in rendered
+    assert str(request.object_file_id) not in rendered

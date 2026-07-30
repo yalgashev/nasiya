@@ -71,7 +71,7 @@ class PreparedImageUpload:
         metadata = self.image.metadata
         return (
             "PreparedImageUpload("
-            f"object_file_id={self.object_file_id!r}, "
+            "object_file_id=<redacted>, "
             "bucket=<redacted>, object_key=<redacted>, "
             f"content_type={metadata.content_type!r}, "
             f"size_bytes={metadata.size_bytes!r}, "
@@ -94,7 +94,7 @@ class IngestedImageResult:
     def __repr__(self) -> str:
         return (
             "IngestedImageResult("
-            f"object_file_id={self.object_file_id!r}, "
+            "object_file_id=<redacted>, "
             f"content_type={self.content_type!r}, "
             f"size_bytes={self.size_bytes!r}, "
             f"width_px={self.width_px!r}, "
@@ -171,7 +171,7 @@ class _AuthorizedObjectRead:
     def __repr__(self) -> str:
         return (
             "_AuthorizedObjectRead("
-            f"object_file_id={self.object_file_id!r}, "
+            "object_file_id=<redacted>, "
             "bucket=<redacted>, object_key=<redacted>"
             ")"
         )
@@ -188,7 +188,7 @@ class _ObjectDeleteTarget:
         safe_code = self.safe_code.value if self.safe_code is not None else None
         return (
             "_ObjectDeleteTarget("
-            f"object_file_id={self.object_file_id!r}, "
+            "object_file_id=<redacted>, "
             "bucket=<redacted>, object_key=<redacted>, "
             f"safe_code={safe_code!r}"
             ")"

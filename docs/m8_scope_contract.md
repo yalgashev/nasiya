@@ -872,6 +872,7 @@ The main internal CLI exposes only:
 storage preflight | health
 storage reconcile --batch-size 1..5000
 storage delete --object-id <UUID>   # development/local/testing only
+storage smoke --actor-id <UUID>     # development/local/testing only
 ```
 
 Preflight/health verifies the private bucket policy through the narrow
@@ -880,7 +881,22 @@ coordinators. Delete delegates to the internal lifecycle service and fails
 before dependency construction in production. Output contains fixed status,
 counts, and allowlisted safe codes only; it never prints object UUID/key,
 bucket, endpoint, credential, provider response, or URL. There is no upload
-command, manual SQL, public route, scheduler, or automatic AVAILABLE purge.
+command for user files, manual SQL, public route, scheduler, or automatic
+AVAILABLE purge.
+
+Smoke accepts no file or filename. It generates a synthetic in-memory PNG,
+runs sanitizer/upload/HEAD, authorizes a configured-TTL presigned GET, fetches
+the URL inside the command without printing it, verifies content type/size and
+SHA-256, performs internal delete, and proves the object is missing. Success
+prints only `STORAGE_SMOKE_PASS checks=8`; failures use one fixed safe status
+and attempt best-effort lifecycle cleanup.
+
+Web startup and `/health` never construct a storage client and remain green
+with missing or unreachable storage configuration. M6 Telegram worker and M7
+OTP dispatcher compose no storage settings, client, or MinIO dependency.
+Storage CLI commands own and close the S3 client callback and dispose their DB
+engine in `finally`; the adapter remains single-attempt and no command adds a
+tight retry loop.
 
 ## Adapter Contract
 
@@ -1163,6 +1179,29 @@ Every checkpoint keeps:
 - M5/M6/M7 containment and process-isolation regressions;
 - TT, scope, secret, metadata, key, and URL leakage audits;
 - `git diff --check`.
+
+The operations/privacy checkpoint additionally proves:
+
+- development/testing smoke runs eight synthetic ingest, authorized GET,
+  checksum, delete, and post-delete checks and emits only a fixed safe result;
+- missing or unreachable storage does not affect web health, login, M6 worker,
+  or M7 dispatcher startup paths;
+- the local backup/restore exercise uses temporary private synthetic buckets,
+  verifies count/checksum/content/privacy, cleans them, and preserves the
+  configured bucket and named volume;
+- actual-byte/multipart adversarial handling rejects length, field, file,
+  header, filename, CSRF, disconnect, and overflow abuse without a production
+  upload route;
+- the generated image corpus closes malformed, truncated, declared-dimension,
+  trailing/polyglot, metadata, mode, animation, output-limit, and decoder
+  exception cases without external downloads;
+- static and runtime leakage guards cover bytes, metadata, storage identity,
+  credentials, URL/provider detail, actor/IP/session identity, CLI, CI,
+  Compose, runbook, and failure rendering;
+- ORM metadata adds exactly `object_files`; runtime routes/templates add no
+  file surface; M5–M7 containment, `app.main`, and TT remain unchanged;
+- real MinIO stores and returns only the exact sanitized, metadata-free image
+  while anonymous access remains denied.
 
 Final M8 closure additionally requires a no-cache built-image codec/runtime
 check, real local MinIO acceptance `16/16`, local backup/restore exercise,

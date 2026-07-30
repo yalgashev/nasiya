@@ -9,7 +9,7 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
-from starlette.datastructures import UploadFile
+from starlette.datastructures import Headers, UploadFile
 
 from app.auth.deps import CurrentSessionContext, CurrentSessionStatus
 from app.auth.error_codes import ErrorCode
@@ -39,7 +39,9 @@ SENSITIVE_PRESIGNED_URL = (
 )
 SENSITIVE_TEMP_PATH = "/tmp/m8-private-upload-991-secret"
 SENSITIVE_FILENAME = "customer-991-private-original.jpg"
+SENSITIVE_CLAIMED_MIME = "application/x-m8-private-claimed"
 SENSITIVE_BODY = b"m8-private-raw-body-991"
+SENSITIVE_SESSION_ID = "88888888-8888-4888-8888-888888888888"
 SAFE_DATABASE_URL = "postgresql+psycopg://nasiya:pass@127.0.0.1:5432/nasiya_test"
 SAFE_RATE_LIMIT_KEY = "test-rate-limit-hmac-key-for-storage-leakage"
 
@@ -52,7 +54,9 @@ RAW_TEXT_VALUES = (
     SENSITIVE_PRESIGNED_URL,
     SENSITIVE_TEMP_PATH,
     SENSITIVE_FILENAME,
+    SENSITIVE_CLAIMED_MIME,
     SENSITIVE_BODY.decode("ascii"),
+    SENSITIVE_SESSION_ID,
 )
 
 
@@ -123,6 +127,7 @@ def test_typed_wrappers_and_boundary_errors_hide_all_raw_values(
         file=BytesIO(SENSITIVE_BODY),
         size=len(SENSITIVE_BODY),
         filename=SENSITIVE_FILENAME,
+        headers=Headers({"content-type": SENSITIVE_CLAIMED_MIME}),
     )
     bounded = BoundedMultipartUpload(
         size_bytes=len(SENSITIVE_BODY),
@@ -188,7 +193,7 @@ def test_multipart_os_error_hides_temp_path_and_closes_over_context() -> None:
 
     context = CurrentSessionContext(
         status=CurrentSessionStatus.ANONYMOUS,
-        session_id=UUID("00000000-0000-0000-0000-000000000001"),
+        session_id=UUID(SENSITIVE_SESSION_ID),
     )
 
     async def parse() -> None:

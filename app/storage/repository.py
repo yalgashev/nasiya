@@ -59,7 +59,7 @@ class ClaimedObjectFile:
     def __repr__(self) -> str:
         return (
             "ClaimedObjectFile("
-            f"object_file_id={self.object_file_id!r}, "
+            "object_file_id=<redacted>, "
             "bucket=<redacted>, object_key=<redacted>, "
             f"content_type={self.content_type!r}, "
             f"size_bytes={self.size_bytes!r}, "

@@ -26,6 +26,7 @@ from app.storage.image import (
     BoundedImageBytes,
     generate_object_key,
     sanitize_bounded_image,
+    verify_reopened_metadata_absence,
 )
 from app.storage.s3 import S3ObjectStorageService, create_s3_client
 
@@ -206,6 +207,10 @@ def test_minio_07_presigned_get_returns_exact_sanitized_bytes(
         response = client.get(url.as_response_value())
     assert response.status_code == 200
     assert response.content == (stored_image.image.sanitized_bytes.as_internal_bytes())
+    with Image.open(BytesIO(response.content)) as reopened:
+        reopened.load()
+        verify_reopened_metadata_absence(reopened)
+        assert len(reopened.getexif()) == 0
 
 
 @pytest.mark.integration
