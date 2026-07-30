@@ -70,13 +70,13 @@ feasible without another parser dependency.
 | Short non-request TX | `app/otp/dispatcher.py:432`, `app/otp/dispatcher.py:472` | REUSE pattern |
 | External boundary between DB phases | `app/otp/dispatcher.py:442` | REUSE pattern |
 | Alembic metadata imports | `alembic/env.py:8`–`alembic/env.py:14` | EXTEND one storage import |
-| Current Alembic head | `alembic/versions/e7f8a9b0c1d2_create_m7_otp_persistence_tables.py` | REUSE parent |
+| Current Alembic head | `alembic/versions/f8a9b0c1d2e3_create_object_files.py` | IMPLEMENTED linear M8 head |
 | Test DB `_test` guard | `tests/postgresql.py:29` | REUSE |
 | Child-first cleanup | `tests/postgresql.py:8` | EXTEND with `object_files` first |
 | Alembic head lookup | `tests/postgresql.py:44` | REUSE |
 | `FOR UPDATE` | `app/auth/rate_limit.py:92` | REUSE pattern |
 | `SKIP LOCKED` | `app/otp/repository.py` claim queries | REUSE pattern |
-| Exactly one M8 model/table | Not present | MINIMAL NEW |
+| Exactly one M8 model/table | `app/storage/models.py`, `object_files` | IMPLEMENTED |
 
 ### Typed And Sensitive Values
 
@@ -114,9 +114,9 @@ feasible without another parser dependency.
 | boto3/botocore | IMPLEMENTED dependency | Direct boto3 `1.43.59`; botocore `1.43.59` transitive; adapter code remains later. |
 | MinIO Python SDK | TOPILMADI | Keep absent; use boto3 adapter and pinned container/`mc`. |
 | libmagic/python-magic | TOPILMADI | Keep absent; use Pillow fully decoded `Image.format`. |
-| S3 adapter | TOPILMADI | Add narrow injected boto3 adapter. |
-| Image sanitizer | TOPILMADI | Add bounded Pillow implementation. |
-| Object lifecycle model/repository | TOPILMADI | Add one model/table and caller-owned primitives. |
+| S3 adapter | CONTRACT FROZEN | Add only the injected API and classification from the M8.37 appendix. |
+| Image sanitizer | IMPLEMENTED | `app/storage/image.py` performs bounded decode, fresh-pixel render, and deterministic re-encode. |
+| Object lifecycle model/repository | IMPLEMENTED | `app/storage/models.py` and `app/storage/repository.py`; one table and caller-owned primitives. |
 | Public file endpoints | TOPILMADI | Keep absent. |
 
 ## M8.04 Feasibility Audit
@@ -141,6 +141,32 @@ feasible without another parser dependency.
 Feasibility result: Pillow+boto3, private MinIO, two-phase storage, bounded
 multipart, and no-retry reconciliation are achievable without prohibited
 dependency, table, process-role, or persistence changes. No blocker found.
+
+## M8.37 S3 Adapter Placement And SDK Reconciliation
+
+The lock resolves `boto3==1.43.59` and `botocore==1.43.59`. Local inspection
+of that exact botocore package confirms the exception inheritance used by the
+scope appendix: `ClientError` is separate from `BotoCoreError`;
+`ReadTimeoutError` and `ConnectionClosedError` inherit `HTTPClientError`; and
+validation, credential, endpoint, connect, proxy, SSL, HTTP-client, and other
+SDK failures inherit `BotoCoreError`.
+
+The minimal placement remains one `app/storage/s3.py` module:
+
+| Symbol / responsibility | Placement | Dependency direction |
+|---|---|---|
+| fixed connect/read/pool/no-retry constants | `app/storage/s3.py` | no settings expansion |
+| `create_s3_client(StorageConfig)` | `app/storage/s3.py` | explicit config to injected boto3 client |
+| narrow adapter implementing `ObjectStorageService` | `app/storage/s3.py` | contracts inward; boto3 client outward |
+| exception classifier | private helper in `app/storage/s3.py` | exact pinned botocore classes |
+| fake programmable adapter | test support only | same contracts; no production global state |
+| private bucket CLI coordinator | later storage CLI/service task | calls protocol; no SDK types in CLI |
+
+No repository, ORM model, router, settings field, provider registry, base
+adapter, plugin framework, background process, or second storage dependency is
+needed. The exact factory kwargs, PutObject/HeadObject/DeleteObject/presign
+calls, checksum metadata key, missing semantics, and failure table are frozen
+in `docs/m8_scope_contract.md`.
 
 ## M8.07 Resolved Dependency Map
 

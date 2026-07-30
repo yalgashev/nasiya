@@ -101,6 +101,7 @@ def test_complete_storage_bundle_returns_redacted_snapshot() -> None:
     assert config.addressing_style == "path"
     rendered = f"{settings!r} {settings!s} {config!r} {config!s}"
     assert TEST_ENDPOINT not in rendered
+    assert "nasiya-private-test" not in rendered
     assert TEST_ACCESS_KEY not in rendered
     assert TEST_SECRET_KEY not in rendered
 

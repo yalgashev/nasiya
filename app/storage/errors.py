@@ -57,5 +57,14 @@ class StorageBoundaryError(RuntimeError):
         return f"StorageBoundaryError(code={self.code.value!r})"
 
 
+class StorageAccessDeniedError(RuntimeError):
+    def __init__(self) -> None:
+        self.code = ErrorCode.FILE_ACCESS_DENIED
+        super().__init__(self.code.value)
+
+    def __repr__(self) -> str:
+        return "StorageAccessDeniedError(code='FILE_ACCESS_DENIED')"
+
+
 def get_storage_public_error_code(code: StorageInternalCode) -> ErrorCode:
     return _INTERNAL_TO_PUBLIC[code]

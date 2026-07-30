@@ -103,7 +103,7 @@ class Settings(BaseSettings):
     otp_event_retention_days: int = Field(default=90, gt=0)
     object_storage_endpoint_url: SecretStr | None = None
     object_storage_region: str | None = None
-    object_storage_bucket: str | None = None
+    object_storage_bucket: str | None = Field(default=None, repr=False)
     object_storage_access_key: SecretStr | None = None
     object_storage_secret_key: SecretStr | None = None
     object_storage_use_ssl: bool | None = None

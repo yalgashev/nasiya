@@ -773,6 +773,182 @@ typed missing result. Provider ETag is never treated as the checksum. DELETE
 is idempotent. Provider exceptions become closed sanitized outcomes without
 endpoint, bucket, key, credential, request ID, response body, or SDK detail.
 
+## S3 Adapter Exact API And Failure Classification
+
+This appendix is the executable contract for M8.38–M8.42. Its SDK authority is
+the frozen lock: `boto3==1.43.59` and `botocore==1.43.59`. Later adapter code
+must not widen this API, exception surface, or retry policy without first
+updating this contract.
+
+### Client factory
+
+The factory accepts one complete `StorageConfig`. It constructs exactly one
+S3 client and performs no SDK operation:
+
+```python
+Config(
+    signature_version="s3v4",
+    connect_timeout=3,
+    read_timeout=10,
+    max_pool_connections=10,
+    retries={"total_max_attempts": 1, "mode": "standard"},
+    s3={"addressing_style": config.addressing_style},
+    user_agent_extra="nasiya-m8-storage/1",
+)
+
+boto3.client(
+    "s3",
+    endpoint_url=<explicit endpoint>,
+    region_name=config.region,
+    aws_access_key_id=<explicit access key>,
+    aws_secret_access_key=<explicit secret key>,
+    use_ssl=config.use_ssl,
+    config=<Config above>,
+)
+```
+
+`total_max_attempts=1` includes the initial request and therefore permits zero
+SDK retries. The adapter never selects adaptive/legacy retry mode. Credentials
+and endpoint are revealed from redacted wrappers only in the immediate
+`boto3.client` call. There is no session profile, environment/default
+credential fallback, metadata lookup, assume-role path, proxy credential
+provider, custom endpoint discovery, or network call at import/factory time.
+The fixed user agent has no user, shop, object, host, environment, or request
+identifier.
+
+Production construction injects this client into one adapter instance. Tests
+inject a botocore `Stubber` client or a narrow fake. Adapter methods do not
+construct clients and no global client/fake state is allowed.
+
+### Exact protocol and SDK calls
+
+The implemented adapter must conform to the existing
+`ObjectStorageService` protocol without extra generic methods:
+
+```text
+put_object(*, bucket: BucketName, key: ObjectKey,
+           image: SanitizedImage) -> StorageProviderOperationResult
+head_object(*, bucket: BucketName,
+            key: ObjectKey) -> StoredObjectHead | None
+delete_object(*, bucket: BucketName,
+              key: ObjectKey) -> StorageProviderOperationResult
+create_presigned_get_url(*, bucket: BucketName, key: ObjectKey,
+                         ttl_seconds: int) -> PresignedObjectUrl
+ensure_private_bucket(*, bucket: BucketName)
+    -> StorageProviderOperationResult
+```
+
+`put_object` makes one `PutObject` call:
+
+```text
+Bucket=<validated internal bucket>
+Key=<generated internal key>
+Body=<exact sanitized bytes>
+ContentLength=<exact sanitized size>
+ContentType=image/jpeg | image/png | image/webp
+Metadata={"checksum-sha256": <lowercase 64-hex digest>}
+```
+
+It passes no `ACL`, grant, public URL, filename/content-disposition, tag,
+redirect, arbitrary metadata, multipart, or provider checksum derived from
+ETag. Payload size is already bounded to `1..10_485_760`.
+
+`head_object` makes one `HeadObject(Bucket=..., Key=...)`. HTTP `404` is the
+only missing result and returns `None`; `403` is never collapsed to missing.
+A present response must contain a positive integer `ContentLength`, an allowed
+`ContentType`, and exactly one lowercase
+`Metadata["checksum-sha256"]`. It returns only those values as
+`StoredObjectHead`. Missing/malformed metadata is a sanitized provider failure.
+The adapter ignores `ETag` and all other response fields. Exact
+size/content-type/checksum comparison, including the typed mismatch outcome,
+belongs to the coordinator and never mutates this result.
+
+`delete_object` makes one `DeleteObject(Bucket=..., Key=...)`. S3 delete of an
+already missing object is `SUCCESS`; no preliminary HEAD is required. An
+ambiguous delete remains `DELETE_PENDING` for later HEAD/delete reconciliation.
+
+`create_presigned_get_url` calls only:
+
+```text
+generate_presigned_url(
+    ClientMethod="get_object",
+    Params={"Bucket": ..., "Key": ...},
+    ExpiresIn=<validated 60..900 seconds>,
+    HttpMethod="GET",
+)
+```
+
+Presigning makes no network call. There is no presigned PUT, POST, list, public
+route, ACL, or URL persistence/logging path. The returned URL immediately
+enters `PresignedObjectUrl`.
+
+`ensure_private_bucket` is limited to create-if-missing and fail-closed
+private/ownership verification. Existing safe buckets succeed; an ownership
+mismatch or unverifiable public/anonymous state fails. It never deletes or
+recreates a bucket, changes an object, enables a public ACL/policy, or returns
+bucket/provider detail. M8.42 freezes the provider-capability-specific call
+sequence before implementation.
+
+M8.42 freezes that sequence as: `HeadBucket`; `CreateBucket` only on exact
+`404` (with `LocationConstraint` outside `us-east-1`); owner-only private
+`GetBucketAcl`; `GetBucketPolicy` requiring exact `NoSuchBucketPolicy/404`;
+then all four `PutPublicAccessBlock` flags and an exact
+`GetPublicAccessBlock` verification. Providers returning exact
+`405/501` plus `MethodNotAllowed`, `NotImplemented`,
+`NotImplementedException`, or `XNotImplemented` for the put-block capability
+use the private ACL plus absent-policy fallback. Other unsupported,
+unverifiable, public, cross-owner, `403`, or `BucketAlreadyExists` outcomes
+fail closed. `BucketAlreadyOwnedByYou` is the only safe create race. No bucket
+policy/ACL is deleted or silently rewritten.
+
+### Exact exception classification
+
+Only class identity, operation name, safe HTTP status, and safe provider error
+code participate in classification. Exception `str`/`repr`, response body,
+headers, request ID, host, endpoint, bucket, key, credentials, and SDK context
+are never logged, persisted, returned, or chained into a public error.
+
+The pinned botocore classes used by the adapter are:
+
+```text
+ClientError
+ParamValidationError
+NoCredentialsError
+PartialCredentialsError
+EndpointConnectionError
+ConnectTimeoutError
+ProxyConnectionError
+SSLError
+ReadTimeoutError
+ConnectionClosedError
+HTTPClientError
+BotoCoreError
+```
+
+Catch order is most-specific first: `ClientError`; read/closed HTTP outcomes;
+pre-connect/configuration outcomes; remaining `HTTPClientError`; remaining
+`BotoCoreError`. This matters because read/closed errors inherit
+`HTTPClientError`, while validation/credential/connection errors inherit
+`BotoCoreError`. `ClientError` is a separate `Exception` branch.
+
+Classification is exact:
+
+| Outcome | PUT | DELETE / create bucket | HEAD / verify | Presign |
+|---|---|---|---|---|
+| `ParamValidationError`, `NoCredentialsError`, `PartialCredentialsError` | definite configuration failure | definite configuration failure | definite configuration failure | definite configuration failure |
+| `EndpointConnectionError`, `ConnectTimeoutError`, `ProxyConnectionError`, `SSLError` | definite no-response failure | definite no-response failure | definite provider failure | not expected; definite if raised |
+| `ReadTimeoutError`, `ConnectionClosedError`, remaining `HTTPClientError` | ambiguous | ambiguous | definite provider failure | not expected; definite if raised |
+| `ClientError` HTTP `408`, `429`, or `5xx` | ambiguous | ambiguous | definite provider failure | not expected; definite if raised |
+| other `ClientError` | definite rejection | definite rejection | `404` missing, otherwise definite provider failure | definite provider failure |
+| remaining `BotoCoreError` | ambiguous, conservatively | ambiguous, conservatively | definite provider failure | definite provider failure |
+
+All mapped operation failures use `StorageProviderError` with
+`STORAGE_PROVIDER_UNAVAILABLE`; only the `kind` is `DEFINITE` or `AMBIGUOUS`.
+Factory/configuration failures use
+`STORAGE_CONFIGURATION_UNAVAILABLE/DEFINITE`. A PUT ambiguous result triggers
+HEAD of the same row/key and never a second PUT. No adapter method performs an
+automatic retry or recursively calls itself.
+
 ## Authorization And Presigned Access
 
 M8 has no file route. Its service takes authenticated actor context, a

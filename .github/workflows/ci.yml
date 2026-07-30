@@ -78,6 +78,91 @@ jobs:
           uv run ruff check .
           uv run ruff format --check .
 
+      - name: Generate and mask MinIO test credentials
+        run: |
+          minio_root_user="ci-minio-root-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          minio_root_password="$(openssl rand -hex 32)"
+          minio_app_access_key="ci-nasiya-app-$(openssl rand -hex 8)"
+          minio_app_secret_key="$(openssl rand -hex 32)"
+          minio_bucket="nasiya-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          for masked_value in \
+            "$minio_root_user" \
+            "$minio_root_password" \
+            "$minio_app_access_key" \
+            "$minio_app_secret_key"; do
+            echo "::add-mask::$masked_value"
+          done
+          {
+            echo "MINIO_ROOT_USER=$minio_root_user"
+            echo "MINIO_ROOT_PASSWORD=$minio_root_password"
+            echo "MINIO_APP_ACCESS_KEY=$minio_app_access_key"
+            echo "MINIO_APP_SECRET_KEY=$minio_app_secret_key"
+            echo "MINIO_BUCKET=$minio_bucket"
+            echo "MINIO_APP_POLICY_NAME=nasiya-storage-app"
+            echo "M8_MINIO_TEST_ENDPOINT=http://127.0.0.1:9000"
+            echo "M8_MINIO_TEST_BUCKET=$minio_bucket"
+            echo "M8_MINIO_TEST_ACCESS_KEY=$minio_app_access_key"
+            echo "M8_MINIO_TEST_SECRET_KEY=$minio_app_secret_key"
+            echo "M8_MINIO_CI_VOLUME=nasiya-ci-minio-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          } >>"$GITHUB_ENV"
+
+      - name: Start bounded pinned MinIO runtime
+        run: |
+          docker run --detach \
+            --name nasiya-ci-minio \
+            --publish 127.0.0.1:9000:9000 \
+            --env MINIO_ROOT_USER \
+            --env MINIO_ROOT_PASSWORD \
+            --mount "type=volume,src=$M8_MINIO_CI_VOLUME,dst=/data" \
+            --health-cmd "mc ready local" \
+            --health-interval 1s \
+            --health-timeout 3s \
+            --health-retries 30 \
+            quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e \
+            server /data --address :9000
+          attempt=1
+          while [ "$attempt" -le 30 ]; do
+            health="$(
+              docker inspect \
+                --format '{{.State.Health.Status}}' \
+                nasiya-ci-minio
+            )"
+            if [ "$health" = "healthy" ]; then
+              exit 0
+            fi
+            if [ "$health" = "unhealthy" ]; then
+              echo "MinIO healthcheck failed."
+              exit 1
+            fi
+            attempt=$((attempt + 1))
+            sleep 1
+          done
+          echo "MinIO healthcheck timed out."
+          exit 1
+
+      - name: Initialize private MinIO policy twice
+        run: |
+          run_minio_init() {
+            docker run --rm \
+              --network host \
+              --entrypoint /bin/sh \
+              --env MINIO_ENDPOINT=http://127.0.0.1:9000 \
+              --env MINIO_ROOT_USER \
+              --env MINIO_ROOT_PASSWORD \
+              --env MINIO_BUCKET \
+              --env MINIO_APP_ACCESS_KEY \
+              --env MINIO_APP_SECRET_KEY \
+              --env MINIO_APP_POLICY_NAME \
+              --volume "$PWD/deploy/minio-init.sh:/scripts/minio-init.sh:ro" \
+              quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727 \
+              /scripts/minio-init.sh
+          }
+          run_minio_init
+          run_minio_init
+
+      - name: Run narrow private MinIO integration
+        run: uv run pytest -q tests/test_storage_minio_integration.py
+
       - name: Run M5 containment guard
         run: uv run pytest -q tests/test_shop_containment_guard.py
 
@@ -119,3 +204,9 @@ jobs:
             echo "Full suite must have zero skipped, xfailed, or xpassed tests."
             exit 1
           fi
+
+      - name: Clean up MinIO test runtime
+        if: always()
+        run: |
+          docker rm --force nasiya-ci-minio >/dev/null 2>&1 || true
+          docker volume rm "$M8_MINIO_CI_VOLUME" >/dev/null 2>&1 || true

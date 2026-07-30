@@ -15,6 +15,41 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    command: ["server", "/data", "--address", ":9000", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-local-minio-root}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-change-me-local-minio-root-secret-at-least-32-chars}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "${MINIO_BIND_ADDRESS:-127.0.0.1}:${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_BIND_ADDRESS:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    entrypoint: ["/bin/sh", "/scripts/minio-init.sh"]
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-local-minio-root}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-change-me-local-minio-root-secret-at-least-32-chars}
+      MINIO_BUCKET: ${MINIO_BUCKET:-nasiya-private}
+      MINIO_APP_ACCESS_KEY: ${MINIO_APP_ACCESS_KEY:-local-nasiya-storage-app}
+      MINIO_APP_SECRET_KEY: ${MINIO_APP_SECRET_KEY:-change-me-local-nasiya-storage-app-secret-at-least-32-chars}
+      MINIO_APP_POLICY_NAME: ${MINIO_APP_POLICY_NAME:-nasiya-storage-app}
+    volumes:
+      - ./deploy/minio-init.sh:/scripts/minio-init.sh:ro
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
   migrate:
     build:
       context: .
@@ -38,6 +73,22 @@ services:
       RATE_LIMIT_HMAC_KEY: ${RATE_LIMIT_HMAC_KEY:-change-me-local-rate-limit-hmac-key-at-least-32-chars}
       OTP_HMAC_KEY: ${OTP_HMAC_KEY:-}
       TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
+      OBJECT_STORAGE_ENDPOINT_URL: ${OBJECT_STORAGE_ENDPOINT_URL:-}
+      OBJECT_STORAGE_REGION: ${OBJECT_STORAGE_REGION:-}
+      OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:-}
+      OBJECT_STORAGE_ACCESS_KEY: ${OBJECT_STORAGE_ACCESS_KEY:-}
+      OBJECT_STORAGE_SECRET_KEY: ${OBJECT_STORAGE_SECRET_KEY:-}
+      OBJECT_STORAGE_USE_SSL: ${OBJECT_STORAGE_USE_SSL:-}
+      OBJECT_STORAGE_ADDRESSING_STYLE: ${OBJECT_STORAGE_ADDRESSING_STYLE:-path}
+      OBJECT_STORAGE_PRESIGNED_TTL_SECONDS: ${OBJECT_STORAGE_PRESIGNED_TTL_SECONDS:-300}
+      OBJECT_STORAGE_MAX_UPLOAD_BYTES: ${OBJECT_STORAGE_MAX_UPLOAD_BYTES:-10485760}
+      OBJECT_STORAGE_MAX_MULTIPART_BYTES: ${OBJECT_STORAGE_MAX_MULTIPART_BYTES:-11010048}
+      OBJECT_STORAGE_MAX_IMAGE_PIXELS: ${OBJECT_STORAGE_MAX_IMAGE_PIXELS:-40000000}
+      OBJECT_STORAGE_MAX_IMAGE_DIMENSION: ${OBJECT_STORAGE_MAX_IMAGE_DIMENSION:-16384}
+      OBJECT_STORAGE_UPLOAD_RATE_LIMIT_WINDOW_SECONDS: ${OBJECT_STORAGE_UPLOAD_RATE_LIMIT_WINDOW_SECONDS:-900}
+      OBJECT_STORAGE_UPLOAD_RATE_LIMIT_USER_ATTEMPTS: ${OBJECT_STORAGE_UPLOAD_RATE_LIMIT_USER_ATTEMPTS:-5}
+      OBJECT_STORAGE_UPLOAD_RATE_LIMIT_IP_ATTEMPTS: ${OBJECT_STORAGE_UPLOAD_RATE_LIMIT_IP_ATTEMPTS:-20}
+      OBJECT_STORAGE_RECONCILE_STALE_SECONDS: ${OBJECT_STORAGE_RECONCILE_STALE_SECONDS:-60}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -98,3 +149,4 @@ services:
       replicas: 1
 volumes:
   db-data:
+  minio-data:
