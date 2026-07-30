@@ -310,6 +310,58 @@ Fake transport real network/device acceptance o'rnini bosmaydi. Dispatcher
 deployment, health, `UNKNOWN` holati, rotation va sanitized acceptance
 amallari `docs/m7_dispatcher_runbook.md`da.
 
+## Secure Object Storage Foundation (M8)
+
+M8 backend-mediated JPEG, PNG va WebP sanitization, private S3-compatible
+storage, `object_files` lifecycle va internal operator CLI foundationini
+qo'shadi. Bu generic media vault emas: production upload/download/delete
+route, public file route va domain consumer mavjud emas.
+
+Local private MinIO uchun credentiallarni faqat untracked secure environment
+orqali bering. Root/admin credential faqat `minio` va `minio-init`ga,
+bucket-scoped app credential esa faqat web/storage CLIga beriladi. Hech qanday
+credential, endpoint, bucket yoki object qiymatini README, command argument,
+log yoki reportga ko'chirmang.
+
+Minimal local provisioning:
+
+```bash
+docker compose up -d db minio
+docker compose run --rm minio-init
+docker compose run --rm minio-init
+docker compose up -d migrate web
+```
+
+App identity bilan ishlaydigan safe operator buyruqlari:
+
+```bash
+docker compose exec web python -m app.cli storage preflight
+docker compose exec web python -m app.cli storage smoke \
+  --actor-id "$DEV_ACTOR_ID"
+docker compose exec web python -m app.cli storage reconcile \
+  --batch-size 100
+docker compose exec web python -m app.cli storage delete \
+  --object-id "$DEV_OBJECT_ID"
+```
+
+`storage delete` development/testing-only internal operatsiya. Preflight faqat
+configured storage data-plane accessni tekshiradi; private policy va anonymous
+denial `minio-init`, CI provisioning va designated real-MinIO acceptance bilan
+isbotlanadi.
+
+Storage web startup uchun optional. `/health` green bo'lishi storage tayyor
+deganini anglatmaydi; storage-specific preflight authoritative. Storage
+unavailable bo'lsa capability fail-closed ishlaydi va local-disk fallback
+yo'q. M6 Telegram worker va M7 OTP dispatcher storage/root credential hamda
+MinIO dependency olmaydi.
+
+`deploy/minio-backup-restore-exercise.sh` faqat synthetic temporary private
+storage bilan local mashq qiladi. U production backup, recovery yoki RPO/RTO
+dalili emas; uni faqat `docs/m8_storage_runbook.md` bo'yicha bajaring.
+`docker compose down -v` PostgreSQL va MinIO named volumelarini o'chiradigan
+destructive buyruq, shuning uchun normal operation, acceptance yoki backup
+mashqida uni ishlatmang.
+
 ## Validation (Xubuntu Terminal)
 
 ```bash
@@ -383,8 +435,8 @@ PowerShellda ham shu buyruq ishlatiladi:
 docker compose down
 ```
 
-Bu container va networkni to'xtatadi, lekin PostgreSQL ma'lumotlari named
-volume ichida saqlanib qoladi.
+Bu container va networkni to'xtatadi, lekin PostgreSQL ma'lumotlari va private
+MinIO objectlari o'z named volumelari ichida saqlanib qoladi.
 
 XAVFLI: containerlar bilan birga PostgreSQL ma'lumotlarini ham o'chirish:
 
@@ -394,9 +446,9 @@ docker compose down -v
 
 `-v` named volume'ni ham o'chiradi. Bu local development va test database
 ichidagi ma'lumotlarni, jumladan local user, M3 customer draftlar va M4
-Telegram linking test/local state'ni yo'q qiladi. Shuningdek `dropdb`,
-`DROP DATABASE`, `TRUNCATE` yoki test cleanup buyruqlarini development
-database `nasiya`ga yubormang.
+Telegram linking test/local state'ni, shuningdek private MinIO objectlarini
+yo'q qiladi. Shuningdek `dropdb`, `DROP DATABASE`, `TRUNCATE` yoki test cleanup
+buyruqlarini development database `nasiya`ga yubormang.
 
 ## PostgreSQL Dump Import
 

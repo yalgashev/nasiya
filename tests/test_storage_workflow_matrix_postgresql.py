@@ -12,6 +12,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.auth.error_codes import ErrorCode
 from app.auth.models import User
 from app.db import create_database_session_factory
 from app.settings import Settings
@@ -262,13 +263,35 @@ def test_crash_after_put_is_reconciled_once_across_repeated_invocations(
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
-    ("head_mode", "expected_status", "expected_code", "expected_calls"),
     (
+        "reconcile_head_mode",
+        "expected_status",
+        "expected_code",
+        "expected_calls",
+        "expected_object_count",
+    ),
+    (
+        (
+            "exact",
+            ObjectFileStatus.AVAILABLE,
+            None,
+            (
+                FakeStorageOperation.PUT,
+                FakeStorageOperation.HEAD,
+                FakeStorageOperation.HEAD,
+            ),
+            1,
+        ),
         (
             "missing",
             ObjectFileStatus.FAILED,
             StorageInternalCode.OBJECT_MISSING_AFTER_UPLOAD,
-            (FakeStorageOperation.PUT, FakeStorageOperation.HEAD),
+            (
+                FakeStorageOperation.PUT,
+                FakeStorageOperation.HEAD,
+                FakeStorageOperation.HEAD,
+            ),
+            0,
         ),
         (
             "mismatch",
@@ -277,54 +300,162 @@ def test_crash_after_put_is_reconciled_once_across_repeated_invocations(
             (
                 FakeStorageOperation.PUT,
                 FakeStorageOperation.HEAD,
+                FakeStorageOperation.HEAD,
                 FakeStorageOperation.DELETE,
             ),
+            0,
         ),
     ),
 )
-def test_successful_put_head_failure_matrix_has_no_orphan(
+def test_successful_put_missing_head_reconciles_same_row_without_second_put(
     m2_test_database: Engine,
-    head_mode: str,
+    caplog: pytest.LogCaptureFixture,
+    reconcile_head_mode: str,
     expected_status: ObjectFileStatus,
-    expected_code: StorageInternalCode,
+    expected_code: StorageInternalCode | None,
     expected_calls: tuple[FakeStorageOperation, ...],
+    expected_object_count: int,
 ) -> None:
     _seed_actor(m2_test_database)
+    delete_pending_committed = Event()
 
-    class VanishingHeadStorage(FakeObjectStorageService):
-        def put_object(self, **kwargs) -> StorageProviderOperationResult:
-            result = super().put_object(**kwargs)
-            self._objects.clear()
-            return result
+    class TransitionTrackingSession(Session):
+        pass
 
-    storage: FakeObjectStorageService
-    if head_mode == "missing":
-        storage = VanishingHeadStorage()
-    else:
-        storage = FakeObjectStorageService()
-        storage.queue_head_outcome(FakeStorageOutcome.MISMATCH)
+    def remember_delete_pending_after_flush(
+        session: Session,
+        _flush_context: object,
+    ) -> None:
+        if any(
+            isinstance(instance, ObjectFile)
+            and instance.status == ObjectFileStatus.DELETE_PENDING.value
+            for instance in session.identity_map.values()
+        ):
+            session.info["m870_delete_pending_flushed"] = True
 
-    with pytest.raises(StorageUploadError) as exc_info:
-        asyncio.run(
-            ingest_sanitized_image(
-                create_database_session_factory(m2_test_database),
-                source=AsyncBytesSource(_png_bytes()),
-                actor_user_id=ACTOR_ID,
-                client_ip=CLIENT_IP,
-                now=BASE,
-                settings=_settings(m2_test_database),
-                storage=storage,
+    def publish_delete_pending_after_commit(session: Session) -> None:
+        if session.info.pop("m870_delete_pending_flushed", False):
+            delete_pending_committed.set()
+
+    event.listen(
+        TransitionTrackingSession,
+        "after_flush",
+        remember_delete_pending_after_flush,
+    )
+    event.listen(
+        TransitionTrackingSession,
+        "after_commit",
+        publish_delete_pending_after_commit,
+    )
+    session_factory = sessionmaker(
+        bind=m2_test_database,
+        class_=TransitionTrackingSession,
+    )
+
+    class TransitionObservingStorage(FakeObjectStorageService):
+        def delete_object(self, **kwargs) -> StorageProviderOperationResult:
+            assert delete_pending_committed.is_set()
+            return super().delete_object(**kwargs)
+
+    storage = TransitionObservingStorage()
+    storage.queue_head_outcome(FakeStorageOutcome.MISSING)
+    try:
+        with pytest.raises(StorageUploadError) as exc_info:
+            asyncio.run(
+                ingest_sanitized_image(
+                    session_factory,
+                    source=AsyncBytesSource(_png_bytes()),
+                    actor_user_id=ACTOR_ID,
+                    client_ip=CLIENT_IP,
+                    now=BASE,
+                    settings=_settings(m2_test_database),
+                    storage=storage,
+                )
             )
+
+        with session_factory() as session:
+            pending = session.scalar(select(ObjectFile))
+            initial_row_count = session.scalar(
+                select(func.count()).select_from(ObjectFile)
+            )
+        assert (
+            exc_info.value.internal_code is StorageInternalCode.UPLOAD_OUTCOME_UNKNOWN
+        )
+        assert pending is not None
+        pending_id = pending.id
+        pending_key = pending.object_key
+        pending_checksum = pending.checksum_sha256
+        assert pending.status == ObjectFileStatus.PENDING_UPLOAD.value
+        assert pending.failure_code == StorageInternalCode.UPLOAD_OUTCOME_UNKNOWN.value
+        assert pending.updated_at == BASE
+        assert pending.available_at is None
+        assert pending.terminal_at is None
+        assert pending.deleted_at is None
+        assert initial_row_count == 1
+        assert storage.object_count == 1
+        assert tuple(call.operation for call in storage.calls) == (
+            FakeStorageOperation.PUT,
+            FakeStorageOperation.HEAD,
         )
 
-    with create_database_session_factory(m2_test_database)() as session:
-        stored = session.scalar(select(ObjectFile))
-    assert exc_info.value.internal_code is expected_code
+        if reconcile_head_mode == "missing":
+            storage._objects.clear()
+        elif reconcile_head_mode == "mismatch":
+            storage.queue_head_outcome(FakeStorageOutcome.MISMATCH)
+
+        reconcile_result = reconcile_stale_object_uploads(
+            session_factory,
+            storage=storage,
+            now=BASE + timedelta(seconds=61),
+            stale_seconds=60,
+            batch_size=1,
+        )
+    finally:
+        event.remove(
+            TransitionTrackingSession,
+            "after_flush",
+            remember_delete_pending_after_flush,
+        )
+        event.remove(
+            TransitionTrackingSession,
+            "after_commit",
+            publish_delete_pending_after_commit,
+        )
+
+    with session_factory() as session:
+        stored = session.get(ObjectFile, pending_id)
+        final_row_count = session.scalar(select(func.count()).select_from(ObjectFile))
     assert stored is not None
+    assert stored.id == pending_id
+    assert stored.object_key == pending_key
     assert stored.status == expected_status.value
-    assert stored.failure_code == expected_code.value
-    assert storage.object_count == 0
+    assert stored.failure_code == (
+        expected_code.value if expected_code is not None else None
+    )
+    assert final_row_count == 1
+    assert storage.object_count == expected_object_count
     assert tuple(call.operation for call in storage.calls) == expected_calls
+    if reconcile_head_mode == "mismatch":
+        assert delete_pending_committed.is_set()
+    else:
+        assert not delete_pending_committed.is_set()
+
+    safe_rendered = (
+        f"{exc_info.value!s} {exc_info.value!r} "
+        f"{reconcile_result!s} {reconcile_result!r} {caplog.text}"
+    )
+    for hidden in (
+        RAW_ENDPOINT,
+        RAW_ACCESS_KEY,
+        RAW_SECRET_KEY,
+        RAW_BUCKET,
+        pending_key,
+        pending_checksum,
+        "provider-private-response-detail",
+        "https://private-presign.invalid/object",
+    ):
+        assert hidden not in safe_rendered
+    assert _png_bytes() not in safe_rendered.encode()
 
 
 @pytest.mark.integration
@@ -368,8 +499,12 @@ def test_delete_pending_wins_before_presign_and_provider_delete_is_bounded(
             now=BASE + timedelta(seconds=1),
         )
         assert storage.delete_entered.wait(timeout=5)
+        with session_factory() as session:
+            delete_pending = session.get(ObjectFile, ingested.object_file_id)
+        assert delete_pending is not None
+        assert delete_pending.status == ObjectFileStatus.DELETE_PENDING.value
         try:
-            with pytest.raises(StorageAccessDeniedError):
+            with pytest.raises(StorageAccessDeniedError) as exc_info:
                 create_authorized_presigned_get_url(
                     session_factory,
                     request=ObjectReadAuthorizationRequest(
@@ -388,6 +523,7 @@ def test_delete_pending_wins_before_presign_and_provider_delete_is_bounded(
     with session_factory() as session:
         stored = session.get(ObjectFile, ingested.object_file_id)
     assert delete_result.status is ObjectFileStatus.DELETED
+    assert exc_info.value.code is ErrorCode.FILE_ACCESS_DENIED
     assert stored is not None
     assert stored.status == ObjectFileStatus.DELETED.value
     assert [call.operation for call in storage.calls] == [

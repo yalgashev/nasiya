@@ -283,7 +283,7 @@ class ObjectStorageService(Protocol):
         ttl_seconds: int,
     ) -> PresignedObjectUrl: ...
 
-    def ensure_private_bucket(
+    def check_bucket_access(
         self,
         *,
         bucket: BucketName,

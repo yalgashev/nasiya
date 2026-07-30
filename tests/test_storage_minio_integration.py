@@ -13,6 +13,8 @@ from PIL import Image
 from pydantic import SecretStr
 
 import app.storage.s3 as storage_s3
+from app import cli
+from app.settings import Settings
 from app.storage.contracts import (
     BucketName,
     ObjectKey,
@@ -86,6 +88,26 @@ def _config(
     )
 
 
+def _settings() -> Settings:
+    return Settings(
+        _env_file=None,
+        app_environment="testing",
+        debug=False,
+        database_url=(
+            "postgresql+psycopg://nasiya:dev_pass@127.0.0.1:5432/nasiya_test"
+        ),
+        session_cookie_secure=False,
+        rate_limit_hmac_key="m8-minio-integration-rate-limit-key",
+        object_storage_endpoint_url=MINIO_ENDPOINT,
+        object_storage_region="us-east-1",
+        object_storage_bucket=MINIO_BUCKET.as_internal_value(),
+        object_storage_access_key=MINIO_APP_ACCESS_KEY,
+        object_storage_secret_key=MINIO_APP_SECRET_KEY,
+        object_storage_use_ssl=False,
+        object_storage_addressing_style="path",
+    )
+
+
 def _synthetic_image() -> SanitizedImage:
     source = BytesIO()
     with Image.new("RGBA", (3, 2), (21, 89, 144, 173)) as image:
@@ -126,6 +148,14 @@ def _anonymous_url(key: ObjectKey) -> str:
     return f"{MINIO_ENDPOINT}/{MINIO_BUCKET.as_internal_value()}/{encoded_key}"
 
 
+def _safe_http_request(method: str, url: str) -> httpx.Response:
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            return client.request(method, url)
+    except httpx.HTTPError:
+        raise AssertionError("storage acceptance request failed") from None
+
+
 def _assert_access_denied(operation) -> None:
     with pytest.raises(ClientError) as exc_info:
         operation()
@@ -135,12 +165,27 @@ def _assert_access_denied(operation) -> None:
 
 @pytest.mark.integration
 def test_minio_01_app_credentials_connect_to_scoped_bucket(
-    minio_adapter: S3ObjectStorageService,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    response = minio_adapter._client.head_bucket(
-        Bucket=MINIO_BUCKET.as_internal_value()
-    )
-    assert response["ResponseMetadata"]["HTTPStatusCode"] == 200
+    monkeypatch.delenv("MINIO_ROOT_USER", raising=False)
+    monkeypatch.delenv("MINIO_ROOT_PASSWORD", raising=False)
+
+    exit_code = cli.main(["storage", "preflight"], settings=_settings())
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "STORAGE_PREFLIGHT_OK\n"
+    assert captured.err == ""
+    for hidden_value in (
+        MINIO_ENDPOINT,
+        MINIO_BUCKET.as_internal_value(),
+        MINIO_APP_ACCESS_KEY,
+        MINIO_APP_SECRET_KEY,
+        "MinIO",
+        "S3",
+    ):
+        assert hidden_value not in f"{captured.out}{captured.err}"
 
 
 @pytest.mark.integration
@@ -180,8 +225,7 @@ def test_minio_04_head_returns_exact_checksum_metadata(
 def test_minio_05_anonymous_get_is_denied(
     stored_image: StoredSyntheticImage,
 ) -> None:
-    with httpx.Client(timeout=5.0) as client:
-        response = client.get(_anonymous_url(stored_image.key))
+    response = _safe_http_request("GET", _anonymous_url(stored_image.key))
     assert response.status_code == 403
 
 
@@ -189,8 +233,7 @@ def test_minio_05_anonymous_get_is_denied(
 def test_minio_06_anonymous_head_is_denied(
     stored_image: StoredSyntheticImage,
 ) -> None:
-    with httpx.Client(timeout=5.0) as client:
-        response = client.head(_anonymous_url(stored_image.key))
+    response = _safe_http_request("HEAD", _anonymous_url(stored_image.key))
     assert response.status_code == 403
 
 
@@ -203,8 +246,7 @@ def test_minio_07_presigned_get_returns_exact_sanitized_bytes(
         key=stored_image.key,
         ttl_seconds=60,
     )
-    with httpx.Client(timeout=5.0) as client:
-        response = client.get(url.as_response_value())
+    response = _safe_http_request("GET", url.as_response_value())
     assert response.status_code == 200
     assert response.content == (stored_image.image.sanitized_bytes.as_internal_bytes())
     with Image.open(BytesIO(response.content)) as reopened:
@@ -314,7 +356,27 @@ def test_minio_13_wrong_access_key_is_sanitized() -> None:
 
 
 @pytest.mark.integration
-def test_minio_14_app_user_cannot_read_bucket_policy(
+def test_minio_14_app_user_cannot_inspect_bucket_admin_state(
+    minio_adapter: S3ObjectStorageService,
+) -> None:
+    _assert_access_denied(
+        lambda: minio_adapter._client.get_bucket_acl(
+            Bucket=MINIO_BUCKET.as_internal_value()
+        )
+    )
+    _assert_access_denied(
+        lambda: minio_adapter._client.get_bucket_policy(
+            Bucket=MINIO_BUCKET.as_internal_value()
+        )
+    )
+    assert (
+        minio_adapter.check_bucket_access(bucket=MINIO_BUCKET)
+        is StorageProviderOperationResult.SUCCESS
+    )
+
+
+@pytest.mark.integration
+def test_minio_15_admin_denial_does_not_break_app_data_plane(
     minio_adapter: S3ObjectStorageService,
 ) -> None:
     _assert_access_denied(
@@ -322,17 +384,37 @@ def test_minio_14_app_user_cannot_read_bucket_policy(
             Bucket=MINIO_BUCKET.as_internal_value()
         )
     )
-
-
-@pytest.mark.integration
-def test_minio_15_app_user_cannot_create_bucket(
-    minio_adapter: S3ObjectStorageService,
-) -> None:
-    _assert_access_denied(
-        lambda: minio_adapter._client.create_bucket(
-            Bucket="nasiya-forbidden-admin-test"
+    image = _synthetic_image()
+    key = generate_object_key("png")
+    try:
+        assert (
+            minio_adapter.put_object(
+                bucket=MINIO_BUCKET,
+                key=key,
+                image=image,
+            )
+            is StorageProviderOperationResult.SUCCESS
         )
-    )
+        head = minio_adapter.head_object(bucket=MINIO_BUCKET, key=key)
+        assert head is not None
+        assert head.size_bytes == image.metadata.size_bytes
+        assert head.content_type == image.metadata.content_type
+        assert head.checksum_sha256 == image.metadata.checksum_sha256
+        url = minio_adapter.create_presigned_get_url(
+            bucket=MINIO_BUCKET,
+            key=key,
+            ttl_seconds=60,
+        )
+        response = _safe_http_request("GET", url.as_response_value())
+        assert response.status_code == 200
+        assert response.content == image.sanitized_bytes.as_internal_bytes()
+        assert (
+            minio_adapter.delete_object(bucket=MINIO_BUCKET, key=key)
+            is StorageProviderOperationResult.SUCCESS
+        )
+        assert minio_adapter.head_object(bucket=MINIO_BUCKET, key=key) is None
+    finally:
+        minio_adapter.delete_object(bucket=MINIO_BUCKET, key=key)
 
 
 @pytest.mark.integration

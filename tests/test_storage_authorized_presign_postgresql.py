@@ -380,8 +380,10 @@ def test_failed_and_deleted_objects_are_same_closed_access_error(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("ttl_seconds", (60, 600, 900))
 def test_presign_uses_current_configured_expiry(
     m2_test_database: Engine,
+    ttl_seconds: int,
 ) -> None:
     actor_id, object_file_id = _seed_object(
         m2_test_database,
@@ -398,10 +400,10 @@ def test_presign_uses_current_configured_expiry(
         ),
         authorizer=FakeAuthorizer(ObjectReadAuthorizationResult.ALLOWED),
         storage=fake_storage,
-        settings=_settings(ttl_seconds=600),
+        settings=_settings(ttl_seconds=ttl_seconds),
     )
 
-    assert fake_storage.calls[0].ttl_seconds == 600
+    assert fake_storage.calls[0].ttl_seconds == ttl_seconds
 
 
 @pytest.mark.integration

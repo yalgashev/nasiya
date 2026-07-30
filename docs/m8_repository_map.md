@@ -2,7 +2,8 @@
 
 Status: repository-aware map for M8 implementation.
 Sources: M8.01 baseline audit, M8.02 contract reconciliation, M8.03 primitive
-map, M8.04 feasibility audit, and the M8 Final Scope Freeze.
+map, M8.04 feasibility audit, the M8 Final Scope Freeze, and the Recovery Fix
+1–2 post-freeze Product Owner corrections.
 
 The separate Product Gate audit is not a repository file. The Final Scope
 Freeze states that it incorporates that audit; M8.03–M8.04 independently
@@ -23,9 +24,34 @@ rechecked its repository claims.
 | Single-job CI | M6/M7; M8 PO-M8-22 | Inherited | `.github/workflows/ci.yml:12` | Add MinIO within `dependency-sync`. | OK |
 | Exactly one M8 table | M8 persistence contract | M8-new | M7 head `e7f8a9b0c1d2` has 17 inherited tables; M8 head `f8a9b0c1d2e3` adds only `object_files` | Keep exactly one M8 table. | OK |
 | No public route/domain consumer | M8 PO-M8-1/18 | M8-new boundary | `app/main.py:48` includes only auth/customer/shop routers; no storage code | Add internal service/CLI only. | OK |
-| PO-M8 decisions | M8 freeze section 6 | M8-new | `docs/m8_decisions.md` | All `24/24` are frozen. | OK |
+| PO-M8 decisions | M8 freeze section 6 plus Recovery Fix 1–2 corrections | M8-new | `docs/m8_decisions.md` | The `24/24` remain frozen; provisioning/data-plane and immediate-missing-HEAD boundaries are corrected post-freeze. | OK |
 
-Unresolved contradiction: none.
+The provisioning/data-plane and successful-PUT/immediate-missing-HEAD
+contradictions are resolved by the explicit post-freeze Product Owner
+corrections. No unresolved contradiction remains.
+
+### Recovery Fix 1 Responsibility Map
+
+| Plane | Credential owner | Exact responsibility | Repository evidence |
+|---|---|---|---|
+| Provisioning/admin | `minio` and `minio-init` only | create configured bucket, enforce/verify private anonymous access, create/update scoped app identity and policy | `deploy/minio-init.sh`, `compose.yaml` |
+| Application data | web and storage CLI, app identity only | configured-bucket access check, PUT, HEAD, DELETE, presigned GET | `app/storage/contracts.py`, `app/storage/s3.py`, `app/cli.py` |
+| Privacy proof | init plus designated acceptance/CI | verify anonymous denial and app admin-operation denial | `tests/test_storage_minio_init.py`, `tests/test_storage_minio_integration.py`, `.github/workflows/ci.yml` |
+| Isolated roles | M6 worker and M7 dispatcher | no root/app storage credential and no MinIO dependency | `compose.yaml`, degraded-mode containment tests |
+
+### Recovery Fix 2 Lifecycle Map
+
+| Observation | Immediate durable result | Later bounded action | Repository evidence |
+|---|---|---|---|
+| PUT success or ambiguity, immediate HEAD missing | same row/key stays `PENDING_UPLOAD/UPLOAD_OUTCOME_UNKNOWN`; closed error, no object result | stale reconciler HEADs the same key without PUT | `app/storage/service.py`, `app/storage/repository.py` |
+| stale HEAD exact | `AVAILABLE` | none | `app/storage/service.py:reconcile_stale_object_uploads` |
+| stale HEAD missing | `FAILED/OBJECT_MISSING_AFTER_UPLOAD` | none | `app/storage/service.py:reconcile_stale_object_uploads` |
+| stale HEAD mismatch | `DELETE_PENDING` | bounded DELETE, then `DELETED` | `app/storage/service.py:reconcile_stale_object_uploads` |
+
+The test fake can return one non-mutating missing HEAD to model delayed
+visibility. Workflow tests prove one row/key and one PUT across all three
+stale outcomes; transaction and concurrency tests preserve the last committed
+recoverable state and one legal final transition.
 
 ## M8.03 Primitive Map
 
@@ -92,13 +118,13 @@ feasible without another parser dependency.
 
 | Item | File / symbol | Status |
 |---|---|---|
-| Main argparse CLI | `app/cli.py:build_parser`, `app/cli.py:main` | IMPLEMENTED with bounded internal storage preflight/health, reconcile, dev-only delete, and synthetic smoke commands |
+| Main argparse CLI | `app/cli.py:build_parser`, `app/cli.py:main` | IMPLEMENTED with app-credential data-plane preflight/health, reconcile, dev-only delete, and synthetic smoke commands |
 | Dedicated process CLI pattern | `app/telegram/worker.py:125`, `app/otp/dispatcher.py:116` | REUSE pattern only |
 | Same runtime image | `Dockerfile:23`, `Dockerfile:32` | REUSE |
 | Compose DB/migrate/web | `compose.yaml:2`, `compose.yaml:18`, `compose.yaml:29` | REUSE |
 | M6 worker | `compose.yaml:46` | KEEP UNCHANGED |
 | M7 dispatcher | `compose.yaml:72` | KEEP UNCHANGED |
-| MinIO/init/volume | `compose.yaml`, `deploy/minio-init.sh` | IMPLEMENTED with pinned images, private policy, scoped app identity, and persistent named volume |
+| MinIO/init/volume | `compose.yaml`, `deploy/minio-init.sh` | IMPLEMENTED admin plane with pinned images, create-if-missing, private/anonymous-deny verification, scoped app identity, and persistent named volume |
 | Single CI job | `.github/workflows/ci.yml:12` | REUSE / EXTEND |
 | PostgreSQL CI service | `.github/workflows/ci.yml:35` | REUSE |
 | Full-suite no skip guard | `.github/workflows/ci.yml:107` | REUSE |
@@ -114,7 +140,7 @@ feasible without another parser dependency.
 | boto3/botocore | IMPLEMENTED dependency | Direct boto3 `1.43.59`; botocore `1.43.59` transitive; single-attempt adapter is implemented in `app/storage/s3.py`. |
 | MinIO Python SDK | TOPILMADI | Keep absent; use boto3 adapter and pinned container/`mc`. |
 | libmagic/python-magic | TOPILMADI | Keep absent; use Pillow fully decoded `Image.format`. |
-| S3 adapter | IMPLEMENTED | `app/storage/s3.py` provides only the injected API and failure classification from the M8.37 appendix. |
+| S3 adapter | IMPLEMENTED | `app/storage/s3.py` is data-plane only: one configured-bucket access check plus object PUT/HEAD/DELETE/presigned GET; it has no provisioning/admin API. |
 | Image sanitizer | IMPLEMENTED | `app/storage/image.py` performs bounded decode, fresh-pixel render, and deterministic re-encode. |
 | Object lifecycle model/repository | IMPLEMENTED | `app/storage/models.py` and `app/storage/repository.py`; one table and caller-owned primitives. |
 | Public file endpoints | TOPILMADI | Keep absent. |
@@ -160,13 +186,13 @@ The minimal placement remains one `app/storage/s3.py` module:
 | narrow adapter implementing `ObjectStorageService` | `app/storage/s3.py` | contracts inward; boto3 client outward |
 | exception classifier | private helper in `app/storage/s3.py` | exact pinned botocore classes |
 | fake programmable adapter | test support only | same contracts; no production global state |
-| private bucket CLI coordinator | `app/cli.py:storage_preflight_command` | calls the narrow storage protocol and emits one fixed safe status |
+| app data-plane preflight coordinator | `app/cli.py:storage_preflight_command` | calls `check_bucket_access` once with app credentials and emits one fixed safe status |
 
 No repository, ORM model, router, settings field, provider registry, base
 adapter, plugin framework, background process, or second storage dependency is
-needed. The exact factory kwargs, PutObject/HeadObject/DeleteObject/presign
-calls, checksum metadata key, missing semantics, and failure table are frozen
-in `docs/m8_scope_contract.md`.
+needed. The exact factory kwargs, HeadBucket access check,
+PutObject/HeadObject/DeleteObject/presign calls, checksum metadata key, missing
+semantics, and failure table are recorded in `docs/m8_scope_contract.md`.
 
 ## M8.49 Upload Coordinator Placement And Transaction Patterns
 
@@ -207,6 +233,13 @@ The coordinator owns every Session it opens and no provider/client/source it
 receives. No repository symbol gains `commit()`, full `rollback()`, or
 `close()`. No route, domain-owner field, generic DTO layer, event, outbox,
 scheduler, second table, or generic framework module is needed for this API.
+
+For both successful and ambiguous PUT, an immediate missing HEAD takes the
+same result path: a fresh locked transaction leaves the existing row
+`PENDING_UPLOAD/UPLOAD_OUTCOME_UNKNOWN` and returns no object. Only later
+stale reconciliation may interpret another missing HEAD as
+`FAILED/OBJECT_MISSING_AFTER_UPLOAD`; reconciliation never PUTs or generates a
+new key.
 
 ## M8.07 Resolved Dependency Map
 

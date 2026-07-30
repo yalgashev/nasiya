@@ -19,7 +19,11 @@ from app.db import create_database_session_factory
 from app.settings import Settings
 from app.storage.contracts import BucketName, ObjectKey, SanitizedImage
 from app.storage.errors import StorageInternalCode, StorageUploadError
-from app.storage.image import ImageSanitizationError
+from app.storage.image import (
+    BoundedImageBytes,
+    ImageDimensionLimits,
+    ImageSanitizationError,
+)
 from app.storage.models import ObjectFile, ObjectFileStatus
 from app.storage.rate_limit import record_storage_upload_attempt
 from app.storage.service import (
@@ -189,13 +193,14 @@ def test_rate_limit_rejection_precedes_source_read_row_and_provider(
 
     with pytest.raises(StorageUploadError) as exc_info:
         asyncio.run(
-            prepare_sanitized_image_upload(
+            ingest_sanitized_image(
                 session_factory,
                 source=source,
                 actor_user_id=ACTOR_USER_ID,
                 client_ip=CLIENT_IP,
                 now=NOW + timedelta(seconds=1),
                 settings=settings,
+                storage=storage,
             )
         )
 
@@ -209,9 +214,11 @@ def test_rate_limit_rejection_precedes_source_read_row_and_provider(
 @pytest.mark.integration
 def test_source_and_provider_boundaries_have_no_open_session(
     m2_test_database: Engine,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _seed_actor(m2_test_database)
     events: list[str] = []
+    opened_sessions: list[Session] = []
     active_session_count = 0
 
     class TrackingSession(Session):
@@ -220,6 +227,7 @@ def test_source_and_provider_boundaries_have_no_open_session(
             super().__init__(**kwargs)
             self._tracking_closed = False
             active_session_count += 1
+            opened_sessions.append(self)
             events.append("session_open")
 
         def close(self) -> None:
@@ -232,6 +240,28 @@ def test_source_and_provider_boundaries_have_no_open_session(
 
     def assert_no_session() -> None:
         assert active_session_count == 0
+
+    original_sanitize = storage_service.sanitize_bounded_image
+
+    def checked_sanitize(
+        source: BoundedImageBytes,
+        *,
+        limits: ImageDimensionLimits,
+        max_output_bytes: int,
+    ) -> SanitizedImage:
+        assert_no_session()
+        events.append("sanitize")
+        return original_sanitize(
+            source,
+            limits=limits,
+            max_output_bytes=max_output_bytes,
+        )
+
+    monkeypatch.setattr(
+        storage_service,
+        "sanitize_bounded_image",
+        checked_sanitize,
+    )
 
     class OrderedStorage(FakeObjectStorageService):
         def put_object(
@@ -279,12 +309,16 @@ def test_source_and_provider_boundaries_have_no_open_session(
 
     assert active_session_count == 0
     assert result.object_file_id is not None
+    assert len(opened_sessions) == 3
+    assert len({id(session) for session in opened_sessions}) == 3
+    assert opened_sessions[1] is not opened_sessions[2]
     assert events == [
         "session_open",
         "session_close",
         "source_seek",
         "source_read",
         "source_read",
+        "sanitize",
         "session_open",
         "session_close",
         "provider_put",
@@ -371,13 +405,14 @@ def test_tx_s1_commit_failure_rolls_back_and_makes_zero_provider_calls(
     try:
         with pytest.raises(StorageUploadError) as exc_info:
             asyncio.run(
-                prepare_sanitized_image_upload(
+                ingest_sanitized_image(
                     failing_factory,
                     source=AsyncBytesSource(_png_bytes()),
                     actor_user_id=ACTOR_USER_ID,
                     client_ip=CLIENT_IP,
                     now=NOW,
                     settings=_settings(m2_test_database),
+                    storage=storage,
                 )
             )
     finally:
@@ -452,6 +487,79 @@ def test_tx_s2_commit_failure_returns_no_object_and_leaves_pending_for_reconcile
     assert stored is not None
     assert stored.status == ObjectFileStatus.PENDING_UPLOAD.value
     assert stored.available_at is None
+    assert [call.operation for call in storage.calls] == [
+        FakeStorageOperation.PUT,
+        FakeStorageOperation.HEAD,
+    ]
+    assert storage.object_count == 1
+
+
+@pytest.mark.integration
+def test_missing_head_unknown_tx_s2_failure_keeps_last_committed_pending(
+    m2_test_database: Engine,
+) -> None:
+    _seed_actor(m2_test_database)
+
+    class FailingUnknownCommitSession(Session):
+        pass
+
+    commit_count = 0
+    sensitive_detail = f"{RAW_ENDPOINT} {RAW_SECRET_KEY} unknown commit detail"
+
+    def fail_third_commit(_session: Session) -> None:
+        nonlocal commit_count
+        commit_count += 1
+        if commit_count == 3:
+            raise OperationalError(
+                sensitive_detail,
+                {"secret": RAW_ACCESS_KEY},
+                RuntimeError(sensitive_detail),
+            )
+
+    event.listen(FailingUnknownCommitSession, "before_commit", fail_third_commit)
+    failing_factory = sessionmaker(
+        bind=m2_test_database,
+        class_=FailingUnknownCommitSession,
+    )
+    storage = FakeObjectStorageService()
+    storage.queue_head_outcome(FakeStorageOutcome.MISSING)
+    try:
+        with pytest.raises(StorageUploadError) as exc_info:
+            asyncio.run(
+                ingest_sanitized_image(
+                    failing_factory,
+                    source=AsyncBytesSource(_png_bytes()),
+                    actor_user_id=ACTOR_USER_ID,
+                    client_ip=CLIENT_IP,
+                    now=NOW,
+                    settings=_settings(m2_test_database),
+                    storage=storage,
+                )
+            )
+    finally:
+        event.remove(
+            FailingUnknownCommitSession,
+            "before_commit",
+            fail_third_commit,
+        )
+
+    with create_database_session_factory(m2_test_database)() as session:
+        stored = session.scalar(select(ObjectFile))
+        row_count = session.scalar(select(func.count()).select_from(ObjectFile))
+    error = exc_info.value
+    assert commit_count == 3
+    assert error.code is ErrorCode.FILE_STORAGE_ERROR
+    assert error.internal_code is None
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert sensitive_detail not in f"{error!s} {error!r}"
+    assert stored is not None
+    assert stored.status == ObjectFileStatus.PENDING_UPLOAD.value
+    assert stored.failure_code is None
+    assert stored.available_at is None
+    assert stored.terminal_at is None
+    assert stored.deleted_at is None
+    assert row_count == 1
     assert [call.operation for call in storage.calls] == [
         FakeStorageOperation.PUT,
         FakeStorageOperation.HEAD,

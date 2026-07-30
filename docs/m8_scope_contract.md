@@ -37,6 +37,53 @@ can be produced only after an injected domain-parent authorizer allows access.
 M8 is a transport-independent foundation. It does not attach an object to a
 customer, owner application, shop news item, or any other product domain.
 
+## Post-Freeze Product Owner Correction — Provisioning And Data Plane
+
+Recovery Fix 1 records a post-freeze Product Owner correction. It supersedes
+the M8.42 runtime `ensure_private_bucket` and private-policy-preflight clauses
+that previously mixed provisioning with application credentials. The frozen
+source remains unchanged.
+
+Provisioning is an admin-plane responsibility owned by
+`deploy/minio-init.sh`, using root/admin credentials. It creates the configured
+bucket if missing, enforces and verifies private anonymous access, and
+creates/updates the bucket-scoped application identity and policy. Web and the
+storage CLI receive only the application identity. Their
+`ObjectStorageService` is data-plane only: configured-bucket access check,
+PUT, HEAD, DELETE, and presigned GET. It never creates a bucket, inspects ACL
+or bucket policy, calls PublicAccessBlock APIs, or performs another admin
+operation.
+
+`storage preflight` requires a complete application storage configuration and
+checks only data-plane access to the configured bucket. It does not claim to
+verify privacy or anonymous denial and emits only the fixed safe success or
+failure status. Privacy and anonymous-deny proof belongs to `minio-init`,
+designated real-MinIO acceptance tests, and CI provisioning checks. Root
+credentials are never supplied to web, storage CLI, M6 worker, or M7
+dispatcher.
+
+## Post-Freeze Product Owner Correction — Immediate Missing HEAD
+
+Recovery Fix 2 records a second post-freeze Product Owner correction. It
+supersedes the requirement that a successful PUT followed by an immediate
+missing HEAD is terminal. The frozen source remains unchanged.
+
+An immediate missing HEAD is not definitive object absence, whether PUT
+returned success or an ambiguous result. A fresh transaction locks the same
+row, keeps it `PENDING_UPLOAD`, records
+`failure_code=UPLOAD_OUTCOME_UNKNOWN`, advances `updated_at` with the injected
+time, and returns the closed file error without an object result. The
+coordinator performs exactly one PUT and one immediate HEAD; it does not
+delete, presign, create another row/key, sleep, or retry PUT.
+
+After the stale threshold, bounded reconciliation HEADs that exact row/key.
+Exact metadata transitions it to `AVAILABLE`; a stale missing result may
+transition it to `FAILED/OBJECT_MISSING_AFTER_UPLOAD`; mismatch transitions
+through `DELETE_PENDING`, bounded delete, and `DELETED`. Supported production
+providers must pass an explicit object-and-metadata read-after-write
+visibility compatibility check before rollout. That rollout requirement does
+not make an immediate missing HEAD terminal.
+
 ## Exact In Scope
 
 - `ObjectStorageService` protocol and one boto3/botocore S3-compatible adapter.
@@ -61,14 +108,15 @@ customer, owner application, shop news item, or any other product domain.
 - Lifecycle `PENDING_UPLOAD`, `AVAILABLE`, `FAILED`, `DELETE_PENDING`,
   `DELETED`.
 - Upload order: sanitize, TX-S1 commit, external PUT/HEAD, TX-S2 commit.
-- Immediate HEAD reconciliation for ambiguous PUT; no automatic PUT retry.
+- Immediate HEAD verification for successful or ambiguous PUT; a missing
+  result remains durably reconcilable and there is no automatic PUT retry.
 - Internal stale-upload reconciliation and delete primitives/CLI.
 - Authorization-gated presigned GET for `AVAILABLE` rows, default TTL `300s`.
 - Existing HMAC limiter with storage-specific user/IP limits `5/20` per
   `900s`.
 - Fake adapter tests, real PostgreSQL tests, and designated real MinIO tests.
-- Storage preflight, smoke, private-policy, degraded-mode, and local
-  backup/restore operational coverage.
+- App-credential data-plane preflight, smoke, admin-plane private-policy,
+  degraded-mode, and local backup/restore operational coverage.
 - Web startup and `/health` remain independent of storage configuration.
 - M6 Telegram worker and M7 OTP dispatcher remain storage-independent.
 
@@ -106,7 +154,9 @@ customer, owner application, shop news item, or any other product domain.
 | One CI job | M6/M7 decisions | `.github/workflows/ci.yml:12` | MinIO integration stays inside `dependency-sync`. |
 | Real PostgreSQL only | Repository test contract | `tests/postgresql.py:29` | No SQLite, `create_all`, skip, xfail, or softened assertions. |
 
-No unresolved TT, M7, or M8 freeze contradiction exists. TT's future
+Recovery Fixes 1 and 2 resolve the post-freeze provisioning/data-plane and
+immediate-missing-HEAD contradictions through the Product Owner corrections
+above; no unresolved TT, M7, or M8 contract contradiction remains. TT's future
 `object_file` owner scope, customer documents, news images, and scheduler are
 later domain capabilities; M8 deliberately supplies only the shared private
 storage foundation.
@@ -827,7 +877,7 @@ PUT, HEAD, DELETE, presign, or an HTTP fetch.
 | Definite PUT rejection/no-send | Do not retry or HEAD. In a fresh TX-S2, lock `PENDING_UPLOAD` and mark `FAILED/STORAGE_PROVIDER_UNAVAILABLE`; then raise the closed file error. |
 | Ambiguous PUT | Never issue a second PUT. HEAD the exact same key outside a session: exact metadata proceeds to AVAILABLE; missing records `UPLOAD_OUTCOME_UNKNOWN` while remaining pending; mismatch follows `DELETE_PENDING` and bounded delete; a HEAD failure remains pending/unknown. |
 | PUT success, HEAD exact | Fresh TX-S2 locks the row and marks `AVAILABLE/available_at`; return only after commit. |
-| PUT success, HEAD missing | Fresh TX-S2 marks `FAILED/OBJECT_MISSING_AFTER_UPLOAD`; return no object. |
+| PUT success, immediate HEAD missing | Never repeat PUT. Fresh TX-S2 locks the same row, keeps `PENDING_UPLOAD`, records `UPLOAD_OUTCOME_UNKNOWN` with injected `updated_at`, and returns no object for stale reconciliation. |
 | PUT success, HEAD mismatch | Fresh result TX marks `DELETE_PENDING/OBJECT_METADATA_MISMATCH`; delete outside a session, then a fresh TX marks `DELETED`; return no object. |
 | PUT success, HEAD provider failure | Never repeat PUT. Fresh TX records `UPLOAD_OUTCOME_UNKNOWN` while the row remains `PENDING_UPLOAD`; return no object for stale reconciliation. |
 | Any required TX-S2 flush/commit | Raise the closed file error and return no object. Never repeat PUT. The last committed lifecycle state remains visible for bounded reconciliation. |
@@ -852,7 +902,7 @@ separate approved transaction and authorization model.
 - uses `FOR UPDATE SKIP LOCKED` in a short claim transaction;
 - advances `updated_at` as the claim marker and closes the session before HEAD;
 - exact HEAD -> fresh TX `AVAILABLE`;
-- missing -> fresh TX `FAILED/OBJECT_MISSING_AFTER_UPLOAD`;
+- stale missing -> fresh TX `FAILED/OBJECT_MISSING_AFTER_UPLOAD`;
 - mismatch -> fresh TX `DELETE_PENDING`, external delete, fresh TX `DELETED`;
 - never PUTs, schedules itself, or exposes a route.
 
@@ -875,14 +925,16 @@ storage delete --object-id <UUID>   # development/local/testing only
 storage smoke --actor-id <UUID>     # development/local/testing only
 ```
 
-Preflight/health verifies the private bucket policy through the narrow
-provider contract. Reconcile runs both bounded stale-upload and stale-delete
-coordinators. Delete delegates to the internal lifecycle service and fails
-before dependency construction in production. Output contains fixed status,
-counts, and allowlisted safe codes only; it never prints object UUID/key,
-bucket, endpoint, credential, provider response, or URL. There is no upload
-command for user files, manual SQL, public route, scheduler, or automatic
-AVAILABLE purge.
+Preflight/health requires the complete app-credential configuration and checks
+only data-plane access to the configured bucket through the narrow provider
+contract. It never creates the bucket, inspects or changes ACL/policy or
+PublicAccessBlock state, or claims to prove privacy/anonymous denial.
+Reconcile runs both bounded stale-upload and stale-delete coordinators. Delete
+delegates to the internal lifecycle service and fails before dependency
+construction in production. Output contains fixed status, counts, and
+allowlisted safe codes only; it never prints object UUID/key, bucket, endpoint,
+credential, provider response, or URL. There is no upload command for user
+files, manual SQL, public route, scheduler, or automatic AVAILABLE purge.
 
 Smoke accepts no file or filename. It generates a synthetic in-memory PNG,
 runs sanitizer/upload/HEAD, authorizes a configured-TTL presigned GET, fetches
@@ -907,7 +959,7 @@ put_object(...)
 head_object(...)
 delete_object(...)
 create_presigned_get_url(...)
-ensure_private_bucket(...)
+check_bucket_access(...)
 ```
 
 The boto3 client is injected/testable, uses SigV4, configured endpoint/region,
@@ -982,7 +1034,7 @@ delete_object(*, bucket: BucketName,
               key: ObjectKey) -> StorageProviderOperationResult
 create_presigned_get_url(*, bucket: BucketName, key: ObjectKey,
                          ttl_seconds: int) -> PresignedObjectUrl
-ensure_private_bucket(*, bucket: BucketName)
+check_bucket_access(*, bucket: BucketName)
     -> StorageProviderOperationResult
 ```
 
@@ -1030,24 +1082,20 @@ Presigning makes no network call. There is no presigned PUT, POST, list, public
 route, ACL, or URL persistence/logging path. The returned URL immediately
 enters `PresignedObjectUrl`.
 
-`ensure_private_bucket` is limited to create-if-missing and fail-closed
-private/ownership verification. Existing safe buckets succeed; an ownership
-mismatch or unverifiable public/anonymous state fails. It never deletes or
-recreates a bucket, changes an object, enables a public ACL/policy, or returns
-bucket/provider detail. M8.42 freezes the provider-capability-specific call
-sequence before implementation.
+`check_bucket_access` makes exactly one
+`HeadBucket(Bucket=<configured validated bucket>)` call with the application
+identity. Success proves only that the configured bucket is reachable through
+the app's bucket-scoped data-plane permission. Every `403`, `404`, or provider
+failure is a sanitized definite failure. It never creates a bucket or invokes
+`GetBucketAcl`, `GetBucketPolicy`,
+`PutPublicAccessBlock`, `GetPublicAccessBlock`, or another administrative API.
 
-M8.42 freezes that sequence as: `HeadBucket`; `CreateBucket` only on exact
-`404` (with `LocationConstraint` outside `us-east-1`); owner-only private
-`GetBucketAcl`; `GetBucketPolicy` requiring exact `NoSuchBucketPolicy/404`;
-then all four `PutPublicAccessBlock` flags and an exact
-`GetPublicAccessBlock` verification. Providers returning exact
-`405/501` plus `MethodNotAllowed`, `NotImplemented`,
-`NotImplementedException`, or `XNotImplemented` for the put-block capability
-use the private ACL plus absent-policy fallback. Other unsupported,
-unverifiable, public, cross-owner, `403`, or `BucketAlreadyExists` outcomes
-fail closed. `BucketAlreadyOwnedByYou` is the only safe create race. No bucket
-policy/ACL is deleted or silently rewritten.
+The superseded M8.42 create/private-verification sequence is not part of the
+runtime protocol or boto3 adapter. Create-if-missing, private anonymous policy,
+and bucket-scoped application identity/policy provisioning remain in
+`deploy/minio-init.sh`. Privacy/anonymous-deny verification remains in that
+admin-plane script, designated real-MinIO acceptance tests, and the CI
+provisioning check.
 
 ### Exact exception classification
 
@@ -1081,21 +1129,22 @@ pre-connect/configuration outcomes; remaining `HTTPClientError`; remaining
 
 Classification is exact:
 
-| Outcome | PUT | DELETE / create bucket | HEAD / verify | Presign |
+| Outcome | PUT | DELETE | object HEAD / bucket access check | Presign |
 |---|---|---|---|---|
 | `ParamValidationError`, `NoCredentialsError`, `PartialCredentialsError` | definite configuration failure | definite configuration failure | definite configuration failure | definite configuration failure |
 | `EndpointConnectionError`, `ConnectTimeoutError`, `ProxyConnectionError`, `SSLError` | definite no-response failure | definite no-response failure | definite provider failure | not expected; definite if raised |
 | `ReadTimeoutError`, `ConnectionClosedError`, remaining `HTTPClientError` | ambiguous | ambiguous | definite provider failure | not expected; definite if raised |
 | `ClientError` HTTP `408`, `429`, or `5xx` | ambiguous | ambiguous | definite provider failure | not expected; definite if raised |
-| other `ClientError` | definite rejection | definite rejection | `404` missing, otherwise definite provider failure | definite provider failure |
+| other `ClientError` | definite rejection | definite rejection | object HEAD `404` is missing; bucket access `404` and every other status are definite provider failure | definite provider failure |
 | remaining `BotoCoreError` | ambiguous, conservatively | ambiguous, conservatively | definite provider failure | definite provider failure |
 
 All mapped operation failures use `StorageProviderError` with
 `STORAGE_PROVIDER_UNAVAILABLE`; only the `kind` is `DEFINITE` or `AMBIGUOUS`.
 Factory/configuration failures use
-`STORAGE_CONFIGURATION_UNAVAILABLE/DEFINITE`. A PUT ambiguous result triggers
-HEAD of the same row/key and never a second PUT. No adapter method performs an
-automatic retry or recursively calls itself.
+`STORAGE_CONFIGURATION_UNAVAILABLE/DEFINITE`. A successful or ambiguous PUT
+triggers HEAD of the same row/key and never a second PUT. Immediate missing
+remains `PENDING_UPLOAD/UPLOAD_OUTCOME_UNKNOWN` for stale reconciliation. No
+adapter method performs an automatic retry or recursively calls itself.
 
 ## Authorization And Presigned Access
 
@@ -1148,15 +1197,19 @@ values.
 
 Local Compose adds pinned `minio`, pinned `minio-init`, and `minio-data`.
 Root credentials are available only to MinIO/init. Idempotent init creates the
-bucket, removes anonymous access, creates/updates a bucket-scoped application
-user, attaches only required object operations, and verifies anonymous deny.
-The web receives app credentials only when configured. Database migration,
-web, M6 worker, and M7 dispatcher do not depend on MinIO health.
+bucket, removes and verifies anonymous access, creates/updates a bucket-scoped
+application user, and attaches only required bucket/data-plane operations. Web
+and storage CLI receive app credentials only when configured; their preflight
+does not prove privacy. Database migration, web, M6 worker, and M7 dispatcher
+do not depend on MinIO health, and root credentials are never supplied to
+those application roles.
 
 CI keeps the single `dependency-sync` job and PostgreSQL service. It adds a
 bounded MinIO runtime and private-policy integration with test-only or
-runtime-generated credentials masked before use. CI uses no real cloud
-credential or network.
+runtime-generated credentials masked before use. Generated root credentials
+remain in a mode-`0600` runner-temp env file passed only to MinIO/init; app
+integration steps inherit only the bucket-scoped identity. CI uses no real
+cloud credential or network.
 
 The runbook covers provisioning, rotation, degraded mode, preflight,
 reconciliation, delete, private policy, safe troubleshooting, volume

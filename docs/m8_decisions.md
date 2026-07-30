@@ -39,10 +39,47 @@ one Alembic head, and an unchanged TT blob.
 | PO-M8-18 | Read access uses a domain-parent authorizer; no route in M8. | Creator UUID is accountability, not ownership; missing/denied are identical. |
 | PO-M8-19 | Reuse HMAC limiter: user `5`, IP `20`, window `900s`; no byte table. | File/envelope caps are the byte-abuse boundary. |
 | PO-M8-20 | Pre-parse ASGI guard and bounded multipart helper are mandatory; no CSRF exemption. | Future route cannot parse an automatic `UploadFile` before the guard. |
-| PO-M8-21 | Real local built-image MinIO smoke is mandatory. | Private bucket, PUT/HEAD/presign/deny/delete are proven. |
+| PO-M8-21 | Real local built-image MinIO smoke is mandatory. | Init/designated acceptance proves private/anonymous deny; app acceptance proves PUT/HEAD/presign/delete. App preflight is not privacy proof. |
 | PO-M8-22 | MinIO integration is mandatory in the existing single CI job. | Test credentials are generated or test-only and masked before use. |
 | PO-M8-23 | Ambiguous PUT is reconciled with HEAD; never blindly resent. | Exact becomes available, missing stays pending then reconciles, mismatch is deleted. |
 | PO-M8-24 | Storage runbook and local backup/restore exercise gate closure. | Production provider-specific recovery remains deferred. |
+
+## Post-Freeze Product Owner Correction — Provisioning And Data Plane
+
+Recovery Fix 1 supersedes the earlier M8.42 runtime
+`ensure_private_bucket`/private-policy-preflight decision; the frozen source is
+not edited. Provisioning/admin work belongs to `deploy/minio-init.sh` and
+root/admin credentials: create the configured bucket if missing, enforce and
+verify private anonymous access, and create/update the bucket-scoped app
+identity and policy.
+
+Web and storage CLI receive only that app identity. Their runtime
+`ObjectStorageService` contains `check_bucket_access`, PUT, HEAD, DELETE, and
+presigned GET only. The access check is one `HeadBucket` against the configured
+bucket; no bucket creation, ACL/policy inspection, PublicAccessBlock call, or
+other admin operation is permitted. Preflight proves complete configuration
+and app data-plane access only and emits a fixed safe status. Privacy and
+anonymous-deny proof is owned by `minio-init`, designated real-MinIO
+acceptance, and CI provisioning. Root credentials are never supplied to web,
+storage CLI, M6 worker, or M7 dispatcher.
+
+## Post-Freeze Product Owner Correction — Immediate Missing HEAD
+
+Recovery Fix 2 supersedes the earlier terminal interpretation of a successful
+PUT followed by an immediate missing HEAD; the frozen source is not edited.
+Successful PUT + immediate missing and ambiguous PUT + immediate missing use
+one durable recovery surface. A fresh locked transaction keeps the same
+row/key `PENDING_UPLOAD`, records `UPLOAD_OUTCOME_UNKNOWN`, advances
+`updated_at` with the injected time, and returns the closed file error without
+an object result.
+
+There is no second PUT, new key/row, DELETE, presign, sleep, scheduler, or
+outbox. Later bounded stale reconciliation uses the same row/key: exact HEAD
+becomes `AVAILABLE`; stale missing becomes
+`FAILED/OBJECT_MISSING_AFTER_UPLOAD`; mismatch moves through
+`DELETE_PENDING`, bounded delete, and `DELETED`. Production rollout requires
+provider acceptance proving object-and-metadata read-after-write visibility,
+but immediate missing remains nonterminal even for a supported provider.
 
 ## Dependency Decision
 
@@ -89,7 +126,8 @@ no-cache project image. No native OS package was required or added.
 | Stale threshold | default `60s` |
 | Reconcile batch | `1..5000` |
 | PUT retry | disabled; one PUT only |
-| Storage health | operation/preflight only; not web `/health` |
+| Immediate missing HEAD | same row/key remains `PENDING_UPLOAD/UPLOAD_OUTCOME_UNKNOWN`; stale reconciliation decides the final state |
+| Storage health | app-credential configured-bucket data-plane preflight only; not privacy proof or web `/health` |
 
 ## Repository Reconciliation Decisions
 
@@ -114,8 +152,10 @@ no-cache project image. No native OS package was required or added.
   are not.
 - M8 imports one model module into Alembic metadata and adds one revision
   whose exact parent is `e7f8a9b0c1d2`.
-- MinIO root credentials stay in MinIO/init only. Web uses a bucket-scoped app
-  identity. Worker and dispatcher receive neither.
+- MinIO root credentials stay in MinIO/init only, including CI where they are
+  isolated from application test steps. Web and storage CLI use a
+  bucket-scoped app identity. Worker and dispatcher receive neither root nor
+  storage credentials.
 
 ## Stable Error Decision
 

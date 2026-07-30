@@ -159,6 +159,14 @@ def test_storage_provider_has_one_attempt_and_preflight_has_no_retry_loop() -> N
     preflight_source = inspect.getsource(cli.storage_preflight_command)
 
     assert S3_TOTAL_MAX_ATTEMPTS == 1
-    assert preflight_source.count("ensure_private_bucket") == 1
+    assert preflight_source.count("check_bucket_access") == 1
+    for administrative_operation in (
+        "create_bucket",
+        "get_bucket_acl",
+        "get_bucket_policy",
+        "put_public_access_block",
+        "get_public_access_block",
+    ):
+        assert administrative_operation not in preflight_source
     assert "while " not in preflight_source
     assert "sleep(" not in preflight_source

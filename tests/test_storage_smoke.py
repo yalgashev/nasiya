@@ -5,6 +5,7 @@ from uuid import UUID
 import pytest
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
 
 from app import cli
 from app.auth.models import User
@@ -140,6 +141,27 @@ def test_storage_smoke_cli_fake_runs_full_safe_matrix(
         actor_id=FAKE_ACTOR_ID,
         phone="+998900008641",
     )
+    active_session_count = 0
+
+    class TrackingSession(Session):
+        def __init__(self, **kwargs: object) -> None:
+            nonlocal active_session_count
+            super().__init__(**kwargs)
+            self._tracking_closed = False
+            active_session_count += 1
+
+        def close(self) -> None:
+            nonlocal active_session_count
+            if not self._tracking_closed:
+                active_session_count -= 1
+                self._tracking_closed = True
+            super().close()
+
+    monkeypatch.setattr(
+        cli,
+        "create_database_session_factory",
+        lambda engine: sessionmaker(bind=engine, class_=TrackingSession),
+    )
     storage = CapturingSmokeStorage()
     monkeypatch.setattr(
         cli,
@@ -151,6 +173,7 @@ def test_storage_smoke_cli_fake_runs_full_safe_matrix(
         url: PresignedObjectUrl,
         max_bytes: int,
     ) -> FetchedSmokeObject:
+        assert active_session_count == 0
         assert "presigned-test" not in repr(url)
         fetched = _fetched_from_capture(storage)
         assert len(fetched.payload) <= max_bytes
@@ -169,6 +192,7 @@ def test_storage_smoke_cli_fake_runs_full_safe_matrix(
     assert exit_code == 0
     assert captured.out.strip() == "STORAGE_SMOKE_PASS checks=8"
     assert captured.err == ""
+    assert active_session_count == 0
     assert stored is not None
     assert stored.status == ObjectFileStatus.DELETED.value
     assert storage.object_count == 0

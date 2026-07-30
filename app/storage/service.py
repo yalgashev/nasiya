@@ -241,8 +241,6 @@ async def ingest_sanitized_image(
             ErrorCode.FILE_STORAGE_ERROR,
             internal_code=StorageInternalCode.STORAGE_PROVIDER_UNAVAILABLE,
         ) from None
-    put_was_ambiguous = put_failure_kind is StorageProviderFailureKind.AMBIGUOUS
-
     stored_head: StoredObjectHead | None = None
     head_failed = False
     try:
@@ -263,25 +261,14 @@ async def ingest_sanitized_image(
             internal_code=StorageInternalCode.UPLOAD_OUTCOME_UNKNOWN,
         ) from None
     if stored_head is None:
-        if put_was_ambiguous:
-            _mark_prepared_upload_outcome_unknown(
-                session_factory,
-                prepared=prepared,
-                now=now,
-            )
-            raise StorageUploadError(
-                ErrorCode.FILE_STORAGE_ERROR,
-                internal_code=StorageInternalCode.UPLOAD_OUTCOME_UNKNOWN,
-            ) from None
-        _mark_prepared_upload_failed(
+        _mark_prepared_upload_outcome_unknown(
             session_factory,
             prepared=prepared,
             now=now,
-            failure_code=StorageInternalCode.OBJECT_MISSING_AFTER_UPLOAD,
         )
         raise StorageUploadError(
             ErrorCode.FILE_STORAGE_ERROR,
-            internal_code=StorageInternalCode.OBJECT_MISSING_AFTER_UPLOAD,
+            internal_code=StorageInternalCode.UPLOAD_OUTCOME_UNKNOWN,
         ) from None
     if not _stored_head_matches(prepared, stored_head):
         cleanup_code = _delete_mismatched_object_file(

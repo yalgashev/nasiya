@@ -19,14 +19,21 @@ def _service_block(text: str, name: str, next_name: str) -> str:
     return text.split(f"  {name}:", 1)[1].split(f"  {next_name}:", 1)[0]
 
 
+def test_database_error_logs_suppress_failing_storage_row_details() -> None:
+    text = _compose_text()
+    database = _service_block(text, "db", "minio")
+
+    assert 'command: ["postgres", "-c", "log_error_verbosity=terse"]' in database
+
+
 def test_minio_service_is_immutable_persistent_and_locally_bound() -> None:
     text = _compose_text()
     minio = _service_block(text, "minio", "minio-init")
 
     assert f"image: {MINIO_IMAGE}" in minio
     assert (
-        'command: ["server", "/data", "--address", ":9000", '
-        '"--console-address", ":9001"]'
+        '["server", "/data", "--address", ":9000", '
+        '"--console-address", ":9001", "--quiet"]'
     ) in minio
     assert "- minio-data:/data" in minio
     assert '"${MINIO_BIND_ADDRESS:-127.0.0.1}:${MINIO_API_PORT:-9000}:9000"' in minio
@@ -59,6 +66,12 @@ def test_root_credentials_are_confined_to_minio_service() -> None:
     for application_service in (migrate, web, worker, dispatcher):
         assert "MINIO_ROOT_USER" not in application_service
         assert "MINIO_ROOT_PASSWORD" not in application_service
+
+    settings_source = (PROJECT_ROOT / "app" / "settings.py").read_text(encoding="utf-8")
+    cli_source = (PROJECT_ROOT / "app" / "cli.py").read_text(encoding="utf-8")
+    for application_source in (settings_source, cli_source):
+        assert "MINIO_ROOT_USER" not in application_source
+        assert "MINIO_ROOT_PASSWORD" not in application_source
 
 
 def test_only_web_receives_optional_app_storage_bundle() -> None:

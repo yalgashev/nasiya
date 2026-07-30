@@ -135,7 +135,7 @@ def test_put_programs_definite_timeout_accepted_timeout_and_mismatch() -> None:
     assert mismatched_head.checksum_sha256 != ObjectChecksumSha256(CHECKSUM)
 
 
-def test_head_programs_timeout_and_mismatch_without_mutation() -> None:
+def test_head_programs_timeout_missing_and_mismatch_without_mutation() -> None:
     fake = FakeObjectStorageService()
     fake.put_object(bucket=BUCKET, key=KEY, image=_image())
     fake.queue_head_outcome(FakeStorageOutcome.TIMEOUT)
@@ -143,6 +143,11 @@ def test_head_programs_timeout_and_mismatch_without_mutation() -> None:
         lambda: fake.head_object(bucket=BUCKET, key=KEY),
         kind=StorageProviderFailureKind.DEFINITE,
     )
+    fake.queue_head_outcome(FakeStorageOutcome.MISSING)
+    assert fake.head_object(bucket=BUCKET, key=KEY) is None
+    exact = fake.head_object(bucket=BUCKET, key=KEY)
+    assert exact is not None
+    assert exact.size_bytes == len(PAYLOAD)
     fake.queue_head_outcome(FakeStorageOutcome.MISMATCH)
     mismatch = fake.head_object(bucket=BUCKET, key=KEY)
     assert mismatch.size_bytes == len(PAYLOAD) + 1
@@ -169,7 +174,7 @@ def test_delete_programs_timeout_and_accepted_then_timeout() -> None:
     assert accepted.head_object(bucket=BUCKET, key=KEY) is None
 
 
-def test_presign_and_private_bucket_outcomes_are_typed_and_bounded() -> None:
+def test_presign_and_bucket_access_outcomes_are_typed_and_bounded() -> None:
     fake = FakeObjectStorageService()
 
     url = fake.create_presigned_get_url(
@@ -179,14 +184,14 @@ def test_presign_and_private_bucket_outcomes_are_typed_and_bounded() -> None:
     )
     assert url.as_response_value() == "https://storage.invalid/presigned-test"
     assert (
-        fake.ensure_private_bucket(
+        fake.check_bucket_access(
             bucket=BUCKET,
         )
         is StorageProviderOperationResult.SUCCESS
     )
     assert fake.calls == (
         FakeStorageCall(FakeStorageOperation.PRESIGN_GET, ttl_seconds=300),
-        FakeStorageCall(FakeStorageOperation.ENSURE_PRIVATE_BUCKET),
+        FakeStorageCall(FakeStorageOperation.CHECK_BUCKET_ACCESS),
     )
 
     for invalid_ttl in (59, 901):
@@ -206,9 +211,9 @@ def test_presign_and_private_bucket_outcomes_are_typed_and_bounded() -> None:
         ),
         kind=StorageProviderFailureKind.DEFINITE,
     )
-    fake.queue_ensure_private_bucket_outcome(FakeStorageOutcome.DEFINITE_FAILURE)
+    fake.queue_check_bucket_access_outcome(FakeStorageOutcome.DEFINITE_FAILURE)
     _assert_provider_failure(
-        lambda: fake.ensure_private_bucket(bucket=BUCKET),
+        lambda: fake.check_bucket_access(bucket=BUCKET),
         kind=StorageProviderFailureKind.DEFINITE,
     )
 

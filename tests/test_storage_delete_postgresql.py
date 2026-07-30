@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import fields
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-from threading import Event
+from threading import Event, Lock
 from uuid import UUID, uuid4
 
 import pytest
@@ -11,6 +11,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 import app.storage.service as storage_service
+from app.auth.error_codes import ErrorCode
 from app.auth.models import User
 from app.db import create_database_session_factory
 from app.storage.contracts import (
@@ -244,7 +245,7 @@ def test_accepted_delete_timeout_heads_missing_and_marks_deleted(
 
 
 @pytest.mark.integration
-def test_delete_timeout_with_present_object_stays_pending_unknown(
+def test_delete_timeout_recovers_once_then_reconcile_is_idempotent(
     m2_test_database: Engine,
 ) -> None:
     image = _image()
@@ -277,6 +278,49 @@ def test_delete_timeout_with_present_object_stays_pending_unknown(
         FakeStorageOperation.PUT,
         FakeStorageOperation.DELETE,
         FakeStorageOperation.HEAD,
+    ]
+
+    recovered = reconcile_stale_object_deletes(
+        create_database_session_factory(m2_test_database),
+        storage=storage,
+        now=DELETE_NOW + timedelta(seconds=STALE_SECONDS + 1),
+        stale_seconds=STALE_SECONDS,
+        batch_size=1,
+    )
+    repeated = reconcile_stale_object_deletes(
+        create_database_session_factory(m2_test_database),
+        storage=storage,
+        now=DELETE_NOW + timedelta(seconds=(STALE_SECONDS + 1) * 2),
+        stale_seconds=STALE_SECONDS,
+        batch_size=1,
+    )
+
+    assert recovered == StorageDeleteBatchResult(
+        claimed_count=1,
+        deleted_count=1,
+        pending_count=0,
+        safe_codes=(StorageInternalCode.DELETE_OUTCOME_UNKNOWN,),
+    )
+    assert repeated == StorageDeleteBatchResult(
+        claimed_count=0,
+        deleted_count=0,
+        pending_count=0,
+        safe_codes=(),
+    )
+    assert (
+        _stored_object(
+            m2_test_database,
+            object_file_id,
+        ).status
+        == ObjectFileStatus.DELETED.value
+    )
+    assert storage.object_count == 0
+    assert [call.operation for call in storage.calls] == [
+        FakeStorageOperation.PUT,
+        FakeStorageOperation.DELETE,
+        FakeStorageOperation.HEAD,
+        FakeStorageOperation.HEAD,
+        FakeStorageOperation.DELETE,
     ]
 
 
@@ -363,6 +407,93 @@ def test_concurrent_internal_delete_makes_one_provider_call(
     )
     assert [call.operation for call in storage.calls] == [
         FakeStorageOperation.PUT,
+        FakeStorageOperation.DELETE,
+    ]
+
+
+@pytest.mark.integration
+def test_stale_reconciler_takeover_race_is_bounded_and_never_resurrects(
+    m2_test_database: Engine,
+) -> None:
+    image = _image()
+    object_file_id, object_key = _seed_object(
+        m2_test_database,
+        image=image,
+        status=ObjectFileStatus.AVAILABLE,
+    )
+
+    class FirstDeleteBlockingStorage(FakeObjectStorageService):
+        def __init__(self) -> None:
+            super().__init__()
+            self.first_delete_entered = Event()
+            self.first_delete_release = Event()
+            self.delete_call_lock = Lock()
+            self.delete_call_count = 0
+
+        def delete_object(self, *, bucket: BucketName, key: ObjectKey):
+            with self.delete_call_lock:
+                self.delete_call_count += 1
+                call_number = self.delete_call_count
+            if call_number == 1:
+                self.first_delete_entered.set()
+                assert self.first_delete_release.wait(timeout=5)
+            return super().delete_object(bucket=bucket, key=key)
+
+    storage = FirstDeleteBlockingStorage()
+    storage.put_object(bucket=BUCKET, key=object_key, image=image)
+    session_factory = create_database_session_factory(m2_test_database)
+    reconcile_now = DELETE_NOW + timedelta(seconds=STALE_SECONDS + 1)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        direct_future = executor.submit(
+            delete_available_object,
+            session_factory,
+            object_file_id=object_file_id,
+            storage=storage,
+            now=DELETE_NOW,
+        )
+        assert storage.first_delete_entered.wait(timeout=5)
+        try:
+            reconciled = reconcile_stale_object_deletes(
+                session_factory,
+                storage=storage,
+                now=reconcile_now,
+                stale_seconds=STALE_SECONDS,
+                batch_size=1,
+            )
+        finally:
+            storage.first_delete_release.set()
+        with pytest.raises(StorageUploadError) as exc_info:
+            direct_future.result(timeout=5)
+
+    repeated = reconcile_stale_object_deletes(
+        session_factory,
+        storage=storage,
+        now=reconcile_now + timedelta(seconds=STALE_SECONDS + 1),
+        stale_seconds=STALE_SECONDS,
+        batch_size=1,
+    )
+    stored = _stored_object(m2_test_database, object_file_id)
+
+    assert exc_info.value.code is ErrorCode.FILE_STORAGE_ERROR
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+    assert reconciled == StorageDeleteBatchResult(
+        claimed_count=1,
+        deleted_count=1,
+        pending_count=0,
+        safe_codes=(),
+    )
+    assert repeated.claimed_count == 0
+    assert stored.status == ObjectFileStatus.DELETED.value
+    assert stored.terminal_at == reconcile_now
+    assert stored.deleted_at == reconcile_now
+    assert storage.object_count == 0
+    assert storage.delete_call_count == 2
+    assert [call.operation for call in storage.calls] == [
+        FakeStorageOperation.PUT,
+        FakeStorageOperation.HEAD,
+        FakeStorageOperation.DELETE,
         FakeStorageOperation.DELETE,
     ]
 

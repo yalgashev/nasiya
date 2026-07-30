@@ -18,6 +18,7 @@ from app.storage.image import (
     finalize_sanitized_image,
     generate_object_key,
     sanitize_bounded_image,
+    verify_reopened_metadata_absence,
 )
 
 GOLDEN_BYTES = b"m8-canonical-sanitized-bytes"
@@ -80,6 +81,32 @@ def test_full_sanitizer_returns_only_canonical_typed_metadata(
     assert (result.metadata.width_px, result.metadata.height_px) == (4, 3)
     assert len(result.metadata.checksum_sha256.as_internal_value()) == 64
     assert result.metadata.checksum_sha256.as_internal_value().islower()
+
+
+@pytest.mark.parametrize(
+    ("image_format", "expected_mode"),
+    [
+        ("JPEG", "RGB"),
+        ("PNG", "RGBA"),
+        ("WEBP", "RGBA"),
+    ],
+)
+def test_verified_output_full_decodes_twice_as_static_metadata_free_image(
+    image_format: str,
+    expected_mode: str,
+) -> None:
+    result = sanitize_bounded_image(BoundedImageBytes(_encoded_fixture(image_format)))
+    output = result.sanitized_bytes.as_internal_bytes()
+
+    for _decode_number in range(2):
+        with Image.open(BytesIO(output)) as reopened:
+            reopened.load()
+            assert reopened.format == image_format
+            assert reopened.mode == expected_mode
+            assert reopened.size == (4, 3)
+            assert getattr(reopened, "n_frames", 1) == 1
+            assert getattr(reopened, "is_animated", False) is False
+            verify_reopened_metadata_absence(reopened)
 
 
 def test_object_key_has_exact_golden_uuid4_shape() -> None:

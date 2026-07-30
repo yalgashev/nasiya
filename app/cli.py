@@ -344,7 +344,7 @@ def storage_preflight_command(
     provider_failed = False
     result: StorageProviderOperationResult | None = None
     try:
-        result = storage.ensure_private_bucket(bucket=bucket)
+        result = storage.check_bucket_access(bucket=bucket)
     except StorageProviderError:
         provider_failed = True
     finally:

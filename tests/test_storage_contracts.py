@@ -167,7 +167,7 @@ def test_storage_protocol_has_only_narrow_get_presign_contract() -> None:
         "head_object",
         "delete_object",
         "create_presigned_get_url",
-        "ensure_private_bucket",
+        "check_bucket_access",
     }
     assert expected_methods <= set(ObjectStorageService.__dict__)
     assert "presigned_put" not in inspect.getsource(ObjectStorageService).casefold()

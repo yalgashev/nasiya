@@ -57,6 +57,42 @@ def test_frozen_dimension_and_pixel_limits_are_exact() -> None:
     )
 
 
+def test_frozen_axis_and_pixel_boundaries_use_exact_integer_product() -> None:
+    for allowed_size in (
+        (1, 1),
+        (MAX_IMAGE_DIMENSION, 1),
+        (1, MAX_IMAGE_DIMENSION),
+        (8_000, 5_000),
+    ):
+        validate_image_dimensions(allowed_size)
+
+    rejected = (
+        ((0, 1), StorageInternalCode.IMAGE_DIMENSION_LIMIT_EXCEEDED),
+        ((1, 0), StorageInternalCode.IMAGE_DIMENSION_LIMIT_EXCEEDED),
+        (
+            (MAX_IMAGE_DIMENSION + 1, 1),
+            StorageInternalCode.IMAGE_DIMENSION_LIMIT_EXCEEDED,
+        ),
+        (
+            (1, MAX_IMAGE_DIMENSION + 1),
+            StorageInternalCode.IMAGE_DIMENSION_LIMIT_EXCEEDED,
+        ),
+        ((8_000, 5_001), StorageInternalCode.IMAGE_PIXEL_LIMIT_EXCEEDED),
+        (
+            (MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION),
+            StorageInternalCode.IMAGE_PIXEL_LIMIT_EXCEEDED,
+        ),
+    )
+    for rejected_size, expected_code in rejected:
+        with pytest.raises(ImageSanitizationError) as exc_info:
+            validate_image_dimensions(rejected_size)
+        _assert_limit_error(exc_info.value, expected_code)
+
+    validator_source = inspect.getsource(validate_image_dimensions)
+    assert "width_px * height_px > limits.max_pixels" in validator_source
+    assert "float(" not in validator_source
+
+
 @pytest.mark.parametrize(
     ("max_dimension", "max_pixels"),
     [

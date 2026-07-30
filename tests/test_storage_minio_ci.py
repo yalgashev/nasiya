@@ -39,21 +39,44 @@ def test_credentials_are_generated_and_masked_before_runtime_use() -> None:
     mask_step = workflow.index("Generate and mask MinIO test credentials")
     start_step = workflow.index("Start bounded pinned MinIO runtime")
     init_step = workflow.index("Initialize private MinIO policy twice")
+    credential_step = workflow[mask_step:start_step]
 
     assert mask_step < start_step < init_step
     assert "openssl rand -hex 32" in workflow
     assert "openssl rand -hex 8" in workflow
     assert 'echo "::add-mask::$masked_value"' in workflow
-    for variable in (
-        "MINIO_ROOT_USER",
-        "MINIO_ROOT_PASSWORD",
-        "MINIO_APP_ACCESS_KEY",
-        "MINIO_APP_SECRET_KEY",
-    ):
+    for variable in ("MINIO_APP_ACCESS_KEY", "MINIO_APP_SECRET_KEY"):
         assert f'echo "{variable}=$' in workflow
         assert f"--env {variable}" in workflow
+    assert 'echo "MINIO_ROOT_USER=$minio_root_user"' in credential_step
+    assert 'echo "MINIO_ROOT_PASSWORD=$minio_root_password"' in credential_step
+    assert "umask 077" in credential_step
+    assert 'mktemp "$RUNNER_TEMP/nasiya-minio-root.XXXXXX"' in credential_step
+    assert '} >"$minio_root_env_file"' in credential_step
+    assert 'chmod 600 "$minio_root_env_file"' in credential_step
+    github_env_values = credential_step.split(
+        '} >"$minio_root_env_file"',
+        1,
+    )[1]
+    assert "MINIO_ROOT_USER=" not in github_env_values
+    assert "MINIO_ROOT_PASSWORD=" not in github_env_values
+    assert "M8_MINIO_ROOT_ENV_FILE=" not in github_env_values
+    assert 'echo "root_env_file=$minio_root_env_file" >>"$GITHUB_OUTPUT"' in workflow
+    assert (
+        workflow.count(
+            "M8_MINIO_ROOT_ENV_FILE: "
+            "${{ steps.minio-credentials.outputs.root_env_file }}"
+        )
+        == 3
+    )
+    assert workflow.count('--env-file "$M8_MINIO_ROOT_ENV_FILE"') == 2
+    assert "--env MINIO_ROOT_USER" not in workflow
+    assert "--env MINIO_ROOT_PASSWORD" not in workflow
     assert "AWS_ACCESS_KEY_ID" not in workflow
     assert "AWS_SECRET_ACCESS_KEY" not in workflow
+
+    init_slice = workflow[init_step : workflow.index("Run narrow private MinIO")]
+    assert "trap 'rm -f -- \"$M8_MINIO_ROOT_ENV_FILE\"' EXIT" in init_slice
 
 
 def test_ci_runtime_is_pinned_bounded_and_health_checked() -> None:
@@ -82,6 +105,19 @@ def test_ci_runs_narrow_matrix_then_full_suite_and_always_cleans_up() -> None:
     assert "if: always()" in workflow[cleanup:]
     assert "docker rm --force nasiya-ci-minio" in workflow[cleanup:]
     assert 'docker volume rm "$M8_MINIO_CI_VOLUME"' in workflow[cleanup:]
+    assert 'rm -f -- "$M8_MINIO_ROOT_ENV_FILE"' in workflow[cleanup:]
+
+
+def test_root_credentials_are_not_inherited_by_application_test_steps() -> None:
+    workflow = _workflow()
+    start = workflow.index("Run narrow private MinIO integration")
+    cleanup = workflow.index("Clean up MinIO test runtime")
+    application_steps = workflow[start:cleanup]
+
+    assert "MINIO_ROOT_USER" not in application_steps
+    assert "MINIO_ROOT_PASSWORD" not in application_steps
+    assert "M8_MINIO_ROOT_ENV_FILE" not in application_steps
+    assert "nasiya-minio-root." not in application_steps
 
 
 def test_ci_does_not_print_generated_credentials_or_provider_details() -> None:

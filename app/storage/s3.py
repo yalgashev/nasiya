@@ -48,14 +48,12 @@ class _S3Operation(StrEnum):
     HEAD = "HEAD"
     DELETE = "DELETE"
     PRESIGN_GET = "PRESIGN_GET"
-    ENSURE_BUCKET = "ENSURE_BUCKET"
 
 
 _WRITE_OPERATIONS = frozenset(
     {
         _S3Operation.PUT,
         _S3Operation.DELETE,
-        _S3Operation.ENSURE_BUCKET,
     }
 )
 _DEFINITE_LOCAL_FAILURES = (
@@ -70,20 +68,6 @@ _DEFINITE_LOCAL_FAILURES = (
 _AMBIGUOUS_HTTP_FAILURES = (
     ReadTimeoutError,
     ConnectionClosedError,
-)
-_PUBLIC_ACCESS_BLOCK = {
-    "BlockPublicAcls": True,
-    "IgnorePublicAcls": True,
-    "BlockPublicPolicy": True,
-    "RestrictPublicBuckets": True,
-}
-_PUBLIC_ACCESS_BLOCK_UNSUPPORTED_CODES = frozenset(
-    {
-        "MethodNotAllowed",
-        "NotImplemented",
-        "NotImplementedException",
-        "XNotImplemented",
-    }
 )
 
 
@@ -129,7 +113,7 @@ def create_s3_client(config: StorageConfig) -> BaseClient:
 
 
 class S3ObjectStorageService:
-    """Narrow injected adapter for private object operations."""
+    """Narrow injected adapter for application data-plane operations."""
 
     def __init__(self, client: BaseClient) -> None:
         self._client = client
@@ -277,123 +261,19 @@ class S3ObjectStorageService:
             pass
         _raise_provider_error(StorageProviderFailureKind.DEFINITE)
 
-    def ensure_private_bucket(
+    def check_bucket_access(
         self,
         *,
         bucket: BucketName,
     ) -> StorageProviderOperationResult:
-        bucket_name = bucket.as_internal_value()
-        if not self._bucket_exists(bucket_name):
-            self._create_bucket(bucket_name)
-
-        self._verify_private_acl(bucket_name)
-        self._verify_no_bucket_policy(bucket_name)
-        if self._put_public_access_block(bucket_name):
-            self._verify_public_access_block(bucket_name)
+        failure_kind: StorageProviderFailureKind | None = None
+        try:
+            self._client.head_bucket(Bucket=bucket.as_internal_value())
+        except (ClientError, BotoCoreError) as exc:
+            failure_kind = _sdk_failure_kind(exc, operation=_S3Operation.HEAD)
+        if failure_kind is not None:
+            _raise_provider_error(failure_kind)
         return StorageProviderOperationResult.SUCCESS
-
-    def _bucket_exists(self, bucket_name: str) -> bool:
-        failure_kind: StorageProviderFailureKind | None = None
-        try:
-            self._client.head_bucket(Bucket=bucket_name)
-        except ClientError as exc:
-            if _client_error_status(exc) == 404:
-                return False
-            failure_kind = _sdk_failure_kind(exc, operation=_S3Operation.HEAD)
-        except BotoCoreError as exc:
-            failure_kind = _sdk_failure_kind(exc, operation=_S3Operation.HEAD)
-        if failure_kind is not None:
-            _raise_provider_error(failure_kind)
-        return True
-
-    def _create_bucket(self, bucket_name: str) -> None:
-        region_name = self._client.meta.region_name
-        if not isinstance(region_name, str) or not region_name:
-            _raise_provider_error(StorageProviderFailureKind.DEFINITE)
-        params: dict[str, object] = {"Bucket": bucket_name}
-        if region_name != "us-east-1":
-            params["CreateBucketConfiguration"] = {
-                "LocationConstraint": region_name,
-            }
-        failure_kind: StorageProviderFailureKind | None = None
-        try:
-            self._client.create_bucket(**params)
-        except ClientError as exc:
-            if _client_error_code(exc) == "BucketAlreadyOwnedByYou":
-                return
-            failure_kind = _sdk_failure_kind(
-                exc,
-                operation=_S3Operation.ENSURE_BUCKET,
-            )
-        except BotoCoreError as exc:
-            failure_kind = _sdk_failure_kind(
-                exc,
-                operation=_S3Operation.ENSURE_BUCKET,
-            )
-        if failure_kind is not None:
-            _raise_provider_error(failure_kind)
-
-    def _verify_private_acl(self, bucket_name: str) -> None:
-        response: dict[str, object] | None = None
-        failure_kind: StorageProviderFailureKind | None = None
-        try:
-            response = self._client.get_bucket_acl(Bucket=bucket_name)
-        except (ClientError, BotoCoreError) as exc:
-            failure_kind = _sdk_failure_kind(exc, operation=_S3Operation.HEAD)
-        if failure_kind is not None or response is None:
-            _raise_provider_error(failure_kind or StorageProviderFailureKind.DEFINITE)
-        if not _is_private_owner_only_acl(response):
-            _raise_provider_error(StorageProviderFailureKind.DEFINITE)
-
-    def _verify_no_bucket_policy(self, bucket_name: str) -> None:
-        failure_kind: StorageProviderFailureKind | None = None
-        try:
-            self._client.get_bucket_policy(Bucket=bucket_name)
-        except ClientError as exc:
-            if (
-                _client_error_status(exc) == 404
-                and _client_error_code(exc) == "NoSuchBucketPolicy"
-            ):
-                return
-            failure_kind = _sdk_failure_kind(exc, operation=_S3Operation.HEAD)
-        except BotoCoreError as exc:
-            failure_kind = _sdk_failure_kind(exc, operation=_S3Operation.HEAD)
-        _raise_provider_error(failure_kind or StorageProviderFailureKind.DEFINITE)
-
-    def _put_public_access_block(self, bucket_name: str) -> bool:
-        failure_kind: StorageProviderFailureKind | None = None
-        try:
-            self._client.put_public_access_block(
-                Bucket=bucket_name,
-                PublicAccessBlockConfiguration=_PUBLIC_ACCESS_BLOCK,
-            )
-        except ClientError as exc:
-            if _public_access_block_is_unsupported(exc):
-                return False
-            failure_kind = _sdk_failure_kind(
-                exc,
-                operation=_S3Operation.ENSURE_BUCKET,
-            )
-        except BotoCoreError as exc:
-            failure_kind = _sdk_failure_kind(
-                exc,
-                operation=_S3Operation.ENSURE_BUCKET,
-            )
-        if failure_kind is not None:
-            _raise_provider_error(failure_kind)
-        return True
-
-    def _verify_public_access_block(self, bucket_name: str) -> None:
-        response: dict[str, object] | None = None
-        failure_kind: StorageProviderFailureKind | None = None
-        try:
-            response = self._client.get_public_access_block(Bucket=bucket_name)
-        except (ClientError, BotoCoreError) as exc:
-            failure_kind = _sdk_failure_kind(exc, operation=_S3Operation.HEAD)
-        if failure_kind is not None or response is None:
-            _raise_provider_error(failure_kind or StorageProviderFailureKind.DEFINITE)
-        if response.get("PublicAccessBlockConfiguration") != _PUBLIC_ACCESS_BLOCK:
-            _raise_provider_error(StorageProviderFailureKind.DEFINITE)
 
 
 def _sdk_failure_kind(
@@ -439,49 +319,6 @@ def _client_error_status(exc: ClientError) -> int | None:
     if isinstance(status, bool) or not isinstance(status, int):
         return None
     return status
-
-
-def _client_error_code(exc: ClientError) -> str | None:
-    response = exc.response
-    if not isinstance(response, dict):
-        return None
-    error = response.get("Error")
-    if not isinstance(error, dict):
-        return None
-    code = error.get("Code")
-    if not isinstance(code, str):
-        return None
-    return code
-
-
-def _public_access_block_is_unsupported(exc: ClientError) -> bool:
-    status = _client_error_status(exc)
-    code = _client_error_code(exc)
-    return status in {405, 501} and code in _PUBLIC_ACCESS_BLOCK_UNSUPPORTED_CODES
-
-
-def _is_private_owner_only_acl(response: object) -> bool:
-    if not isinstance(response, dict):
-        return False
-    owner = response.get("Owner")
-    grants = response.get("Grants")
-    if not isinstance(owner, dict) or not isinstance(grants, list):
-        return False
-    owner_id = owner.get("ID")
-    if not isinstance(owner_id, str) or not owner_id or not grants:
-        return False
-    for grant in grants:
-        if not isinstance(grant, dict):
-            return False
-        grantee = grant.get("Grantee")
-        if (
-            not isinstance(grantee, dict)
-            or grantee.get("Type") != "CanonicalUser"
-            or grantee.get("ID") != owner_id
-            or grant.get("Permission") != "FULL_CONTROL"
-        ):
-            return False
-    return True
 
 
 def _raise_provider_error(kind: StorageProviderFailureKind) -> Never:

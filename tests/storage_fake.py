@@ -24,6 +24,7 @@ class FakeStorageOutcome(StrEnum):
     DEFINITE_FAILURE = "DEFINITE_FAILURE"
     TIMEOUT = "TIMEOUT"
     ACCEPTED_THEN_TIMEOUT = "ACCEPTED_THEN_TIMEOUT"
+    MISSING = "MISSING"
     MISMATCH = "MISMATCH"
 
 
@@ -32,7 +33,7 @@ class FakeStorageOperation(StrEnum):
     HEAD = "HEAD"
     DELETE = "DELETE"
     PRESIGN_GET = "PRESIGN_GET"
-    ENSURE_PRIVATE_BUCKET = "ENSURE_PRIVATE_BUCKET"
+    CHECK_BUCKET_ACCESS = "CHECK_BUCKET_ACCESS"
 
 
 @dataclass(frozen=True)
@@ -59,7 +60,7 @@ class FakeObjectStorageService:
         self._head_outcomes: deque[FakeStorageOutcome] = deque()
         self._delete_outcomes: deque[FakeStorageOutcome] = deque()
         self._presign_outcomes: deque[FakeStorageOutcome] = deque()
-        self._ensure_outcomes: deque[FakeStorageOutcome] = deque()
+        self._access_outcomes: deque[FakeStorageOutcome] = deque()
 
     def __repr__(self) -> str:
         return (
@@ -100,6 +101,7 @@ class FakeObjectStorageService:
                     FakeStorageOutcome.SUCCESS,
                     FakeStorageOutcome.DEFINITE_FAILURE,
                     FakeStorageOutcome.TIMEOUT,
+                    FakeStorageOutcome.MISSING,
                     FakeStorageOutcome.MISMATCH,
                 },
             )
@@ -130,11 +132,11 @@ class FakeObjectStorageService:
             )
         )
 
-    def queue_ensure_private_bucket_outcome(
+    def queue_check_bucket_access_outcome(
         self,
         outcome: FakeStorageOutcome,
     ) -> None:
-        self._ensure_outcomes.append(
+        self._access_outcomes.append(
             _validate_outcome(
                 outcome,
                 allowed={
@@ -185,6 +187,8 @@ class FakeObjectStorageService:
             FakeStorageOutcome.TIMEOUT,
         }:
             _raise_provider_failure(StorageProviderFailureKind.DEFINITE)
+        if outcome is FakeStorageOutcome.MISSING:
+            return None
 
         stored = self._objects.get(_object_identity(bucket, key))
         if stored is None:
@@ -242,13 +246,13 @@ class FakeObjectStorageService:
         _object_identity(bucket, key)
         return PresignedObjectUrl("https://storage.invalid/presigned-test")
 
-    def ensure_private_bucket(
+    def check_bucket_access(
         self,
         *,
         bucket: BucketName,
     ) -> StorageProviderOperationResult:
-        self._calls.append(FakeStorageCall(FakeStorageOperation.ENSURE_PRIVATE_BUCKET))
-        outcome = _next_outcome(self._ensure_outcomes)
+        self._calls.append(FakeStorageCall(FakeStorageOperation.CHECK_BUCKET_ACCESS))
+        outcome = _next_outcome(self._access_outcomes)
         if outcome in {
             FakeStorageOutcome.DEFINITE_FAILURE,
             FakeStorageOutcome.TIMEOUT,

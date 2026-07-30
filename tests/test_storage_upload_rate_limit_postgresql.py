@@ -12,7 +12,7 @@ from sqlalchemy.engine import Engine
 import app.storage.rate_limit as storage_rate_limit
 from app.auth.error_codes import ErrorCode
 from app.auth.models import AuthRateLimit
-from app.auth.rate_limit import hash_rate_limit_key
+from app.auth.rate_limit import RateLimitResult, hash_rate_limit_key
 from app.db import create_database_session_factory
 from app.settings import Settings
 from app.storage.rate_limit import (
@@ -107,6 +107,71 @@ def _get_record(
         )
         assert record is not None
         return record
+
+
+@pytest.mark.integration
+def test_rate_limit_checks_and_records_user_then_ip_in_stable_order(
+    m2_test_database: Engine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured_settings = _settings(m2_test_database)
+    actor_user_id = uuid4()
+    client_ip = ResolvedClientIp("203.0.113.49")
+    sentinel_db = object()
+    events: list[tuple[str, str, int, int]] = []
+
+    class RecordingRateLimiter:
+        def __init__(self, *, db: object, settings: Settings) -> None:
+            assert db is sentinel_db
+            assert settings is configured_settings
+
+        def check(
+            self,
+            scope: str,
+            raw_key: str,
+            now: datetime,
+            limit: int,
+            window_seconds: int,
+        ) -> RateLimitResult:
+            assert raw_key
+            assert now == NOW
+            events.append(("check", scope, limit, window_seconds))
+            return RateLimitResult(allowed=True)
+
+        def record_failure(
+            self,
+            scope: str,
+            raw_key: str,
+            now: datetime,
+            limit: int,
+            window_seconds: int,
+        ) -> RateLimitResult:
+            assert raw_key
+            assert now == NOW
+            events.append(("record", scope, limit, window_seconds))
+            return RateLimitResult(allowed=True)
+
+    monkeypatch.setattr(
+        storage_rate_limit,
+        "AuthRateLimiter",
+        RecordingRateLimiter,
+    )
+
+    result = record_storage_upload_attempt(
+        sentinel_db,  # type: ignore[arg-type]
+        configured_settings,
+        actor_user_id,
+        client_ip,
+        NOW,
+    )
+
+    assert result.allowed is True
+    assert events == [
+        ("check", STORAGE_UPLOAD_USER_SCOPE, 6, 900),
+        ("check", STORAGE_UPLOAD_IP_SCOPE, 21, 900),
+        ("record", STORAGE_UPLOAD_USER_SCOPE, 6, 900),
+        ("record", STORAGE_UPLOAD_IP_SCOPE, 21, 900),
+    ]
 
 
 @pytest.mark.integration

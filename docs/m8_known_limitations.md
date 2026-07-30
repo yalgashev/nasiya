@@ -1,14 +1,16 @@
 # Nasiya M8 Known Limitations
 
 Status: approved known limitations for the M8 implementation milestone.
-Source authority: `/home/yalgashev/projects/m8_00_final_scope_freeze.md` and
-M8.04 feasibility audit.
+Source authority: `/home/yalgashev/projects/m8_00_final_scope_freeze.md`,
+M8.04 feasibility audit, and the Recovery Fix 1–2 post-freeze Product Owner
+corrections.
 
 ## KL-M8-01 — Foundation Has No Domain Route Or Consumer
 
 M8 exposes internal protocols, services, and CLI acceptance only. It does not
 create a production upload/download/delete route and does not attach an object
-to a customer, owner application, shop news item, or other domain parent.
+to `customer_document`, an owner application, a shop news attachment, or any
+other domain parent.
 
 Impact:
 
@@ -41,20 +43,33 @@ Impact:
   features, multi-region behavior, and provider-specific recovery are not
   selected by M8.
 - No real cloud credential or network belongs in automated tests or CI.
-- Production rollout requires a separate provider and operations decision.
+- Production rollout requires a separate provider and operations decision plus
+  acceptance proving strong object-and-metadata read-after-write visibility
+  through HEAD.
 
-## KL-M8-04 — No Automatic PUT Retry
+## KL-M8-04 — Immediate Missing Is Reconciled Without PUT Retry
 
 A timeout after PUT can mean the provider accepted the object even though the
-client did not receive a response. M8 never blindly retries the PUT.
+client did not receive a response. A successful PUT can also be followed by a
+briefly missing HEAD on an incompatible or degraded S3-compatible provider.
+M8 treats neither immediate missing result as definitive absence and never
+blindly retries the PUT.
 
 Impact:
 
-- The coordinator performs HEAD against the same key and checksum.
-- An exact object becomes `AVAILABLE`; a missing object remains pending for
-  reconciliation; a mismatch is deleted through `DELETE_PENDING`.
+- The coordinator performs one HEAD for the same bucket/key and compares the
+  returned size, content type, and checksum metadata with the pending row.
+- An immediate missing object remains
+  `PENDING_UPLOAD/UPLOAD_OUTCOME_UNKNOWN`; no object result is returned.
+- Bounded stale reconciliation HEADs that same key: exact becomes
+  `AVAILABLE`, stale missing may become
+  `FAILED/OBJECT_MISSING_AFTER_UPLOAD`, and mismatch is deleted through
+  `DELETE_PENDING`.
 - Provider or TX-S2 failures can leave a safe stale row until an operator runs
   bounded reconciliation.
+- The rollout compatibility requirement reduces this window; it does not turn
+  the immediate missing result into a terminal failure or authorize a sleep
+  loop.
 
 ## KL-M8-05 — Legal Retention Is Deferred
 
@@ -115,9 +130,14 @@ Impact:
 - A missing/partial configuration or provider outage fails the storage
   operation closed as `FILE_STORAGE_ERROR`; there is no local-disk fallback.
 
-## Closure Evidence
+## Validation State
 
-Remote implementation CI, real MinIO `16/16`, exact dependency versions,
-Alembic M8 head, full-suite count, and checkpoint SHAs are intentionally not
-claimed at scope-freeze time. They are added only by M8.73–M8.77 after the
-corresponding local and remote gates succeed.
+Local evidence now includes the exact dependency resolution, the single M8
+Alembic head/table, focused image and transaction matrices, migration/runtime
+validation, real local MinIO `16/16`, and the local backup/restore exercise.
+These results do not select a production provider or establish production
+RPO/RTO.
+
+M8.74 completed both required full local pytest runs at exactly `2167 passed`
+with no failed, skipped, xfailed, or xpassed outcomes. Remote CI, a pushed
+implementation SHA/run, and milestone closure are not claimed here.

@@ -79,12 +79,17 @@ jobs:
           uv run ruff format --check .
 
       - name: Generate and mask MinIO test credentials
+        id: minio-credentials
         run: |
           minio_root_user="ci-minio-root-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           minio_root_password="$(openssl rand -hex 32)"
           minio_app_access_key="ci-nasiya-app-$(openssl rand -hex 8)"
           minio_app_secret_key="$(openssl rand -hex 32)"
           minio_bucket="nasiya-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          umask 077
+          minio_root_env_file="$(
+            mktemp "$RUNNER_TEMP/nasiya-minio-root.XXXXXX"
+          )"
           for masked_value in \
             "$minio_root_user" \
             "$minio_root_password" \
@@ -95,6 +100,10 @@ jobs:
           {
             echo "MINIO_ROOT_USER=$minio_root_user"
             echo "MINIO_ROOT_PASSWORD=$minio_root_password"
+          } >"$minio_root_env_file"
+          chmod 600 "$minio_root_env_file"
+          echo "root_env_file=$minio_root_env_file" >>"$GITHUB_OUTPUT"
+          {
             echo "MINIO_APP_ACCESS_KEY=$minio_app_access_key"
             echo "MINIO_APP_SECRET_KEY=$minio_app_secret_key"
             echo "MINIO_BUCKET=$minio_bucket"
@@ -107,12 +116,13 @@ jobs:
           } >>"$GITHUB_ENV"
 
       - name: Start bounded pinned MinIO runtime
+        env:
+          M8_MINIO_ROOT_ENV_FILE: ${{ steps.minio-credentials.outputs.root_env_file }}
         run: |
           docker run --detach \
             --name nasiya-ci-minio \
             --publish 127.0.0.1:9000:9000 \
-            --env MINIO_ROOT_USER \
-            --env MINIO_ROOT_PASSWORD \
+            --env-file "$M8_MINIO_ROOT_ENV_FILE" \
             --mount "type=volume,src=$M8_MINIO_CI_VOLUME,dst=/data" \
             --health-cmd "mc ready local" \
             --health-interval 1s \
@@ -141,14 +151,16 @@ jobs:
           exit 1
 
       - name: Initialize private MinIO policy twice
+        env:
+          M8_MINIO_ROOT_ENV_FILE: ${{ steps.minio-credentials.outputs.root_env_file }}
         run: |
+          trap 'rm -f -- "$M8_MINIO_ROOT_ENV_FILE"' EXIT
           run_minio_init() {
             docker run --rm \
               --network host \
               --entrypoint /bin/sh \
+              --env-file "$M8_MINIO_ROOT_ENV_FILE" \
               --env MINIO_ENDPOINT=http://127.0.0.1:9000 \
-              --env MINIO_ROOT_USER \
-              --env MINIO_ROOT_PASSWORD \
               --env MINIO_BUCKET \
               --env MINIO_APP_ACCESS_KEY \
               --env MINIO_APP_SECRET_KEY \
@@ -207,6 +219,9 @@ jobs:
 
       - name: Clean up MinIO test runtime
         if: always()
+        env:
+          M8_MINIO_ROOT_ENV_FILE: ${{ steps.minio-credentials.outputs.root_env_file }}
         run: |
           docker rm --force nasiya-ci-minio >/dev/null 2>&1 || true
           docker volume rm "$M8_MINIO_CI_VOLUME" >/dev/null 2>&1 || true
+          rm -f -- "$M8_MINIO_ROOT_ENV_FILE"

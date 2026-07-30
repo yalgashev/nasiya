@@ -35,6 +35,7 @@ BUCKET = BucketName("nasiya-cli-private")
 RAW_ENDPOINT = "https://storage-cli-private.invalid"
 RAW_ACCESS_KEY = "storage-cli-access-private"
 RAW_SECRET_KEY = "storage-cli-secret-private"
+RAW_OBJECT_KEY = "v1/objects/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png"
 RATE_LIMIT_KEY = "test-rate-limit-hmac-key-for-storage-cli"
 
 
@@ -136,6 +137,7 @@ def test_storage_preflight_and_health_print_safe_status_only(
     test_database_url: str,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
     command: str,
 ) -> None:
     storage = FakeObjectStorageService()
@@ -160,18 +162,20 @@ def test_storage_preflight_and_health_print_safe_status_only(
     assert captured.out.strip() == "STORAGE_PREFLIGHT_OK"
     assert captured.err == ""
     assert [call.operation for call in storage.calls] == [
-        FakeStorageOperation.ENSURE_PRIVATE_BUCKET,
+        FakeStorageOperation.CHECK_BUCKET_ACCESS,
     ]
     assert close_calls == ["closed"]
+    assert caplog.text == ""
 
 
 def test_storage_preflight_provider_failure_is_sanitized(
     test_database_url: str,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     storage = FakeObjectStorageService()
-    storage.queue_ensure_private_bucket_outcome(FakeStorageOutcome.DEFINITE_FAILURE)
+    storage.queue_check_bucket_access_outcome(FakeStorageOutcome.DEFINITE_FAILURE)
     monkeypatch.setattr(
         cli,
         "_configure_storage_service",
@@ -187,6 +191,18 @@ def test_storage_preflight_provider_failure_is_sanitized(
     assert exit_code == 1
     assert captured.out == ""
     assert captured.err.strip() == "STORAGE_PROVIDER_UNAVAILABLE"
+    for hidden_value in (
+        RAW_ENDPOINT,
+        BUCKET.as_internal_value(),
+        RAW_ACCESS_KEY,
+        RAW_SECRET_KEY,
+        RAW_OBJECT_KEY,
+        "AccessDenied",
+        "MinIO",
+        "S3",
+    ):
+        assert hidden_value not in f"{captured.out}{captured.err}{caplog.text}"
+    assert caplog.text == ""
 
 
 @pytest.mark.integration

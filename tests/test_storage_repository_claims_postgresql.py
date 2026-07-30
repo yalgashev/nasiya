@@ -207,10 +207,28 @@ def test_delete_pending_claim_selects_only_delete_pending(
         user = _add_user(session)
         delete_pending = _create_pending(session, user_id=user.id, now=BASE)
         pending = _create_pending(session, user_id=user.id, now=BASE)
+        available = _create_pending(session, user_id=user.id, now=BASE)
+        deleted = _create_pending(session, user_id=user.id, now=BASE)
         mark_object_file_delete_pending(
             session,
             object_file_id=delete_pending.id,
             failure_code=StorageInternalCode.OBJECT_METADATA_MISMATCH,
+            now=BASE,
+        )
+        mark_object_file_available(
+            session,
+            object_file_id=available.id,
+            now=BASE,
+        )
+        mark_object_file_delete_pending(
+            session,
+            object_file_id=deleted.id,
+            failure_code=StorageInternalCode.OBJECT_METADATA_MISMATCH,
+            now=BASE,
+        )
+        mark_object_file_deleted(
+            session,
+            object_file_id=deleted.id,
             now=BASE,
         )
         session.commit()
@@ -224,7 +242,10 @@ def test_delete_pending_claim_selects_only_delete_pending(
         assert len(claims) == 1
         assert claims[0].object_file_id == delete_pending.id
         assert claims[0].status is ObjectFileStatus.DELETE_PENDING
-        assert pending.id not in {claim.object_file_id for claim in claims}
+        claimed_ids = {claim.object_file_id for claim in claims}
+        assert pending.id not in claimed_ids
+        assert available.id not in claimed_ids
+        assert deleted.id not in claimed_ids
     finally:
         session.rollback()
         session.close()
