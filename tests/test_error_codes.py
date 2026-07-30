@@ -27,8 +27,12 @@ def test_error_catalog_contains_only_stable_codes() -> None:
         ErrorCode.SHOP_SUSPENDED,
         ErrorCode.LAST_OWNER,
         ErrorCode.REASON_REQUIRED,
+        ErrorCode.FILE_ACCESS_DENIED,
+        ErrorCode.FILE_STORAGE_ERROR,
+        ErrorCode.FILE_TOO_LARGE,
+        ErrorCode.UNSUPPORTED_FILE_TYPE,
     }
-    assert len(ERROR_CATALOG) == 13
+    assert len(ERROR_CATALOG) == 17
 
 
 def test_error_code_values_are_stable() -> None:
@@ -46,6 +50,10 @@ def test_error_code_values_are_stable() -> None:
         "SHOP_SUSPENDED",
         "LAST_OWNER",
         "REASON_REQUIRED",
+        "FILE_ACCESS_DENIED",
+        "FILE_STORAGE_ERROR",
+        "FILE_TOO_LARGE",
+        "UNSUPPORTED_FILE_TYPE",
     ]
 
 
@@ -65,6 +73,10 @@ def test_error_code_values_are_stable() -> None:
         (ErrorCode.SHOP_SUSPENDED, 403),
         (ErrorCode.LAST_OWNER, 409),
         (ErrorCode.REASON_REQUIRED, 422),
+        (ErrorCode.FILE_ACCESS_DENIED, 403),
+        (ErrorCode.FILE_STORAGE_ERROR, 503),
+        (ErrorCode.FILE_TOO_LARGE, 413),
+        (ErrorCode.UNSUPPORTED_FILE_TYPE, 415),
     ],
 )
 def test_error_http_status_mapping_is_stable(
@@ -109,6 +121,16 @@ def test_error_http_status_mapping_is_stable(
         (ErrorCode.SHOP_SUSPENDED, "Do'kon vaqtincha to'xtatilgan."),
         (ErrorCode.LAST_OWNER, "Oxirgi egani olib tashlab bo'lmaydi."),
         (ErrorCode.REASON_REQUIRED, "Sabab ko'rsatilishi shart."),
+        (ErrorCode.FILE_ACCESS_DENIED, "Faylga kirish ruxsati yo'q."),
+        (
+            ErrorCode.FILE_STORAGE_ERROR,
+            "Fayl saqlash xizmati vaqtincha ishlamayapti.",
+        ),
+        (
+            ErrorCode.FILE_TOO_LARGE,
+            "Fayl hajmi ruxsat etilgan limitdan oshgan.",
+        ),
+        (ErrorCode.UNSUPPORTED_FILE_TYPE, "Bu fayl turi qabul qilinmaydi."),
     ],
 )
 def test_error_user_messages_are_safe_and_stable(

@@ -20,6 +20,10 @@ class ErrorCode(StrEnum):
     SHOP_SUSPENDED = "SHOP_SUSPENDED"
     LAST_OWNER = "LAST_OWNER"
     REASON_REQUIRED = "REASON_REQUIRED"
+    FILE_ACCESS_DENIED = "FILE_ACCESS_DENIED"
+    FILE_STORAGE_ERROR = "FILE_STORAGE_ERROR"
+    FILE_TOO_LARGE = "FILE_TOO_LARGE"
+    UNSUPPORTED_FILE_TYPE = "UNSUPPORTED_FILE_TYPE"
 
 
 @dataclass(frozen=True)
@@ -95,6 +99,26 @@ ERROR_CATALOG: Final[Mapping[ErrorCode, ErrorDefinition]] = MappingProxyType(
             code=ErrorCode.REASON_REQUIRED,
             user_message="Sabab ko'rsatilishi shart.",
             http_status=HTTPStatus.UNPROCESSABLE_ENTITY,
+        ),
+        ErrorCode.FILE_ACCESS_DENIED: ErrorDefinition(
+            code=ErrorCode.FILE_ACCESS_DENIED,
+            user_message="Faylga kirish ruxsati yo'q.",
+            http_status=HTTPStatus.FORBIDDEN,
+        ),
+        ErrorCode.FILE_STORAGE_ERROR: ErrorDefinition(
+            code=ErrorCode.FILE_STORAGE_ERROR,
+            user_message="Fayl saqlash xizmati vaqtincha ishlamayapti.",
+            http_status=HTTPStatus.SERVICE_UNAVAILABLE,
+        ),
+        ErrorCode.FILE_TOO_LARGE: ErrorDefinition(
+            code=ErrorCode.FILE_TOO_LARGE,
+            user_message="Fayl hajmi ruxsat etilgan limitdan oshgan.",
+            http_status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+        ),
+        ErrorCode.UNSUPPORTED_FILE_TYPE: ErrorDefinition(
+            code=ErrorCode.UNSUPPORTED_FILE_TYPE,
+            user_message="Bu fayl turi qabul qilinmaydi.",
+            http_status=HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
         ),
     }
 )

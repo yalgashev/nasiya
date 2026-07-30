@@ -52,8 +52,8 @@ Unresolved contradiction: none.
 | Existing multipart CSRF parse | `app/auth/deps.py:241`, `app/auth/deps.py:252`, `app/auth/deps.py:265` | EXTEND via bounded helper |
 | FastAPI automatic forms | `app/auth/router.py:155`, `app/shop/router.py:155` | Pattern exists; forbidden for future storage file parameter |
 | ASGI middleware hook | `app/security_headers.py:43` | REUSE registration pattern |
-| Actual-byte pre-parse guard | Not present | MINIMAL NEW in `app/storage/body_limit.py` |
-| Bounded one-file multipart helper | Not present | MINIMAL NEW in `app/storage/multipart.py` |
+| Actual-byte pre-parse guard | `app/storage/body_guard.py` | IMPLEMENTED; opt-in path set is empty in M8 production |
+| Bounded one-file multipart helper | `app/storage/multipart.py` | IMPLEMENTED with cached existing session CSRF validation |
 | Production storage route | Not present | KEEP ABSENT |
 
 Installed Starlette `1.3.1` exposes
@@ -110,8 +110,8 @@ feasible without another parser dependency.
 
 | Item | Status | Minimal solution |
 |---|---|---|
-| Pillow | TOPILMADI | Add only after M8.07 due diligence. |
-| boto3/botocore | TOPILMADI | Add boto3 direct; botocore transitive. |
+| Pillow | IMPLEMENTED dependency | Direct `Pillow>=12.3.0,<13`, resolved `12.3.0`; sanitizer code remains later. |
+| boto3/botocore | IMPLEMENTED dependency | Direct boto3 `1.43.59`; botocore `1.43.59` transitive; adapter code remains later. |
 | MinIO Python SDK | TOPILMADI | Keep absent; use boto3 adapter and pinned container/`mc`. |
 | libmagic/python-magic | TOPILMADI | Keep absent; use Pillow fully decoded `Image.format`. |
 | S3 adapter | TOPILMADI | Add narrow injected boto3 adapter. |
@@ -123,9 +123,9 @@ feasible without another parser dependency.
 
 | Requirement | Result | Evidence / minimal solution |
 |---|---|---|
-| Python 3.12 Pillow wheel | MINIMAL NEW feasible | Official package metadata exposes a CPython 3.12 manylinux x86_64 wheel and Python `>=3.10`. |
-| Current slim codecs | ACCEPTANCE REQUIRED | A wheel should carry codec support, but only M8.08 no-cache JPEG/PNG/WebP encode/decode proves this repository image. No OS package is pre-approved. |
-| boto3 on Python 3.12 | MINIMAL NEW feasible | Official package metadata exposes a universal wheel and Python `>=3.10`. |
+| Python 3.12 Pillow wheel | IMPLEMENTED dependency | Pillow `12.3.0`, `MIT-CMU`, CPython 3.12 manylinux x86_64 wheel, Python `>=3.10`. |
+| Current slim codecs | PROVED | M8.08 no-cache built-image acceptance encoded and decoded JPEG/PNG/WebP, including alpha for PNG/WebP. No OS package was required or added. |
+| boto3 on Python 3.12 | IMPLEMENTED dependency | boto3 `1.43.59`, `Apache-2.0`, universal wheel, Python `>=3.10`; botocore resolves to `1.43.59`. |
 | Constructor without network | MINIMAL NEW feasible | Explicit endpoint/region/credentials plus injected client and disabled metadata/default credential lookup avoid discovery; Stubber verifies no constructor call. |
 | `python-multipart` | REUSE | Already direct in `pyproject.toml:15`. |
 | No MinIO SDK/libmagic | REUSE absence | boto3 and Pillow cover the frozen boundaries. |
@@ -142,6 +142,23 @@ Feasibility result: Pillow+boto3, private MinIO, two-phase storage, bounded
 multipart, and no-retry reconciliation are achievable without prohibited
 dependency, table, process-role, or persistence changes. No blocker found.
 
+## M8.07 Resolved Dependency Map
+
+| Package | Direct/transitive | Exact version | License |
+|---|---|---:|---|
+| `Pillow` | direct | `12.3.0` | `MIT-CMU` |
+| `boto3` | direct | `1.43.59` | `Apache-2.0` |
+| `botocore` | transitive | `1.43.59` | `Apache-2.0` |
+| `jmespath` | transitive | `1.1.0` | `MIT` |
+| `s3transfer` | transitive | `0.19.2` | `Apache License 2.0` |
+| `python-dateutil` | transitive | `2.9.0.post0` | dual Apache/BSD distribution license |
+| `six` | transitive | `1.17.0` | `MIT` |
+| `urllib3` | transitive | `2.7.0` | `MIT` |
+
+`pyproject.toml` contains only the two approved new direct requirements.
+`uv.lock` is the exact resolver authority. Host import smoke and frozen sync
+are green. M8.08 also proved the no-cache built-image codec acceptance.
+
 ## Missing Primitive Placement
 
 ```text
@@ -149,7 +166,7 @@ app/storage/
   __init__.py       only when the first real storage module is added
   contracts.py      protocols and redacted typed values
   errors.py         internal closed error mapping if not kept beside contracts
-  body_limit.py     opt-in ASGI actual-byte guard
+  body_guard.py     opt-in ASGI actual-byte guard
   multipart.py      bounded one-file/session-CSRF helper
   image.py          bounded reader and sanitizer
   models.py         ObjectFile only

@@ -46,19 +46,31 @@ one Alembic head, and an unchanged TT blob.
 
 ## Dependency Decision
 
-The baseline already has `python-multipart` and has no Pillow, boto3,
+The M8 start baseline already had `python-multipart` and had no Pillow, boto3,
 botocore, MinIO SDK, or libmagic dependency.
 
-Exactly two new direct runtime dependencies are approved:
+M8.07 added exactly two direct runtime dependencies:
 
-1. `Pillow`;
-2. `boto3`.
+| Direct package | Bound | Resolved | License | Python/wheel evidence |
+|---|---|---:|---|---|
+| `Pillow` | `>=12.3.0,<13` | `12.3.0` | `MIT-CMU` | Python `>=3.10`; CPython 3.12 manylinux x86_64 wheel |
+| `boto3` | `>=1.43.59,<2` | `1.43.59` | `Apache-2.0` | Python `>=3.10`; universal `py3-none-any` wheel |
 
-M8.07 selects compatible bounds and records the exact resolver output only
-after checking Python 3.12 metadata, wheel availability, license, and
-transitives. M8.08 then proves JPEG/PNG/WebP codecs and boto3 import/client
-construction in the no-cache project image. No native OS package is
-pre-approved.
+Resolved boto3 transitives:
+
+| Package | Resolved | License | Python requirement |
+|---|---:|---|---|
+| `botocore` | `1.43.59` | `Apache-2.0` | `>=3.10` |
+| `jmespath` | `1.1.0` | `MIT` | `>=3.9` |
+| `s3transfer` | `0.19.2` | `Apache License 2.0` | `>=3.10` |
+| `python-dateutil` | `2.9.0.post0` | dual Apache/BSD distribution license | `>=2.7`, excluding Python `3.0..3.2` |
+| `six` | `1.17.0` | `MIT` | Python 3.12 compatible |
+| `urllib3` | `2.7.0` | `MIT` | `>=3.10` |
+
+`uv sync --dev --frozen` checks `47` packages after this resolution. Import
+smoke reports Pillow `12.3.0`, boto3 `1.43.59`, and botocore `1.43.59`.
+M8.08 proved JPEG/PNG/WebP encode/decode and boto3 client construction in the
+no-cache project image. No native OS package was required or added.
 
 ## Fixed Runtime Decisions
 
@@ -89,6 +101,10 @@ pre-approved.
   `request.form()` and therefore cannot be the pre-parse byte boundary.
 - The multipart helper explicitly parses/caches the form before validating its
   session-bound CSRF token.
+- Starlette `1.3.1` applies `max_part_size` to scalar form parts but does not
+  enforce it on `UploadFile` data. The helper therefore also checks the parsed
+  file size against `10_485_760`; the outer actual-byte ASGI guard bounds the
+  parser before that check.
 - Request-owned transactions keep current `app/db.py` behavior. Non-request
   coordinators follow the M7 `session_factory.begin()` DB phase pattern.
 - `updated_at` is the stale-row short-claim marker; no extra claim column or
