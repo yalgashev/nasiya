@@ -485,6 +485,216 @@ URL, raw bytes, EXIF/XMP/ICC, owner polymorphism/domain attachment, ACL,
 provider ETag as checksum, credential, arbitrary JSON, or provider error body.
 `created_by_user_id` is accountability only and never grants read access.
 
+## Exact `object_files` Schema Appendix (M8.27)
+
+The only M8 revision has parent `e7f8a9b0c1d2` and creates exactly one table,
+`object_files`. It creates no PostgreSQL enum, sequence, trigger, function,
+view, second table, or data migration. UUID values are application-generated.
+
+### Exact columns
+
+| Column | SQLAlchemy/PostgreSQL type | Null | Default / semantic |
+|---|---|---:|---|
+| `id` | `postgresql.UUID(as_uuid=True)` | no | primary key; Python `uuid4`, no server default |
+| `bucket` | `String(63)` / `VARCHAR(63)` | no | configured private bucket |
+| `object_key` | `String(255)` / `VARCHAR(255)` | no | generated versioned PII-free key |
+| `content_type` | `String(32)` / `VARCHAR(32)` | no | canonical MIME only |
+| `size_bytes` | `BigInteger` / `BIGINT` | no | exact sanitized byte length |
+| `checksum_sha256` | `String(64)` / `VARCHAR(64)` | no | exact sanitized-byte SHA-256 |
+| `width_px` | `Integer` / `INTEGER` | no | canonical width |
+| `height_px` | `Integer` / `INTEGER` | no | canonical height |
+| `status` | `String(32)` / `VARCHAR(32)` | no | no database or Python default; coordinator supplies it |
+| `created_by_user_id` | `postgresql.UUID(as_uuid=True)` | no | accountability FK, not access ownership |
+| `failure_code` | `String(64)` / `VARCHAR(64)` | yes | safe internal code only |
+| `created_at` | `DateTime(timezone=True)` / `TIMESTAMPTZ` | no | Python UTC now and server `CURRENT_TIMESTAMP` |
+| `updated_at` | `DateTime(timezone=True)` / `TIMESTAMPTZ` | no | Python UTC now and server `CURRENT_TIMESTAMP`; repository advances explicitly |
+| `available_at` | `DateTime(timezone=True)` / `TIMESTAMPTZ` | yes | first verified availability |
+| `terminal_at` | `DateTime(timezone=True)` / `TIMESTAMPTZ` | yes | failed/deleted terminal transition |
+| `deleted_at` | `DateTime(timezone=True)` / `TIMESTAMPTZ` | yes | confirmed provider deletion |
+
+Application datetimes are timezone-aware UTC. `TIMESTAMPTZ` is the database
+enforcement surface; no naive local-time column is permitted. There is no
+implicit ORM `onupdate`: state primitives set `updated_at` to their injected
+UTC `now`.
+
+The sole foreign key is:
+
+```text
+created_by_user_id -> users.id
+name: fk_object_files_created_by_user_id_users_id
+ON DELETE RESTRICT
+```
+
+It has no delete cascade. Deleting a user cannot silently delete or orphan an
+external object record.
+
+### Exact named unique and indexes
+
+```text
+UNIQUE (bucket, object_key)
+  name: uq_object_files_bucket_object_key
+
+INDEX (status, updated_at)
+  name: ix_object_files_status_updated_at
+  unique: false
+
+INDEX (created_by_user_id, created_at)
+  name: ix_object_files_created_by_user_id_created_at
+  unique: false
+```
+
+No additional M8 unique or secondary index is created.
+
+### Exact named checks
+
+`ck_object_files_bucket_format`:
+
+```sql
+bucket ~ '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+AND bucket !~ '\.\.'
+AND bucket !~ '\.-'
+AND bucket !~ '-\.'
+AND bucket !~ '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'
+```
+
+`ck_object_files_object_key_format`:
+
+```sql
+object_key ~ '^v1/objects/[0-9a-f]{32}\.(jpg|png|webp)$'
+```
+
+`ck_object_files_content_type_allowed`:
+
+```sql
+content_type IN ('image/jpeg', 'image/png', 'image/webp')
+```
+
+`ck_object_files_size_bytes`:
+
+```sql
+size_bytes BETWEEN 1 AND 10485760
+```
+
+`ck_object_files_checksum_sha256`:
+
+```sql
+checksum_sha256 ~ '^[0-9a-f]{64}$'
+```
+
+`ck_object_files_dimensions`:
+
+```sql
+width_px BETWEEN 1 AND 16384
+AND height_px BETWEEN 1 AND 16384
+AND width_px::bigint * height_px::bigint <= 40000000
+```
+
+The explicit bigint casts prevent integer overflow before multiplication.
+
+`ck_object_files_status_allowed`:
+
+```sql
+status IN (
+  'PENDING_UPLOAD',
+  'AVAILABLE',
+  'FAILED',
+  'DELETE_PENDING',
+  'DELETED'
+)
+```
+
+`ck_object_files_failure_code_format`:
+
+```sql
+failure_code IS NULL
+OR failure_code ~ '^[A-Z][A-Z0-9_]{0,63}$'
+```
+
+`ck_object_files_state_consistent` is exactly the disjunction:
+
+```sql
+(
+  status = 'PENDING_UPLOAD'
+  AND available_at IS NULL
+  AND terminal_at IS NULL
+  AND deleted_at IS NULL
+  AND (
+    failure_code IS NULL
+    OR failure_code = 'UPLOAD_OUTCOME_UNKNOWN'
+  )
+)
+OR (
+  status = 'AVAILABLE'
+  AND available_at IS NOT NULL
+  AND terminal_at IS NULL
+  AND deleted_at IS NULL
+  AND failure_code IS NULL
+)
+OR (
+  status = 'FAILED'
+  AND available_at IS NULL
+  AND terminal_at IS NOT NULL
+  AND deleted_at IS NULL
+  AND failure_code IS NOT NULL
+)
+OR (
+  status = 'DELETE_PENDING'
+  AND terminal_at IS NULL
+  AND deleted_at IS NULL
+  AND (
+    failure_code IS NULL
+    OR failure_code IN (
+      'OBJECT_METADATA_MISMATCH',
+      'DELETE_OUTCOME_UNKNOWN'
+    )
+  )
+)
+OR (
+  status = 'DELETED'
+  AND terminal_at IS NOT NULL
+  AND deleted_at IS NOT NULL
+)
+```
+
+`available_at` intentionally remains either null or non-null for
+`DELETE_PENDING` and `DELETED`: a normal delete originates from `AVAILABLE`,
+while cleanup of a mismatched ambiguous upload was never available.
+`DELETED.failure_code` may be null or any value allowed by the safe format
+check so the terminal row can retain a safe mismatch/delete audit outcome.
+
+`ck_object_files_timestamp_order`:
+
+```sql
+updated_at >= created_at
+AND (available_at IS NULL OR available_at >= created_at)
+AND (terminal_at IS NULL OR terminal_at >= created_at)
+AND (
+  terminal_at IS NULL
+  OR available_at IS NULL
+  OR terminal_at >= available_at
+)
+AND (
+  deleted_at IS NULL
+  OR (
+    terminal_at IS NOT NULL
+    AND deleted_at >= terminal_at
+  )
+)
+```
+
+### Forbidden schema surface
+
+`object_files` has no column for original filename, submitted/claimed MIME,
+source or sanitized bytes, EXIF/GPS/XMP/ICC/comment/thumbnail, public or
+presigned URL, provider request/response/error body, provider ETag, endpoint,
+access/secret key, public ACL, arbitrary JSON, `owner_type`, `owner_id`,
+domain-parent attachment, customer/owner/application/document PII, retention,
+or scheduler/outbox state. It has no polymorphic relationship and no generic
+media ownership semantics.
+
+The ORM and migration must reproduce these columns, types, nullability,
+constraint expressions, names, index order, and FK action without weakening.
+
 ## Upload And Failure Protocol
 
 Happy path:

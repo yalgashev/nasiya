@@ -11,6 +11,7 @@ from app.db import Base
 from app.otp import models as _otp_models  # noqa: F401
 from app.settings import Settings
 from app.shop import models as _shop_models  # noqa: F401
+from app.storage import models as _storage_models  # noqa: F401
 from app.telegram import models as _telegram_models  # noqa: F401
 
 # This is the Alembic Config object, which provides

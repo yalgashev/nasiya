@@ -1,4 +1,4 @@
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
@@ -46,12 +46,13 @@ def test_alembic_head_exists() -> None:
     assert get_alembic_head()
 
 
-def test_m2_cleanup_tables_use_allowlist_with_m7_child_first_order(
+def test_m2_cleanup_tables_use_allowlist_with_m8_child_first_order(
     monkeypatch,
 ) -> None:
     inspector = Mock()
     inspector.get_table_names.return_value = [
         "debt",
+        "object_files",
         "otp_challenges",
         "otp_challenge_events",
         "otp_dispatches",
@@ -71,6 +72,7 @@ def test_m2_cleanup_tables_use_allowlist_with_m7_child_first_order(
     monkeypatch.setattr(postgresql, "inspect", lambda _: inspector)
 
     assert get_m2_cleanup_tables(Mock()) == [
+        "object_files",
         "otp_challenge_events",
         "otp_dispatches",
         "otp_challenges",
@@ -86,6 +88,24 @@ def test_m2_cleanup_tables_use_allowlist_with_m7_child_first_order(
         "shop_staff",
         "shops",
         "users",
+    ]
+
+
+def test_cleanup_deletes_object_files_before_users(monkeypatch) -> None:
+    engine = MagicMock()
+    connection = Mock()
+    engine.begin.return_value.__enter__.return_value = connection
+    monkeypatch.setattr(
+        postgresql,
+        "get_m2_cleanup_tables",
+        lambda _: ["object_files", "users"],
+    )
+
+    postgresql.cleanup_m2_tables(engine)
+
+    assert [call.args[0] for call in connection.exec_driver_sql.call_args_list] == [
+        'DELETE FROM "object_files"',
+        'DELETE FROM "users"',
     ]
 
 

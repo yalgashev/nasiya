@@ -45,7 +45,6 @@ def test_otp_migration_is_single_linear_child_of_verified_m6_head() -> None:
     script = ScriptDirectory.from_config(Config(str(PROJECT_ROOT / "alembic.ini")))
     revision = script.get_revision(M7_REVISION)
 
-    assert script.get_heads() == [M7_REVISION]
     assert revision is not None
     assert revision.down_revision == M6_REVISION
 
