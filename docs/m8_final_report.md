@@ -1,12 +1,12 @@
 # Nasiya M8 Final Report
 
-Status: `M8 TECHNICAL GREEN — REMOTE CI PENDING`
+Status: `M8 REMOTE GREEN — CLOSED`
 Date: 2026-07-30
 
-This report records the completed M8 implementation and focused local
-acceptance evidence available through M8.74, including the completed full
-local technical validation. It does not claim a pushed M8 implementation,
-remote CI success, or milestone closure.
+This report records the completed M8 implementation, focused local acceptance,
+the separately audited CI recovery, exact-pushed-SHA remote CI success, and
+formal milestone closure. It does not claim production-provider readiness or
+production recovery objectives.
 
 ## Baseline And Authority
 
@@ -49,9 +49,10 @@ introduced.
 ## Recovery Corrections
 
 Recovery Fix 1 separates provisioning/admin from application data-plane
-authority. Only `minio-init` uses root/admin credentials to create or verify
-the private bucket and maintain the bucket-scoped app identity/policy. Web and
-storage CLI receive only app credentials; their runtime adapter contains
+authority. Provisioning and identity administration remain confined to
+`minio-init`; a dedicated backup/restore drill is separately isolated in the
+admin plane. Web, storage CLI, application tests, the M6 worker, and the M7
+dispatcher never receive root authority. The runtime adapter contains only
 configured-bucket access check, PUT, HEAD, DELETE, and presigned GET, with no
 bucket provisioning or policy/ACL administration.
 
@@ -91,24 +92,43 @@ The two full runs were the normal quiet suite and the required
 run reported a skipped, xfailed, or xpassed outcome. Focused evidence above
 overlaps the full suite and is not added to that total.
 
-## CI State
+## Exact-SHA Remote CI Evidence
+
+| Evidence | Exact result |
+|---|---|
+| Final implementation / recovery SHA | `af611b0d546479d1f21075d9b37fac748a71fc1e` |
+| Eighth implementation checkpoint | `3481be0491f87a2ad64d1a65d6d41eedbb00a8a3` — `M8: complete secure object storage foundation` |
+| Recovery subject | `fix: isolate MinIO backup credentials in CI` |
+| GitHub Actions run | `30565830042` |
+| Workflow / job | `CI` / `dependency-sync` |
+| Conclusion | `success` |
+| Full pytest | `2167 passed` |
+| Outcome matrix | `0 failed`, `0 skipped`, `0 xfailed`, `0 xpassed` |
+| Alembic / PostgreSQL | head `f8a9b0c1d2e3`; migration, head, and integration checks GREEN |
+| Remote MinIO | private integration `16 passed` |
+| Admin backup/restore | dedicated step GREEN; sanitized source/backup/restored `1/1/1` evidence |
+| Containment / leakage | M5–M8 containment and leakage checks GREEN |
+| Exact-SHA ancestry / sync | checkpoint remains an ancestor; implementation `HEAD == origin/main`, divergence `0 0`, clean main |
+
+The final implementation SHA is the recovery commit. The preceding checkpoint
+CI showed that full pytest no longer had admin authority after intentional
+root-material cleanup. Recovery moved the real backup exercise into a
+dedicated admin step and exposed only sanitized evidence to root-free
+application and full-pytest steps. It neither replaced nor rewrote the eight
+M8 implementation checkpoints.
 
 The tracked workflow retains one `dependency-sync` job with PostgreSQL,
-runtime-generated or test-only masked MinIO credentials, root/app credential
-separation, exact Alembic-head validation, Ruff, designated MinIO integration,
-M5–M8 containment coverage, full pytest, and explicit rejection of
-skip/xfail/xpass outcomes. It uses no real cloud credential.
+root/app authority separation, exact Alembic-head validation, Ruff, designated
+private MinIO integration, M5–M8 containment coverage, full pytest, and
+explicit rejection of skip/xfail/xpass outcomes. It uses no real cloud
+credential. The successful run validated the exact pushed final implementation
+SHA.
 
-This is a static/local workflow consistency result. Remote CI has not yet been
-run for this local M8 implementation, so no M8 workflow run number, pushed
-implementation SHA, or remote-green claim is recorded.
+## Closure And Deferred Production Work
 
-## Pending Gates
+M8 is closed as `M8 REMOTE GREEN — CLOSED`. M9 has not started.
 
-- Remote CI evidence is recorded only after an authorized push of the exact
-  implementation and an actual successful workflow run.
-- Production provider selection, provider-specific acceptance, legal
-  retention, and production RPO/RTO remain deferred.
-
-M8 is not closed. Current status remains:
-`M8 TECHNICAL GREEN — REMOTE CI PENDING`.
+Closure does not select a production provider or establish provider-specific
+rollout acceptance, legal retention, or production RPO/RTO. The local
+backup/restore exercise and its remote CI execution remain synthetic
+acceptance evidence, not a production recovery design.

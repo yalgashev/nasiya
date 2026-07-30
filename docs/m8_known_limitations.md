@@ -132,12 +132,27 @@ Impact:
 
 ## Validation State
 
-Local evidence now includes the exact dependency resolution, the single M8
-Alembic head/table, focused image and transaction matrices, migration/runtime
-validation, real local MinIO `16/16`, and the local backup/restore exercise.
-These results do not select a production provider or establish production
-RPO/RTO.
+Status: `M8 REMOTE GREEN — CLOSED`.
 
-M8.74 completed both required full local pytest runs at exactly `2167 passed`
-with no failed, skipped, xfailed, or xpassed outcomes. Remote CI, a pushed
-implementation SHA/run, and milestone closure are not claimed here.
+Local evidence continues to include the exact dependency resolution, the
+single M8 Alembic head/table, focused image and transaction matrices,
+migration/runtime validation, real local MinIO `16/16`, and the GREEN
+synthetic backup/restore exercise with source/backup/restored `1/1/1`. These
+results do not select a production provider or establish production RPO/RTO.
+
+The final implementation SHA is
+`af611b0d546479d1f21075d9b37fac748a71fc1e`, the separately audited recovery
+commit `fix: isolate MinIO backup credentials in CI`. The eighth implementation
+checkpoint remains its ancestor
+`3481be0491f87a2ad64d1a65d6d41eedbb00a8a3`; exactly eight M8 implementation
+checkpoint subjects remain in ancestry, and the recovery commit does not
+replace them.
+
+GitHub Actions run `30565830042`, workflow/job `CI / dependency-sync`,
+concluded `success` for the exact pushed implementation. Remote evidence is
+`2167 passed`, `0 failed`, `0 skipped`, `0 xfailed`, `0 xpassed`, remote MinIO
+integration `16 passed`, and Alembic head `f8a9b0c1d2e3`.
+
+M8 is closed; M9 has not started. Closure does not resolve the limitations
+above: production provider selection, legal retention, and production RPO/RTO
+remain deferred.
