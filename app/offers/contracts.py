@@ -316,6 +316,11 @@ class OfferAcceptanceRepository(Protocol):
     ) -> StoredRegistrationOfferAcceptance: ...
 
 
+@runtime_checkable
+class HasAcceptedCurrentRegistrationOffer(Protocol):
+    def __call__(self, *, user_id: UUID) -> bool: ...
+
+
 def require_unique_offer_text_variants(
     variants: Iterable[OfferTextVariant],
 ) -> tuple[OfferTextVariant, ...]:

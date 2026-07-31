@@ -328,6 +328,36 @@ class SqlAlchemyOfferAcceptanceRepository:
         return _to_stored_acceptance(model)
 
 
+class SqlAlchemyHasAcceptedCurrentRegistrationOffer:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def __call__(self, *, user_id: UUID) -> bool:
+        statement = (
+            select(OfferAcceptanceModel.id)
+            .join(
+                OfferTextModel,
+                OfferTextModel.id == OfferAcceptanceModel.offer_text_id,
+            )
+            .join(
+                OfferVersionModel,
+                OfferVersionModel.id == OfferAcceptanceModel.offer_version_id,
+            )
+            .where(
+                OfferAcceptanceModel.user_id == user_id,
+                OfferAcceptanceModel.purpose == OfferPurpose.REGISTRATION.value,
+                OfferAcceptanceModel.language == OfferTextModel.language,
+                OfferAcceptanceModel.version_number == OfferVersionModel.version_number,
+                OfferAcceptanceModel.content_hash == OfferTextModel.content_hash,
+                OfferTextModel.offer_version_id == OfferVersionModel.id,
+                OfferVersionModel.purpose == OfferPurpose.REGISTRATION.value,
+                OfferVersionModel.status == OfferStatus.CURRENT.value,
+            )
+            .limit(1)
+        )
+        return self._session.scalar(statement) is not None
+
+
 def _to_domain_version(model: OfferVersionModel) -> OfferVersion:
     review = None
     if model.legal_review_authority is not None:

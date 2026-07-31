@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.audit.contracts import (
@@ -13,10 +14,12 @@ from app.audit.contracts import (
 )
 from app.audit.repository import append_audit_event
 from app.auth.error_codes import ErrorCode
+from app.auth.models import User
 from app.offers.authorization import (
     PlatformAdminActor,
     assert_platform_admin_actor,
 )
+from app.offers.commands import AcceptCurrentRegistrationOfferCommand
 from app.offers.content import (
     canonicalize_offer_text,
     compute_offer_content_hash,
@@ -25,8 +28,10 @@ from app.offers.contracts import (
     LegalReviewEvidence,
     OfferTextVariant,
     OfferVersion,
+    RegistrationOfferAcceptance,
     ResolvedCurrentOffer,
     StoredOfferText,
+    StoredRegistrationOfferAcceptance,
 )
 from app.offers.enums import OfferLanguage, OfferPurpose, OfferStatus
 from app.offers.lifecycle import (
@@ -35,9 +40,12 @@ from app.offers.lifecycle import (
 )
 from app.offers.policy import OfferVersionCompletenessPolicy
 from app.offers.repository import (
+    OfferAcceptanceInsertConflict,
     SqlAlchemyCurrentOfferResolver,
+    SqlAlchemyOfferAcceptanceRepository,
     SqlAlchemyOfferVersionRepository,
 )
+from app.offers.user_agent import normalize_offer_acceptance_user_agent
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +95,36 @@ class ResolveCurrentOfferResult:
     @property
     def succeeded(self) -> bool:
         return self.offer is not None and self.error is None
+
+
+@dataclass(frozen=True, slots=True)
+class ValidateCurrentRegistrationOfferResult:
+    offer: ResolvedCurrentOffer | None = None
+    error: ErrorCode | None = None
+
+    @property
+    def succeeded(self) -> bool:
+        return self.offer is not None and self.error is None
+
+
+class AcceptCurrentRegistrationOfferOutcome(StrEnum):
+    CREATED = "CREATED"
+    REPLAYED = "REPLAYED"
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptCurrentRegistrationOfferResult:
+    acceptance: StoredRegistrationOfferAcceptance | None = None
+    outcome: AcceptCurrentRegistrationOfferOutcome | None = None
+    error: ErrorCode | None = None
+
+    @property
+    def succeeded(self) -> bool:
+        return (
+            self.acceptance is not None
+            and self.outcome is not None
+            and self.error is None
+        )
 
 
 def create_offer_draft_version(
@@ -367,6 +405,121 @@ def resolve_current_offer(
     if resolved is None:
         return ResolveCurrentOfferResult(error=ErrorCode.OFFER_UNAVAILABLE)
     return ResolveCurrentOfferResult(offer=resolved)
+
+
+def validate_current_registration_offer(
+    session: Session,
+    *,
+    command: AcceptCurrentRegistrationOfferCommand,
+) -> ValidateCurrentRegistrationOfferResult:
+    active_user_statement = (
+        select(User.id)
+        .where(
+            User.id == command.user_id,
+            User.is_active.is_(True),
+        )
+        .with_for_update(read=True)
+    )
+    if session.scalar(active_user_statement) is None:
+        return ValidateCurrentRegistrationOfferResult(error=ErrorCode.UNAUTHORIZED)
+
+    try:
+        resolved = SqlAlchemyCurrentOfferResolver(
+            session
+        ).resolve_current_for_acceptance(language=command.language)
+    except ValueError:
+        return ValidateCurrentRegistrationOfferResult(error=ErrorCode.OFFER_CHANGED)
+    if resolved is None:
+        return ValidateCurrentRegistrationOfferResult(error=ErrorCode.OFFER_UNAVAILABLE)
+    if (
+        resolved.version.purpose is not OfferPurpose.REGISTRATION
+        or resolved.version.status is not OfferStatus.CURRENT
+        or resolved.text.variant.offer_version_id != resolved.version.id
+        or resolved.text.variant.language is not command.language
+        or resolved.text.id != command.displayed_offer_text_id
+    ):
+        return ValidateCurrentRegistrationOfferResult(error=ErrorCode.OFFER_CHANGED)
+    return ValidateCurrentRegistrationOfferResult(offer=resolved)
+
+
+def accept_current_registration_offer(
+    session: Session,
+    *,
+    command: AcceptCurrentRegistrationOfferCommand,
+    now: datetime,
+) -> AcceptCurrentRegistrationOfferResult:
+    current_time = _as_utc(now)
+    validation = validate_current_registration_offer(
+        session,
+        command=command,
+    )
+    if not validation.succeeded:
+        return AcceptCurrentRegistrationOfferResult(error=validation.error)
+    resolved = validation.offer
+    if resolved is None:
+        return AcceptCurrentRegistrationOfferResult(error=ErrorCode.OFFER_UNAVAILABLE)
+
+    evidence = RegistrationOfferAcceptance(
+        user_id=command.user_id,
+        offer_version_id=resolved.version.id,
+        offer_text_id=resolved.text.id,
+        purpose=resolved.version.purpose,
+        language=resolved.text.variant.language,
+        version_number=resolved.version.version_number,
+        content_hash=resolved.text.variant.content_hash,
+        accepted_at=current_time,
+        user_agent=normalize_offer_acceptance_user_agent(command.user_agent_source),
+    )
+    acceptance_repository = SqlAlchemyOfferAcceptanceRepository(session)
+    existing = acceptance_repository.get_acceptance(
+        user_id=evidence.user_id,
+        offer_text_id=evidence.offer_text_id,
+        purpose=evidence.purpose,
+    )
+    if existing is not None:
+        return AcceptCurrentRegistrationOfferResult(
+            acceptance=existing,
+            outcome=AcceptCurrentRegistrationOfferOutcome.REPLAYED,
+        )
+    try:
+        stored = acceptance_repository.create_acceptance(acceptance=evidence)
+    except OfferAcceptanceInsertConflict:
+        replay = acceptance_repository.get_acceptance(
+            user_id=evidence.user_id,
+            offer_text_id=evidence.offer_text_id,
+            purpose=evidence.purpose,
+        )
+        if replay is None:
+            raise RuntimeError(
+                "Offer acceptance conflict did not resolve to an existing row"
+            ) from None
+        return AcceptCurrentRegistrationOfferResult(
+            acceptance=replay,
+            outcome=AcceptCurrentRegistrationOfferOutcome.REPLAYED,
+        )
+    append_audit_event(
+        session,
+        AuditEvent(
+            event_type=AuditEventType.OFFER_REGISTRATION_ACCEPTED,
+            actor_kind=AuditActorKind.USER,
+            actor_user_id=command.user_id,
+            object_type=AuditObjectType.OFFER_ACCEPTANCE,
+            object_id=stored.id,
+            occurred_at=current_time,
+            candidate_metadata={
+                "purpose": evidence.purpose,
+                "offer_version_id": evidence.offer_version_id,
+                "offer_text_id": evidence.offer_text_id,
+                "version_number": evidence.version_number,
+                "language": evidence.language,
+                "content_hash": evidence.content_hash,
+            },
+        ),
+    )
+    return AcceptCurrentRegistrationOfferResult(
+        acceptance=stored,
+        outcome=AcceptCurrentRegistrationOfferOutcome.CREATED,
+    )
 
 
 def _legal_review_evidence(

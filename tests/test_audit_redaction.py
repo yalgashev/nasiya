@@ -201,6 +201,44 @@ def test_redaction_drops_every_unknown_sensitive_key() -> None:
     assert set(forbidden).isdisjoint(payload)
 
 
+def test_registration_acceptance_redaction_drops_all_sensitive_canaries() -> None:
+    forbidden = {
+        "title": "CANARY LEGAL TITLE",
+        "body": "CANARY LEGAL BODY",
+        "user_agent": "CANARY RAW UA",
+        "phone": "+998909999999",
+        "telegram_chat_id": "CANARY CHAT",
+        "session_id": "CANARY SESSION",
+        "csrf": "CANARY CSRF",
+        "ip": "203.0.113.99",
+    }
+    metadata: dict[str, object] = {
+        "purpose": OfferPurpose.REGISTRATION,
+        "offer_version_id": VERSION_ID,
+        "offer_text_id": TEXT_ID,
+        "version_number": 4,
+        "language": OfferLanguage.RU,
+        "content_hash": "b" * 64,
+        **forbidden,
+    }
+
+    payload = redact_audit_payload(
+        _event(AuditEventType.OFFER_REGISTRATION_ACCEPTED, metadata)
+    )
+
+    assert payload == {
+        "purpose": "REGISTRATION",
+        "offer_version_id": str(VERSION_ID),
+        "offer_text_id": str(TEXT_ID),
+        "version_number": 4,
+        "language": "RU",
+        "content_hash": "b" * 64,
+    }
+    assert set(forbidden).isdisjoint(payload)
+    rendered = repr(payload)
+    assert not any(canary in rendered for canary in forbidden.values())
+
+
 @pytest.mark.parametrize(
     ("event_type", "metadata", "message"),
     [
