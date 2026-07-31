@@ -1,10 +1,11 @@
 # M9 Final Report
 
-Status: `M9 TECHNICAL GREEN — REMOTE CI PENDING`
+Status: `M9 REMOTE GREEN — CLOSED`
 Date: 2026-07-31
 
-This is a local technical-evidence draft. M9 is not remotely verified or
-closed, and no production legal approval is claimed.
+M9 is closed from its exact pushed implementation and successful remote CI
+evidence. This closure does not claim that M9 supplies or approves production
+legal text.
 
 ## Baseline And Scope
 
@@ -33,6 +34,24 @@ closed, and no production legal approval is claimed.
 | M9 leak/scope tests and source scan | GREEN |
 | `git diff --check` | GREEN |
 
+## Exact Remote Evidence
+
+| Evidence | Exact result |
+|---|---|
+| Implementation SHA | `e2cda04920964cf383a749e07504539ccdafa0ab` |
+| GitHub Actions run | `30645425078` |
+| Workflow / job | `CI` / `dependency-sync` |
+| Workflow / job conclusion | `success` / `success` |
+| Remote full PostgreSQL pytest | `2540 passed` |
+| Remote outcome matrix | `0 failed`, `0 skipped`, `0 xfailed`, `0 xpassed` |
+| Alembic head/current | `a9b0c1d2e3f4` / `a9b0c1d2e3f4` |
+| Implementation history | `8/8` exact M9 checkpoints |
+| Security, concurrency, M1–M8 containment | GREEN |
+
+Remote CI used frozen dependency sync, applied the real PostgreSQL migration,
+verified the exact M9 head, passed Ruff, ran the inherited containment guards,
+and completed the full suite against the implementation SHA above.
+
 ## External Audit Recovery
 
 - Admin list/create/detail and authenticated registration-offer pages render
@@ -57,15 +76,24 @@ the local application and PostgreSQL. All legal text was synthetic.
    1 current for the purpose, and matching lifecycle audits.
 2. A separate authenticated account viewed the RU current offer, accepted it,
    and replayed the same form. DB evidence: exactly 1 acceptance and 1 audit;
-   version, text, language, hash, aware UTC time, and exact browser User-Agent
-   snapshot matched.
+   version, text, language, hash, aware UTC time, and bounded normalized browser
+   evidence matched.
 3. With no current offer, the browser received `409/OFFER_UNAVAILABLE`.
 4. After a RU form was opened, the admin browser switched current. Submitting
    the old form reached the `offer-changed` fail-closed page and DB evidence
    showed 0 new acceptances and exactly 1 current. Automated HTTP coverage
    separately asserts the response header is `OFFER_CHANGED`.
 
-## Pending
+## Closure And Preserved OUT Scope
 
-- Push and exact-SHA remote CI evidence.
-- Formal M9 closure.
+The eight implementation checkpoints remain unchanged, ending at
+`e2cda04920964cf383a749e07504539ccdafa0ab`. This docs-only closeout records
+remote evidence without amending or relabeling that implementation history.
+
+M9 adds no public registration, registration OTP, activation, new PII,
+`customer_document`, object-domain attachment, `shop_customer`, owner
+application, debt/payment runtime, rating, disclosure, notification,
+scheduler, generic CMS, or full admin-management suite. M10 implementation
+has not started.
+
+`M9 REMOTE GREEN — CLOSED`
