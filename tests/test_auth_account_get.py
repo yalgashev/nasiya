@@ -201,6 +201,9 @@ def test_get_account_renders_masked_phone_logout_csrf_and_sessions_link(
         get_csrf_token(created.session).as_form_value()
     )
     assert 'href="/auth/sessions"' in response.text
+    assert 'href="/auth/registration-offer"' in response.text
+    assert 'lang="uz"' in response.text
+    assert "Ro‘yxatdan o‘tish ofertasini ko‘rish" in visible_html
     assert 'href="/customer/onboarding"' in response.text
     assert "Customer draft onboarding" in visible_html
     assert raw_cookie not in response.text
@@ -296,11 +299,33 @@ def test_account_template_links_to_customer_draft_onboarding() -> None:
     assert 'href="/customer/onboarding"' in template
     assert "Customer draft onboarding" in template
     assert 'href="/auth/sessions"' in template
+    assert 'href="/auth/registration-offer"' in template
     assert 'action="/auth/logout"' in template
     assert_forbidden_account_navigation_scope_absent(template)
     assert "<script" not in template.casefold()
     assert "<style" not in template.casefold()
     assert "style=" not in template.casefold()
+
+
+def test_account_registration_offer_link_uses_ru_offer_ui_copy(
+    m2_test_database: Engine,
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 7, 19, 10, 30, tzinfo=UTC)
+    client, settings = make_client(m2_test_database, now)
+    user = commit_user(db_session)
+    created = commit_authenticated_session(db_session, user, now, settings)
+    set_client_session_cookie(client, settings, created.raw_token.as_cookie_value())
+
+    response = client.get(
+        "/auth/account",
+        headers={"Accept-Language": "ru"},
+    )
+
+    assert response.status_code == 200
+    assert 'href="/auth/registration-offer"' in response.text
+    assert 'lang="ru"' in response.text
+    assert "Посмотреть регистрационную оферту" in response.text
 
 
 def test_account_route_does_not_query_customer_state_or_own_db_session() -> None:

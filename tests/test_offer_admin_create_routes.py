@@ -116,7 +116,7 @@ def test_admin_create_draft_uses_csrf_service_and_prg_with_server_version(
     )
     detail = client.get(response.headers["location"])
     assert detail.status_code == 200
-    assert "REGISTRATION · v1" in detail.text
+    assert "Ro‘yxatdan o‘tish · v1" in detail.text
     assert "Yangi offer qoralamasi yaratildi." in detail.text
     with Session(m2_test_database) as session:
         version = session.scalar(select(OfferVersion))
@@ -211,3 +211,62 @@ def test_invalid_purpose_prg_uses_safe_localized_error(
     assert "Проверьте введённое значение." in error_page.text
     assert "GENERIC_CMS" not in error_page.text
     assert _count_versions(m2_test_database) == 0
+
+
+@pytest.mark.parametrize(
+    ("accept_language", "expected_shell"),
+    [
+        (
+            "uz-Latn",
+            (
+                "Yangi offer qoralamasi",
+                "Offer navigatsiyasi",
+                "← Offer versiyalariga qaytish",
+                "Versiya raqami server tomonidan avtomatik belgilanadi.",
+                "Offer maqsadi",
+                "Ro‘yxatdan o‘tish",
+                "Qarz qabul qilish",
+                "Qoralama yaratish",
+            ),
+        ),
+        (
+            "ru",
+            (
+                "Новый черновик оферты",
+                "Навигация оферт",
+                "← Вернуться к версиям оферты",
+                "Номер версии назначается сервером автоматически.",
+                "Назначение оферты",
+                "Регистрация",
+                "Принятие долга",
+                "Создать черновик",
+            ),
+        ),
+    ],
+)
+def test_admin_create_page_renders_full_localized_shell(
+    m2_test_database: Engine,
+    accept_language: str,
+    expected_shell: tuple[str, ...],
+) -> None:
+    client, settings = _client(m2_test_database)
+    with Session(m2_test_database) as session:
+        _authenticate(
+            client,
+            settings,
+            session,
+            phone="+998900000986",
+            is_platform_admin=True,
+        )
+
+    response = client.get(
+        "/admin/offers/new",
+        headers={"Accept-Language": accept_language},
+    )
+
+    assert response.status_code == 200
+    assert f'<html lang="{"ru" if accept_language == "ru" else "uz"}">' in (
+        response.text
+    )
+    for expected in expected_shell:
+        assert expected in response.text

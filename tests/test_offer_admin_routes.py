@@ -163,7 +163,7 @@ def test_platform_admin_reads_metadata_list_and_authorized_escaped_detail(
     assert listing.status_code == 200
     assert listing.headers["cache-control"] == AUTH_NO_STORE_CACHE_CONTROL
     assert listing.headers["content-security-policy"] == CONTENT_SECURITY_POLICY
-    assert "REGISTRATION · v1" in listing.text
+    assert "Ro‘yxatdan o‘tish · v1" in listing.text
     assert TITLE_CANARY not in listing.text
     assert BODY_CANARY not in listing.text
     assert detail.status_code == 200
@@ -174,6 +174,97 @@ def test_platform_admin_reads_metadata_list_and_authorized_escaped_detail(
     assert TITLE_CANARY not in detail.text
     assert BODY_CANARY not in detail.text
     assert "<script>Admin exact legal body</script>" not in detail.text
+
+
+@pytest.mark.parametrize(
+    ("accept_language", "list_shell", "detail_shell"),
+    [
+        (
+            "uz-Latn",
+            (
+                "Offer versiyalari",
+                "Platform darajasidagi legal offer versiyalari.",
+                "Yangi qoralama yaratish",
+                "Versiyalar",
+                "Ro‘yxatdan o‘tish · v1",
+                "Holat",
+                "Qoralama",
+                "Legal tillar",
+                "O‘zbekcha (lotin)",
+                "To‘liqlik",
+                "To‘liq emas",
+            ),
+            (
+                "Offer navigatsiyasi",
+                "← Offer versiyalariga qaytish",
+                "Legal matnlar",
+                "Sarlavha",
+                "Legal matn",
+                "Matnni saqlash",
+                "Offerni tasdiqlash",
+                "Yetishmayotgan tillar",
+                "Tekshiruvchi / vakolatli tomon",
+                "Ko‘rib chiqilgan vaqt (UTC)",
+                "Tekshiruv identifikatori",
+            ),
+        ),
+        (
+            "ru",
+            (
+                "Версии оферты",
+                "Версии юридической оферты уровня платформы.",
+                "Создать новый черновик",
+                "Версии",
+                "Регистрация · v1",
+                "Статус",
+                "Черновик",
+                "Языки юридического текста",
+                "Узбекский (латиница)",
+                "Полнота",
+                "Неполная",
+            ),
+            (
+                "Навигация оферт",
+                "← Вернуться к версиям оферты",
+                "Юридические тексты",
+                "Заголовок",
+                "Юридический текст",
+                "Сохранить текст",
+                "Утверждение оферты",
+                "Отсутствующие языки",
+                "Проверяющий / организация",
+                "Время проверки (UTC)",
+                "Ссылка на проверку",
+                "Утвердить оферту",
+            ),
+        ),
+    ],
+)
+def test_admin_list_and_draft_detail_render_full_localized_shell(
+    m2_test_database: Engine,
+    accept_language: str,
+    list_shell: tuple[str, ...],
+    detail_shell: tuple[str, ...],
+) -> None:
+    client, settings = _client(m2_test_database)
+    with Session(m2_test_database) as session:
+        admin, draft = _seed_admin_offer(session)
+        _authenticate(client, settings, session, user=admin)
+
+    headers = {"Accept-Language": accept_language}
+    listing = client.get("/admin/offers", headers=headers)
+    detail = client.get(f"/admin/offers/{draft.id}", headers=headers)
+
+    assert listing.status_code == 200
+    assert detail.status_code == 200
+    assert f'<html lang="{"ru" if accept_language == "ru" else "uz"}">' in (
+        listing.text
+    )
+    assert 'href="/admin/offers/new"' in listing.text
+    for expected in list_shell:
+        assert expected in listing.text
+    for expected in detail_shell:
+        assert expected in detail.text
 
 
 def test_platform_admin_unknown_offer_detail_is_not_found(

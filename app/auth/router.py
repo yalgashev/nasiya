@@ -46,7 +46,11 @@ from app.auth.sessions import (
 )
 from app.auth.telegram_reauth import TelegramReauthRateLimitPolicy
 from app.auth.template_context import with_csrf_context
-from app.offers.router import router as offers_router
+from app.offers.web_presentation import (
+    OFFER_WEB_LOCALE_COOKIE_NAME,
+    get_offer_web_copy,
+    resolve_offer_web_language,
+)
 from app.otp.crypto import derive_browser_binding_digest
 from app.otp.issuance import request_login_otp, request_new_login_code
 from app.otp.session_login import rotate_session_after_otp_consume
@@ -90,7 +94,6 @@ OTP_PATH = "/auth/otp"
 TELEGRAM_PATH = "/auth/telegram"
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 router = APIRouter(prefix="/auth")
-router.routes.extend(offers_router.routes)
 
 
 @router.get("/otp", response_class=HTMLResponse, response_model=None)
@@ -523,11 +526,21 @@ def account_page(
         return _redirect_auth_login(context, settings)
 
     session = context.get_session_row()
+    offer_language = resolve_offer_web_language(
+        request.cookies.get(OFFER_WEB_LOCALE_COOKIE_NAME),
+        request.headers.get("accept-language"),
+    )
     response = templates.TemplateResponse(
         request,
         "auth/account.html",
         with_csrf_context(
-            {"masked_phone": mask_phone_for_display(user.phone)},
+            {
+                "masked_phone": mask_phone_for_display(user.phone),
+                "registration_offer_link": get_offer_web_copy(
+                    offer_language
+                ).account_registration_offer_link,
+                "registration_offer_link_language": offer_language.value,
+            },
             session,
         ),
     )

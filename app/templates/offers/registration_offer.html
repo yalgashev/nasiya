@@ -1,15 +1,15 @@
 {% extends "base.html" %}
 
-{% block title %}Registration offer — Nasiya{% endblock %}
+{% block title %}{{ copy.registration.page_title }} — Nasiya{% endblock %}
 
 {% block content %}
 <main class="registration-offer-page">
-    <h1>Registration offer</h1>
-    <nav aria-label="Legal matn tili" class="offer-language-nav">
+    <h1>{{ copy.registration.heading }}</h1>
+    <nav aria-label="{{ copy.registration.language_navigation_label }}" class="offer-language-nav">
         {% for language in legal_languages %}
         <a href="/auth/registration-offer?language={{ language.value }}"
            {% if language == selected_language %}aria-current="page"{% endif %}>
-            {{ language.value }}
+            {{ copy.legal_language_labels[language] }}
         </a>
         {% endfor %}
     </nav>
@@ -30,7 +30,7 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="language" value="{{ selected_language.value }}">
         <input type="hidden" name="displayed_offer_text_id" value="{{ offer.text.id }}">
-        <button type="submit">Registration offerni qabul qilish</button>
+        <button type="submit">{{ copy.registration.accept_button }}</button>
     </form>
     {% endif %}
 </main>

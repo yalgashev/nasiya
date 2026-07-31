@@ -1,43 +1,44 @@
 {% extends "base.html" %}
 
-{% block title %}Offer versiyalari — Nasiya{% endblock %}
+{% block title %}{{ copy.admin_list.page_title }} — Nasiya{% endblock %}
 
 {% block content %}
 <main class="offer-admin-page">
-    <h1>Offer versiyalari</h1>
-    <p>Platform darajasidagi legal offer versiyalari.</p>
+    <h1>{{ copy.admin_list.heading }}</h1>
+    <p>{{ copy.admin_list.intro }}</p>
+    <p><a href="/admin/offers/new">{{ copy.admin_list.create_link }}</a></p>
 
     {% if offers %}
     <section aria-labelledby="offer-list-heading">
-        <h2 id="offer-list-heading">Versiyalar</h2>
+        <h2 id="offer-list-heading">{{ copy.admin_list.versions_heading }}</h2>
         <ul class="offer-list">
             {% for offer in offers %}
             <li class="offer-card">
                 <h3>
                     <a href="/admin/offers/{{ offer.id }}">
-                        {{ offer.purpose.value }} · v{{ offer.version_number }}
+                        {{ copy.purpose_labels[offer.purpose] }} · v{{ offer.version_number }}
                     </a>
                 </h3>
                 <dl>
-                    <dt>Holat</dt>
-                    <dd>{{ offer.status.value }}</dd>
-                    <dt>Legal tillar</dt>
+                    <dt>{{ copy.admin_list.status_label }}</dt>
+                    <dd>{{ copy.status_labels[offer.status] }}</dd>
+                    <dt>{{ copy.admin_list.legal_languages_label }}</dt>
                     <dd>
                         {% for text in offer.texts %}
-                        <span class="badge">{{ text.language.value }}</span>
+                        <span class="badge">{{ copy.legal_language_labels[text.language] }}</span>
                         {% else %}
-                        Hali matn yo‘q
+                        {{ copy.admin_list.no_text }}
                         {% endfor %}
                     </dd>
-                    <dt>To‘liqlik</dt>
-                    <dd>{{ "To‘liq" if offer.complete else "To‘liq emas" }}</dd>
+                    <dt>{{ copy.admin_list.completeness_label }}</dt>
+                    <dd>{{ copy.admin_list.complete if offer.complete else copy.admin_list.incomplete }}</dd>
                 </dl>
             </li>
             {% endfor %}
         </ul>
     </section>
     {% else %}
-    <p role="status">Offer versiyalari hali yaratilmagan.</p>
+    <p role="status">{{ copy.admin_list.empty }}</p>
     {% endif %}
 </main>
 {% endblock %}

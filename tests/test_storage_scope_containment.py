@@ -23,7 +23,6 @@ PRE_M8_IMMUTABLE_SHA256 = {
     "docs/tt_nasiya_web_v1.md": (
         "569c54c67f33925714039bf3312ce47dd6b0f6b4d39d1cf1756408fbd2f00aab"
     ),
-    "app/main.py": ("1b8bd183d0a9017c5da30764c3b8e47be58415fd65c7edadc76b5801f29637c6"),
     "app/telegram/worker.py": (
         "ebe1a1dbceb3a428437fed8d5760082b0b140f06a98860b2db0262633c4e49f5"
     ),
@@ -31,6 +30,9 @@ PRE_M8_IMMUTABLE_SHA256 = {
         "5d8c372c6a5b1c5eefdd0b40e1b43eabb5acbb217eabfd7e895f62493822eb1e"
     ),
 }
+M9_MAIN_COMPOSITION_SHA256 = (
+    "7c37f3abfea1caf5f09dad33155d1b96d2f782dcd49d53e0c1145fd2fa638098"
+)
 PRE_M8_TABLES = {
     "auth_rate_limits",
     "customers",
@@ -171,13 +173,14 @@ def test_storage_package_has_narrow_dependencies_and_no_generic_domain() -> None
     assert "public-read" not in combined_source
 
 
-def test_m5_m6_m7_roles_main_composition_and_tt_are_immutable() -> None:
+def test_m5_m6_m7_roles_workers_tt_and_m9_main_are_immutable() -> None:
     actual_hashes = {
         relative_path: _sha256(PROJECT_ROOT / relative_path)
         for relative_path in PRE_M8_IMMUTABLE_SHA256
     }
 
     assert actual_hashes == PRE_M8_IMMUTABLE_SHA256
+    assert _sha256(PROJECT_ROOT / "app/main.py") == M9_MAIN_COMPOSITION_SHA256
     assert (PROJECT_ROOT / "tests/test_shop_containment_guard.py").is_file()
     assert (PROJECT_ROOT / "tests/test_shop_service_isolation.py").is_file()
     assert (PROJECT_ROOT / "tests/test_telegram_scope_regression.py").is_file()

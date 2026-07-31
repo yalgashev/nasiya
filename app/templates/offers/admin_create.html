@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 
-{% block title %}Yangi offer qoralamasi — Nasiya{% endblock %}
+{% block title %}{{ copy.admin_create.page_title }} — Nasiya{% endblock %}
 
 {% block content %}
 <main class="offer-admin-page">
-    <nav aria-label="Offer navigatsiyasi">
-        <a href="/admin/offers">← Offer versiyalariga qaytish</a>
+    <nav aria-label="{{ copy.admin_create.navigation_label }}">
+        <a href="/admin/offers">{{ copy.admin_create.back }}</a>
     </nav>
-    <h1>Yangi offer qoralamasi</h1>
-    <p>Versiya raqami server tomonidan avtomatik belgilanadi.</p>
+    <h1>{{ copy.admin_create.heading }}</h1>
+    <p>{{ copy.admin_create.intro }}</p>
 
     {% if error_message %}
     <p role="alert">{{ error_message }}</p>
@@ -17,14 +17,14 @@
     <form method="post" action="/admin/offers">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div>
-            <label for="offer-purpose">Offer maqsadi</label>
+            <label for="offer-purpose">{{ copy.admin_create.purpose_label }}</label>
             <select id="offer-purpose" name="purpose" required>
                 {% for purpose in purposes %}
-                <option value="{{ purpose.value }}">{{ purpose.value }}</option>
+                <option value="{{ purpose.value }}">{{ copy.purpose_labels[purpose] }}</option>
                 {% endfor %}
             </select>
         </div>
-        <button type="submit">Qoralama yaratish</button>
+        <button type="submit">{{ copy.admin_create.create_button }}</button>
     </form>
 </main>
 {% endblock %}

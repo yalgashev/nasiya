@@ -14,6 +14,7 @@ from app.db import (
     create_database_session_dependency,
     create_database_session_factory,
 )
+from app.offers.router import router as offers_router
 from app.security_headers import install_security_headers_middleware
 from app.settings import Settings
 from app.shop.router import router as shop_router
@@ -46,6 +47,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         database_session_factory
     )
     application.include_router(auth_router)
+    application.include_router(offers_router)
     application.include_router(customer_router)
     application.include_router(shop_router)
     application.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

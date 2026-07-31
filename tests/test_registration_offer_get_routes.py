@@ -187,6 +187,61 @@ def test_explicit_legal_language_is_independent_of_ui_locale(
     assert f"{language.value} exact body" in response.text
 
 
+@pytest.mark.parametrize(
+    ("accept_language", "page_language", "expected_shell"),
+    [
+        (
+            "uz",
+            "uz",
+            (
+                "Ro‘yxatdan o‘tish ofertasi",
+                "Legal matn tili",
+                "O‘zbekcha (lotin)",
+                "O‘zbekcha (kirill)",
+                "Ruscha",
+                "Ro‘yxatdan o‘tish ofertasini qabul qilish",
+            ),
+        ),
+        (
+            "ru",
+            "ru",
+            (
+                "Регистрационная оферта",
+                "Язык юридического текста",
+                "Узбекский (латиница)",
+                "Узбекский (кириллица)",
+                "Русский",
+                "Принять регистрационную оферту",
+            ),
+        ),
+    ],
+)
+def test_registration_offer_renders_full_localized_shell(
+    m2_test_database: Engine,
+    accept_language: str,
+    page_language: str,
+    expected_shell: tuple[str, ...],
+) -> None:
+    client, settings = _client(m2_test_database)
+    _authenticate_account(
+        m2_test_database,
+        client,
+        settings,
+        seed_current=True,
+    )
+
+    response = client.get(
+        "/auth/registration-offer",
+        headers={"Accept-Language": accept_language},
+    )
+
+    assert response.status_code == 200
+    assert f'<html lang="{page_language}">' in response.text
+    assert 'lang="uz-Latn"' in response.text
+    for expected in expected_shell:
+        assert expected in response.text
+
+
 def test_no_current_and_invalid_language_fail_closed(
     m2_test_database: Engine,
 ) -> None:

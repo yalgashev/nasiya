@@ -167,7 +167,9 @@ def test_approved_detail_shows_safe_expected_current_and_switches_with_prg(
     assert page.status_code == 200
     assert f'action="/admin/offers/{candidate_id}/make-current"' in page.text
     assert f'value="{current_id}"' in page.text
-    assert "REGISTRATION · v1" in page.text
+    assert "Ro‘yxatdan o‘tish · v1" in page.text
+    assert '<html lang="uz">' in page.text
+    assert 'lang="ru"' in page.text
     response = client.post(
         f"/admin/offers/{candidate_id}/make-current",
         data={
@@ -188,6 +190,30 @@ def test_approved_detail_shows_safe_expected_current_and_switches_with_prg(
         assert previous is not None
         assert target.status == OfferStatus.CURRENT.value
         assert previous.status == OfferStatus.APPROVED.value
+
+
+def test_ru_admin_detail_shell_keeps_each_legal_article_language(
+    m2_test_database: Engine,
+) -> None:
+    settings, raw_cookie, _csrf, _current_id, candidate_id, _other_id = _seed(
+        m2_test_database
+    )
+    client = _client(m2_test_database, settings, raw_cookie)
+
+    page = client.get(
+        f"/admin/offers/{candidate_id}",
+        headers={"Accept-Language": "ru"},
+    )
+
+    assert page.status_code == 200
+    assert '<html lang="ru">' in page.text
+    assert "Смена текущей версии" in page.text
+    assert "Текущая оферта" in page.text
+    assert "Назначьте эту утверждённую версию текущей офертой." in page.text
+    assert "Назначить текущей" in page.text
+    assert 'lang="uz-Latn"' in page.text
+    assert 'lang="uz-Cyrl"' in page.text
+    assert 'lang="ru"' in page.text
 
 
 def test_already_current_post_is_noop_without_duplicate_audit(

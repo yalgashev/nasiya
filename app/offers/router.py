@@ -42,6 +42,8 @@ from app.offers.service import (
 from app.offers.web_presentation import (
     OFFER_WEB_LOCALE_COOKIE_NAME,
     OfferWebLanguage,
+    get_offer_legal_language_tag,
+    get_offer_web_copy,
     get_offer_web_message,
     resolve_offer_web_language,
 )
@@ -64,11 +66,19 @@ def admin_offer_list(
         Depends(require_platform_admin_actor),
     ],
 ) -> Response:
+    language = resolve_offer_web_language(
+        request.cookies.get(OFFER_WEB_LOCALE_COOKIE_NAME),
+        request.headers.get("accept-language"),
+    )
     offers = list_offer_versions_for_admin(db, actor=actor)
     response = templates.TemplateResponse(
         request,
         "offers/admin_list.html",
-        {"offers": offers},
+        {
+            "copy": get_offer_web_copy(language),
+            "offers": offers,
+            "page_language": language.value,
+        },
     )
     return mark_auth_response_no_store(response)
 
@@ -99,6 +109,7 @@ def admin_offer_create_page(
         "offers/admin_create.html",
         with_csrf_context(
             {
+                "copy": get_offer_web_copy(language),
                 "page_language": language.value,
                 "purposes": tuple(OfferPurpose),
                 "error_message": get_offer_web_message(language, error),
@@ -209,6 +220,7 @@ def admin_offer_detail(
         "offers/admin_detail.html",
         with_csrf_context(
             {
+                "copy": get_offer_web_copy(language),
                 "offer": offer,
                 "page_language": language.value,
                 "notice_message": get_offer_web_message(language, notice),
@@ -217,6 +229,10 @@ def admin_offer_detail(
                 "can_make_current": offer.summary.status
                 in {OfferStatus.APPROVED, OfferStatus.CURRENT},
                 "current_offer": current_offer,
+                "legal_language_tags": {
+                    legal_language: get_offer_legal_language_tag(legal_language)
+                    for legal_language in OfferLanguage
+                },
                 "text_forms": text_forms,
             },
             context.get_session_row(),
@@ -421,11 +437,12 @@ def registration_offer_page(
         "offers/registration_offer.html",
         with_csrf_context(
             {
+                "copy": get_offer_web_copy(ui_language),
                 "page_language": ui_language.value,
                 "offer": resolved.offer,
                 "selected_language": selected_language,
                 "legal_languages": tuple(OfferLanguage),
-                "legal_language_tag": _legal_language_tag(selected_language),
+                "legal_language_tag": get_offer_legal_language_tag(selected_language),
                 "notice_message": get_offer_web_message(ui_language, notice),
                 "error_message": get_offer_web_message(ui_language, error),
             },
@@ -559,14 +576,6 @@ def _parse_offer_language(
         return OfferLanguage.UZ_LATN, False
 
 
-def _legal_language_tag(language: OfferLanguage) -> str:
-    return {
-        OfferLanguage.UZ_LATN: "uz-Latn",
-        OfferLanguage.UZ_CYRL: "uz-Cyrl",
-        OfferLanguage.RU: "ru",
-    }[language]
-
-
 def _render_registration_offer_error(
     request: Request,
     *,
@@ -579,11 +588,12 @@ def _render_registration_offer_error(
         request,
         "offers/registration_offer.html",
         {
+            "copy": get_offer_web_copy(ui_language),
             "page_language": ui_language.value,
             "offer": None,
             "selected_language": selected_language,
             "legal_languages": tuple(OfferLanguage),
-            "legal_language_tag": _legal_language_tag(selected_language),
+            "legal_language_tag": get_offer_legal_language_tag(selected_language),
             "notice_message": None,
             "error_message": get_offer_web_message(ui_language, error_slug),
         },
