@@ -1,0 +1,1 @@
+"""Legal-offer domain contracts."""
