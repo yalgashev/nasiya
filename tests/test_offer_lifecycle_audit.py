@@ -28,6 +28,8 @@ CANARIES = {
     "title": "SECRET LEGAL TITLE CANARY",
     "body": "SECRET LEGAL BODY CANARY",
     "user_agent": "SECRET RAW USER AGENT",
+    "phone": "+998901234598",
+    "token": "SECRET TOKEN",
     "secret": "SECRET INTERNAL VALUE",
     "session_id": "SECRET SESSION ID",
     "cookie": "SECRET COOKIE",

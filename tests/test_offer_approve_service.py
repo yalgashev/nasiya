@@ -1,4 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from threading import Barrier
 
 import pytest
 from sqlalchemy import func, select
@@ -23,6 +25,8 @@ from app.offers.service import (
 pytestmark = pytest.mark.integration
 NOW = datetime(2026, 7, 31, 20, 0, tzinfo=UTC)
 REVIEWED_AT = NOW - timedelta(hours=1)
+_BARRIER_TIMEOUT_SECONDS = 10
+_FUTURE_TIMEOUT_SECONDS = 20
 
 
 def _admin(session: Session) -> User:
@@ -248,6 +252,79 @@ def test_approved_version_cannot_be_approved_or_have_evidence_replaced(
                 )
             )
             == 1
+        )
+
+
+def test_parallel_approve_and_edit_serialize_without_mutating_approved_text(
+    m2_test_database: Engine,
+) -> None:
+    with Session(m2_test_database) as session, session.begin():
+        actor, draft = _complete_draft(session)
+        draft_id = draft.id
+
+    barrier = Barrier(2)
+
+    def approve():
+        with Session(m2_test_database) as session, session.begin():
+            barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
+            return _approve(session, actor=actor, version_id=draft_id)
+
+    def edit():
+        with Session(m2_test_database) as session, session.begin():
+            barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
+            return upsert_offer_draft_text(
+                session,
+                actor=actor,
+                offer_version_id=draft_id,
+                language=OfferLanguage.UZ_LATN,
+                title="uz-Latn concurrent title",
+                body="uz-Latn concurrent synthetic legal body",
+                now=NOW,
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        approval_future = executor.submit(approve)
+        edit_future = executor.submit(edit)
+        approval = approval_future.result(timeout=_FUTURE_TIMEOUT_SECONDS)
+        edited = edit_future.result(timeout=_FUTURE_TIMEOUT_SECONDS)
+
+    assert approval.succeeded
+    assert edited.succeeded or edited.error is ErrorCode.OFFER_NOT_DRAFT
+    with Session(m2_test_database) as session:
+        persisted = session.get(OfferVersionModel, draft_id)
+        assert persisted is not None
+        assert persisted.status == OfferStatus.APPROVED.value
+        text = session.scalar(
+            select(OfferTextModel).where(
+                OfferTextModel.offer_version_id == draft_id,
+                OfferTextModel.language == OfferLanguage.UZ_LATN.value,
+            )
+        )
+        assert text is not None
+        if edited.succeeded:
+            assert text.body == "uz-Latn concurrent synthetic legal body"
+        else:
+            assert text.body == "uz-Latn synthetic legal body"
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(AuditLog)
+                .where(
+                    AuditLog.event_type == AuditEventType.OFFER_VERSION_APPROVED.value
+                )
+            )
+            == 1
+        )
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(OfferVersionModel)
+                .where(
+                    OfferVersionModel.purpose == OfferPurpose.REGISTRATION.value,
+                    OfferVersionModel.status == OfferStatus.CURRENT.value,
+                )
+            )
+            == 0
         )
 
 
