@@ -1,0 +1,267 @@
+from __future__ import annotations
+
+import re
+import unicodedata
+from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
+from typing import Final
+from uuid import UUID
+
+from app.audit.contracts import AuditEvent, AuditEventType
+from app.offers.enums import OfferLanguage, OfferPurpose, OfferStatus
+
+AuditPayload = dict[str, str | int | None]
+_CONTENT_HASH_PATTERN: Final = re.compile(r"[0-9a-f]{64}")
+_LEGAL_REVIEW_REFERENCE_PATTERN: Final = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._ -]{0,199}"
+)
+
+
+def redact_audit_payload(event: AuditEvent) -> AuditPayload:
+    builder = _PAYLOAD_BUILDERS[event.event_type]
+    return builder(event.candidate_metadata)
+
+
+def _bootstrap_payload(metadata: Mapping[str, object]) -> AuditPayload:
+    values = _required(metadata, "bootstrap_method")
+    method = values["bootstrap_method"]
+    if method != "operator_cli":
+        raise ValueError("Audit bootstrap method is invalid")
+    return {"bootstrap_method": "operator_cli"}
+
+
+def _version_created_payload(metadata: Mapping[str, object]) -> AuditPayload:
+    values = _required(metadata, "purpose", "version_number", "status")
+    status = _status(values["status"])
+    if status is not OfferStatus.DRAFT:
+        raise ValueError("Created offer audit status must be DRAFT")
+    return {
+        "purpose": _purpose(values["purpose"]),
+        "version_number": _positive_integer(values["version_number"]),
+        "status": status.value,
+    }
+
+
+def _text_updated_payload(metadata: Mapping[str, object]) -> AuditPayload:
+    values = _required(
+        metadata,
+        "purpose",
+        "version_number",
+        "language",
+        "content_hash",
+    )
+    return {
+        "purpose": _purpose(values["purpose"]),
+        "version_number": _positive_integer(values["version_number"]),
+        "language": _language(values["language"]),
+        "content_hash": _content_hash(values["content_hash"]),
+    }
+
+
+def _version_approved_payload(metadata: Mapping[str, object]) -> AuditPayload:
+    values = _required(
+        metadata,
+        "purpose",
+        "version_number",
+        "from_status",
+        "to_status",
+        "legal_review_authority",
+        "legal_review_reference",
+        "legal_reviewed_at",
+    )
+    _require_transition(
+        values,
+        source=OfferStatus.DRAFT,
+        target=OfferStatus.APPROVED,
+    )
+    return {
+        "purpose": _purpose(values["purpose"]),
+        "version_number": _positive_integer(values["version_number"]),
+        "from_status": OfferStatus.DRAFT.value,
+        "to_status": OfferStatus.APPROVED.value,
+        "legal_review_authority": _review_authority(values["legal_review_authority"]),
+        "legal_review_reference": _review_reference(values["legal_review_reference"]),
+        "legal_reviewed_at": _utc_iso8601(values["legal_reviewed_at"]),
+    }
+
+
+def _version_made_current_payload(
+    metadata: Mapping[str, object],
+) -> AuditPayload:
+    values = _required(
+        metadata,
+        "purpose",
+        "version_number",
+        "from_status",
+        "to_status",
+        "previous_current_version_id",
+    )
+    _require_transition(
+        values,
+        source=OfferStatus.APPROVED,
+        target=OfferStatus.CURRENT,
+    )
+    return {
+        "purpose": _purpose(values["purpose"]),
+        "version_number": _positive_integer(values["version_number"]),
+        "from_status": OfferStatus.APPROVED.value,
+        "to_status": OfferStatus.CURRENT.value,
+        "previous_current_version_id": _nullable_uuid(
+            values["previous_current_version_id"]
+        ),
+    }
+
+
+def _version_demoted_payload(metadata: Mapping[str, object]) -> AuditPayload:
+    values = _required(
+        metadata,
+        "purpose",
+        "version_number",
+        "from_status",
+        "to_status",
+        "replacement_version_id",
+    )
+    _require_transition(
+        values,
+        source=OfferStatus.CURRENT,
+        target=OfferStatus.APPROVED,
+    )
+    return {
+        "purpose": _purpose(values["purpose"]),
+        "version_number": _positive_integer(values["version_number"]),
+        "from_status": OfferStatus.CURRENT.value,
+        "to_status": OfferStatus.APPROVED.value,
+        "replacement_version_id": _uuid(values["replacement_version_id"]),
+    }
+
+
+def _registration_accepted_payload(
+    metadata: Mapping[str, object],
+) -> AuditPayload:
+    values = _required(
+        metadata,
+        "purpose",
+        "offer_version_id",
+        "offer_text_id",
+        "version_number",
+        "language",
+        "content_hash",
+    )
+    purpose = values["purpose"]
+    if purpose is not OfferPurpose.REGISTRATION:
+        raise ValueError("Acceptance audit purpose must be REGISTRATION")
+    return {
+        "purpose": OfferPurpose.REGISTRATION.value,
+        "offer_version_id": _uuid(values["offer_version_id"]),
+        "offer_text_id": _uuid(values["offer_text_id"]),
+        "version_number": _positive_integer(values["version_number"]),
+        "language": _language(values["language"]),
+        "content_hash": _content_hash(values["content_hash"]),
+    }
+
+
+_PAYLOAD_BUILDERS: Final[
+    Mapping[AuditEventType, Callable[[Mapping[str, object]], AuditPayload]]
+] = {
+    AuditEventType.PLATFORM_ADMIN_BOOTSTRAPPED: _bootstrap_payload,
+    AuditEventType.OFFER_VERSION_CREATED: _version_created_payload,
+    AuditEventType.OFFER_TEXT_UPDATED: _text_updated_payload,
+    AuditEventType.OFFER_VERSION_APPROVED: _version_approved_payload,
+    AuditEventType.OFFER_VERSION_MADE_CURRENT: _version_made_current_payload,
+    AuditEventType.OFFER_VERSION_DEMOTED: _version_demoted_payload,
+    AuditEventType.OFFER_REGISTRATION_ACCEPTED: _registration_accepted_payload,
+}
+
+
+def _required(
+    metadata: Mapping[str, object],
+    *keys: str,
+) -> dict[str, object]:
+    missing = [key for key in keys if key not in metadata]
+    if missing:
+        raise ValueError("Audit payload is missing required metadata")
+    return {key: metadata[key] for key in keys}
+
+
+def _purpose(value: object) -> str:
+    if not isinstance(value, OfferPurpose):
+        raise ValueError("Audit offer purpose is invalid")
+    return value.value
+
+
+def _language(value: object) -> str:
+    if not isinstance(value, OfferLanguage):
+        raise ValueError("Audit offer language is invalid")
+    return value.value
+
+
+def _status(value: object) -> OfferStatus:
+    if not isinstance(value, OfferStatus):
+        raise ValueError("Audit offer status is invalid")
+    return value
+
+
+def _positive_integer(value: object) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError("Audit version number must be positive")
+    return value
+
+
+def _content_hash(value: object) -> str:
+    if not isinstance(value, str) or _CONTENT_HASH_PATTERN.fullmatch(value) is None:
+        raise ValueError("Audit content hash is invalid")
+    return value
+
+
+def _uuid(value: object) -> str:
+    if not isinstance(value, UUID):
+        raise ValueError("Audit UUID metadata is invalid")
+    return str(value)
+
+
+def _nullable_uuid(value: object) -> str | None:
+    if value is None:
+        return None
+    return _uuid(value)
+
+
+def _review_authority(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Audit legal review authority is invalid")
+    authority = value.strip()
+    if not 1 <= len(authority) <= 200 or any(
+        unicodedata.category(char) == "Cc" for char in authority
+    ):
+        raise ValueError("Audit legal review authority is invalid")
+    return authority
+
+
+def _review_reference(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or _LEGAL_REVIEW_REFERENCE_PATTERN.fullmatch(value) is None
+    ):
+        raise ValueError("Audit legal review reference is invalid")
+    return value
+
+
+def _utc_iso8601(value: object) -> str:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() is None
+    ):
+        raise ValueError("Audit legal review time must be timezone-aware")
+    return value.astimezone(UTC).isoformat()
+
+
+def _require_transition(
+    values: Mapping[str, object],
+    *,
+    source: OfferStatus,
+    target: OfferStatus,
+) -> None:
+    if _status(values["from_status"]) is not source:
+        raise ValueError("Audit offer transition source is invalid")
+    if _status(values["to_status"]) is not target:
+        raise ValueError("Audit offer transition target is invalid")

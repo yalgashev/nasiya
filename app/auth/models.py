@@ -13,6 +13,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.sql import expression
 
 from app.db import Base
 
@@ -40,6 +41,12 @@ class User(Base):
         Boolean,
         nullable=False,
         default=True,
+    )
+    is_platform_admin: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=expression.false(),
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

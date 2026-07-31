@@ -160,7 +160,7 @@ def _insert_object(
 
 
 @pytest.mark.integration
-def test_empty_to_head_parent_walk_and_repeat_upgrade_preserve_inherited_tables(
+def test_empty_to_m8_parent_walk_and_repeat_upgrade_preserve_inherited_tables(
     m2_test_database: Engine,
 ) -> None:
     config = _config()
@@ -169,7 +169,7 @@ def test_empty_to_head_parent_walk_and_repeat_upgrade_preserve_inherited_tables(
         empty_tables = set(inspect(m2_test_database).get_table_names())
         assert empty_tables <= {"alembic_version"}
 
-        command.upgrade(config, "head")
+        command.upgrade(config, M8_REVISION)
         assert _current_revision(m2_test_database) == M8_REVISION
         assert set(inspect(m2_test_database).get_table_names()) == (
             INHERITED_TABLES | {"object_files"}
@@ -182,8 +182,7 @@ def test_empty_to_head_parent_walk_and_repeat_upgrade_preserve_inherited_tables(
         assert len(parent_tables) == 18
 
         command.upgrade(config, M8_REVISION)
-        command.upgrade(config, "head")
-        command.upgrade(config, "head")
+        command.upgrade(config, M8_REVISION)
         assert _current_revision(m2_test_database) == M8_REVISION
         assert set(inspect(m2_test_database).get_table_names()) == (
             INHERITED_TABLES | {"object_files"}
@@ -196,64 +195,72 @@ def test_empty_to_head_parent_walk_and_repeat_upgrade_preserve_inherited_tables(
 def test_real_database_has_exact_object_file_schema_objects(
     m2_test_database: Engine,
 ) -> None:
-    command.upgrade(_config(), "head")
-    inspector = inspect(m2_test_database)
+    config = _config()
+    command.downgrade(config, M8_REVISION)
+    try:
+        inspector = inspect(m2_test_database)
 
-    assert set(inspector.get_table_names()) == (INHERITED_TABLES | {"object_files"})
-    assert {column["name"] for column in inspector.get_columns("object_files")} == {
-        "id",
-        "bucket",
-        "object_key",
-        "content_type",
-        "size_bytes",
-        "checksum_sha256",
-        "width_px",
-        "height_px",
-        "status",
-        "created_by_user_id",
-        "failure_code",
-        "created_at",
-        "updated_at",
-        "available_at",
-        "terminal_at",
-        "deleted_at",
-    }
-    assert {
-        check["name"] for check in inspector.get_check_constraints("object_files")
-    } == EXPECTED_CHECKS
-    assert inspector.get_pk_constraint("object_files")["name"] == ("pk_object_files")
-    assert inspector.get_unique_constraints("object_files") == [
-        {
-            "column_names": ["bucket", "object_key"],
-            "name": "uq_object_files_bucket_object_key",
-            "comment": None,
-            "dialect_options": {
-                "postgresql_include": [],
-                "postgresql_nulls_not_distinct": False,
-            },
-        }
-    ]
-
-    foreign_keys = inspector.get_foreign_keys("object_files")
-    assert len(foreign_keys) == 1
-    assert foreign_keys[0]["name"] == ("fk_object_files_created_by_user_id_users_id")
-    assert foreign_keys[0]["constrained_columns"] == ["created_by_user_id"]
-    assert foreign_keys[0]["referred_table"] == "users"
-    assert foreign_keys[0]["referred_columns"] == ["id"]
-    assert foreign_keys[0]["options"]["ondelete"] == "RESTRICT"
-
-    non_unique_indexes = {
-        index["name"]: tuple(index["column_names"])
-        for index in inspector.get_indexes("object_files")
-        if not index["unique"]
-    }
-    assert non_unique_indexes == {
-        "ix_object_files_status_updated_at": ("status", "updated_at"),
-        "ix_object_files_created_by_user_id_created_at": (
+        assert set(inspector.get_table_names()) == (INHERITED_TABLES | {"object_files"})
+        assert {column["name"] for column in inspector.get_columns("object_files")} == {
+            "id",
+            "bucket",
+            "object_key",
+            "content_type",
+            "size_bytes",
+            "checksum_sha256",
+            "width_px",
+            "height_px",
+            "status",
             "created_by_user_id",
+            "failure_code",
             "created_at",
-        ),
-    }
+            "updated_at",
+            "available_at",
+            "terminal_at",
+            "deleted_at",
+        }
+        assert {
+            check["name"] for check in inspector.get_check_constraints("object_files")
+        } == EXPECTED_CHECKS
+        assert inspector.get_pk_constraint("object_files")["name"] == (
+            "pk_object_files"
+        )
+        assert inspector.get_unique_constraints("object_files") == [
+            {
+                "column_names": ["bucket", "object_key"],
+                "name": "uq_object_files_bucket_object_key",
+                "comment": None,
+                "dialect_options": {
+                    "postgresql_include": [],
+                    "postgresql_nulls_not_distinct": False,
+                },
+            }
+        ]
+
+        foreign_keys = inspector.get_foreign_keys("object_files")
+        assert len(foreign_keys) == 1
+        assert foreign_keys[0]["name"] == (
+            "fk_object_files_created_by_user_id_users_id"
+        )
+        assert foreign_keys[0]["constrained_columns"] == ["created_by_user_id"]
+        assert foreign_keys[0]["referred_table"] == "users"
+        assert foreign_keys[0]["referred_columns"] == ["id"]
+        assert foreign_keys[0]["options"]["ondelete"] == "RESTRICT"
+
+        non_unique_indexes = {
+            index["name"]: tuple(index["column_names"])
+            for index in inspector.get_indexes("object_files")
+            if not index["unique"]
+        }
+        assert non_unique_indexes == {
+            "ix_object_files_status_updated_at": ("status", "updated_at"),
+            "ix_object_files_created_by_user_id_created_at": (
+                "created_by_user_id",
+                "created_at",
+            ),
+        }
+    finally:
+        command.upgrade(config, "head")
 
 
 @pytest.mark.integration

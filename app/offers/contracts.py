@@ -5,6 +5,7 @@ import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from app.offers.content import (
@@ -201,6 +202,118 @@ class RegistrationOfferAcceptance:
             f"accepted_at={self.accepted_at!r}, "
             "user_agent=<redacted>)"
         )
+
+
+@dataclass(frozen=True, slots=True)
+class StoredOfferText:
+    id: UUID
+    variant: OfferTextVariant
+
+    def __post_init__(self) -> None:
+        _require_uuid(self.id, field_name="offer_text_id")
+
+
+@dataclass(frozen=True, slots=True)
+class StoredRegistrationOfferAcceptance:
+    id: UUID
+    acceptance: RegistrationOfferAcceptance
+
+    def __post_init__(self) -> None:
+        _require_uuid(self.id, field_name="offer_acceptance_id")
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedCurrentOffer:
+    version: OfferVersion
+    text: StoredOfferText
+
+    def __post_init__(self) -> None:
+        if self.version.status is not OfferStatus.CURRENT:
+            raise ValueError("Resolved offer version must be current")
+        if self.text.variant.offer_version_id != self.version.id:
+            raise ValueError("Resolved offer text belongs to another version")
+
+
+@runtime_checkable
+class OfferVersionRepository(Protocol):
+    def create_draft(
+        self,
+        *,
+        purpose: OfferPurpose,
+        created_by_user_id: UUID,
+        created_at: datetime,
+    ) -> OfferVersion: ...
+
+    def list_versions(
+        self,
+        *,
+        purpose: OfferPurpose | None = None,
+    ) -> tuple[OfferVersion, ...]: ...
+
+    def get_version(self, *, version_id: UUID) -> OfferVersion | None: ...
+
+    def lock_version(self, *, version_id: UUID) -> OfferVersion | None: ...
+
+    def lock_versions_for_purpose(
+        self,
+        *,
+        purpose: OfferPurpose,
+    ) -> tuple[OfferVersion, ...]: ...
+
+    def list_texts(
+        self,
+        *,
+        version_id: UUID,
+    ) -> tuple[StoredOfferText, ...]: ...
+
+    def get_text(
+        self,
+        *,
+        version_id: UUID,
+        language: OfferLanguage,
+    ) -> StoredOfferText | None: ...
+
+    def save_draft_text(
+        self,
+        *,
+        variant: OfferTextVariant,
+        now: datetime,
+    ) -> StoredOfferText: ...
+
+    def save_lifecycle_state(self, *, version: OfferVersion) -> OfferVersion: ...
+
+
+@runtime_checkable
+class CurrentOfferResolver(Protocol):
+    def resolve_current(
+        self,
+        *,
+        purpose: OfferPurpose,
+        language: OfferLanguage,
+    ) -> ResolvedCurrentOffer | None: ...
+
+    def resolve_current_for_acceptance(
+        self,
+        *,
+        language: OfferLanguage,
+    ) -> ResolvedCurrentOffer | None: ...
+
+
+@runtime_checkable
+class OfferAcceptanceRepository(Protocol):
+    def get_acceptance(
+        self,
+        *,
+        user_id: UUID,
+        offer_text_id: UUID,
+        purpose: OfferPurpose,
+    ) -> StoredRegistrationOfferAcceptance | None: ...
+
+    def create_acceptance(
+        self,
+        *,
+        acceptance: RegistrationOfferAcceptance,
+    ) -> StoredRegistrationOfferAcceptance: ...
 
 
 def require_unique_offer_text_variants(

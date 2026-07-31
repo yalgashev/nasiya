@@ -5,9 +5,11 @@ from pathlib import Path
 from sqlalchemy import engine_from_config, pool
 
 from alembic import context
+from app.audit import models as _audit_models  # noqa: F401
 from app.auth import models as _auth_models  # noqa: F401
 from app.customer import models as _customer_models  # noqa: F401
 from app.db import Base
+from app.offers import models as _offer_models  # noqa: F401
 from app.otp import models as _otp_models  # noqa: F401
 from app.settings import Settings
 from app.shop import models as _shop_models  # noqa: F401

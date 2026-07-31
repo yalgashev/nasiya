@@ -52,6 +52,10 @@ def test_m2_cleanup_tables_use_allowlist_with_m8_child_first_order(
     inspector = Mock()
     inspector.get_table_names.return_value = [
         "debt",
+        "offer_texts",
+        "audit_log",
+        "offer_versions",
+        "offer_acceptances",
         "object_files",
         "otp_challenges",
         "otp_challenge_events",
@@ -72,6 +76,10 @@ def test_m2_cleanup_tables_use_allowlist_with_m8_child_first_order(
     monkeypatch.setattr(postgresql, "inspect", lambda _: inspector)
 
     assert get_m2_cleanup_tables(Mock()) == [
+        "audit_log",
+        "offer_acceptances",
+        "offer_texts",
+        "offer_versions",
         "object_files",
         "otp_challenge_events",
         "otp_dispatches",

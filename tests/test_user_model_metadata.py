@@ -26,6 +26,7 @@ def test_users_table_has_required_columns() -> None:
         "phone",
         "password_hash",
         "is_active",
+        "is_platform_admin",
         "created_at",
         "updated_at",
     }
@@ -38,6 +39,8 @@ def test_users_table_has_required_columns() -> None:
     assert columns["password_hash"].nullable is True
     assert isinstance(columns["is_active"].type, Boolean)
     assert columns["is_active"].nullable is False
+    assert isinstance(columns["is_platform_admin"].type, Boolean)
+    assert columns["is_platform_admin"].nullable is False
     assert isinstance(columns["created_at"].type, DateTime)
     assert columns["created_at"].type.timezone is True
     assert columns["created_at"].nullable is False

@@ -6,8 +6,10 @@ from pathlib import Path
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
+import app.audit.models  # noqa: F401
 import app.auth.models  # noqa: F401
 import app.customer.models  # noqa: F401
+import app.offers.models  # noqa: F401
 import app.otp.models  # noqa: F401
 import app.shop.models  # noqa: F401
 import app.storage.models  # noqa: F401
@@ -47,6 +49,13 @@ PRE_M8_TABLES = {
     "telegram_polling_state",
     "telegram_update_failures",
     "users",
+}
+M8_AND_M9_AUTHORIZED_TABLES = {
+    "audit_log",
+    "object_files",
+    "offer_acceptances",
+    "offer_texts",
+    "offer_versions",
 }
 FORBIDDEN_STORAGE_IMPORT_PREFIXES = (
     "app.customer",
@@ -95,12 +104,12 @@ def _settings() -> Settings:
     )
 
 
-def test_m8_adds_exactly_one_table_to_the_inherited_metadata() -> None:
+def test_m8_storage_and_m9_offer_tables_are_exactly_scoped_in_metadata() -> None:
     all_tables = set(Base.metadata.tables)
 
-    assert all_tables - PRE_M8_TABLES == {"object_files"}
+    assert all_tables - PRE_M8_TABLES == M8_AND_M9_AUTHORIZED_TABLES
     assert PRE_M8_TABLES <= all_tables
-    assert len(all_tables) == len(PRE_M8_TABLES) + 1
+    assert len(all_tables) == len(PRE_M8_TABLES) + len(M8_AND_M9_AUTHORIZED_TABLES)
 
 
 def test_production_runtime_has_no_file_route_or_upload_template() -> None:
