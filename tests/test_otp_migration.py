@@ -41,6 +41,15 @@ M1_M6_TABLES = {
 }
 
 
+@pytest.fixture(autouse=True)
+def restore_project_head_after_otp_migration_test(
+    request: pytest.FixtureRequest,
+):
+    yield
+    if request.node.get_closest_marker("integration") is not None:
+        command.upgrade(Config(str(PROJECT_ROOT / "alembic.ini")), "head")
+
+
 def test_otp_migration_is_single_linear_child_of_verified_m6_head() -> None:
     script = ScriptDirectory.from_config(Config(str(PROJECT_ROOT / "alembic.ini")))
     revision = script.get_revision(M7_REVISION)
@@ -119,7 +128,7 @@ def test_otp_migration_downgrade_and_empty_database_upgrade_real_postgresql(
         assert M1_M6_TABLES.issubset(tables_after_empty_upgrade)
         assert M7_TABLES.issubset(tables_after_empty_upgrade)
     finally:
-        command.upgrade(config, M7_REVISION)
+        command.upgrade(config, "head")
 
 
 @pytest.mark.integration

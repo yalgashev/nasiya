@@ -24,6 +24,12 @@ class ErrorCode(StrEnum):
     FILE_STORAGE_ERROR = "FILE_STORAGE_ERROR"
     FILE_TOO_LARGE = "FILE_TOO_LARGE"
     UNSUPPORTED_FILE_TYPE = "UNSUPPORTED_FILE_TYPE"
+    OFFER_UNAVAILABLE = "OFFER_UNAVAILABLE"
+    OFFER_CHANGED = "OFFER_CHANGED"
+    OFFER_INCOMPLETE = "OFFER_INCOMPLETE"
+    OFFER_NOT_DRAFT = "OFFER_NOT_DRAFT"
+    OFFER_NOT_APPROVED = "OFFER_NOT_APPROVED"
+    LEGAL_REVIEW_EVIDENCE_REQUIRED = "LEGAL_REVIEW_EVIDENCE_REQUIRED"
 
 
 @dataclass(frozen=True)
@@ -119,6 +125,36 @@ ERROR_CATALOG: Final[Mapping[ErrorCode, ErrorDefinition]] = MappingProxyType(
             code=ErrorCode.UNSUPPORTED_FILE_TYPE,
             user_message="Bu fayl turi qabul qilinmaydi.",
             http_status=HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+        ),
+        ErrorCode.OFFER_UNAVAILABLE: ErrorDefinition(
+            code=ErrorCode.OFFER_UNAVAILABLE,
+            user_message="Joriy taklif hozir mavjud emas.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.OFFER_CHANGED: ErrorDefinition(
+            code=ErrorCode.OFFER_CHANGED,
+            user_message="Taklif o'zgargan. Sahifani yangilang.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.OFFER_INCOMPLETE: ErrorDefinition(
+            code=ErrorCode.OFFER_INCOMPLETE,
+            user_message="Taklifning barcha til variantlarini to'ldiring.",
+            http_status=HTTPStatus.UNPROCESSABLE_ENTITY,
+        ),
+        ErrorCode.OFFER_NOT_DRAFT: ErrorDefinition(
+            code=ErrorCode.OFFER_NOT_DRAFT,
+            user_message="Faqat qoralama taklifni tahrirlash mumkin.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.OFFER_NOT_APPROVED: ErrorDefinition(
+            code=ErrorCode.OFFER_NOT_APPROVED,
+            user_message="Faqat tasdiqlangan taklifni joriy qilish mumkin.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.LEGAL_REVIEW_EVIDENCE_REQUIRED: ErrorDefinition(
+            code=ErrorCode.LEGAL_REVIEW_EVIDENCE_REQUIRED,
+            user_message="Tashqi yuridik ko'rib chiqish dalili talab qilinadi.",
+            http_status=HTTPStatus.UNPROCESSABLE_ENTITY,
         ),
     }
 )

@@ -19,6 +19,10 @@ from app.auth.service import (
     set_user_password,
 )
 from app.db import create_database_engine, create_database_session_factory
+from app.offers.authorization import (
+    PlatformAdminBootstrapStatus,
+    bootstrap_first_platform_admin,
+)
 from app.settings import ObjectStorageSettingsError, Settings
 from app.shop import repository as shop_repository
 from app.shop.enums import ShopRole, ShopStatus
@@ -93,6 +97,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--reset-password",
         action="store_true",
         help="Reset password for an existing local user.",
+    )
+    bootstrap_admin = subparsers.add_parser("bootstrap-platform-admin")
+    bootstrap_admin.add_argument(
+        "--user-id",
+        type=_nonzero_uuid,
+        required=True,
     )
     shop = subparsers.add_parser("shop")
     shop_subparsers = shop.add_subparsers(dest="shop_command", required=True)
@@ -210,6 +220,38 @@ def create_or_update_local_user(args: argparse.Namespace, settings: Settings) ->
         return 1
     finally:
         engine.dispose()
+
+
+def bootstrap_platform_admin(
+    args: argparse.Namespace,
+    settings: Settings,
+) -> int:
+    engine = create_database_engine(settings)
+    session_factory = create_database_session_factory(engine)
+    try:
+        with session_factory.begin() as session:
+            result = bootstrap_first_platform_admin(
+                session,
+                target_user_id=args.user_id,
+                occurred_at=datetime.now(UTC),
+            )
+    except SQLAlchemyError:
+        print("PLATFORM_ADMIN_BOOTSTRAP_FAILED", file=sys.stderr)
+        return 1
+    finally:
+        engine.dispose()
+
+    if result is PlatformAdminBootstrapStatus.BOOTSTRAPPED:
+        print("PLATFORM_ADMIN_BOOTSTRAPPED")
+        return 0
+    if result is PlatformAdminBootstrapStatus.ADMIN_ALREADY_EXISTS:
+        print("PLATFORM_ADMIN_ALREADY_EXISTS", file=sys.stderr)
+        return 2
+    if result is PlatformAdminBootstrapStatus.USER_NOT_FOUND:
+        print("PLATFORM_ADMIN_USER_NOT_FOUND", file=sys.stderr)
+        return 2
+    print("PLATFORM_ADMIN_USER_INACTIVE", file=sys.stderr)
+    return 2
 
 
 def create_shop(args: argparse.Namespace, settings: Settings) -> int:
@@ -767,6 +809,8 @@ def main(
     try:
         if args.command == "create-local-user":
             return create_or_update_local_user(args, effective_settings)
+        if args.command == "bootstrap-platform-admin":
+            return bootstrap_platform_admin(args, effective_settings)
         if args.command == "shop":
             if args.shop_command == "create":
                 return create_shop(args, effective_settings)

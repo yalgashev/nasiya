@@ -31,8 +31,14 @@ def test_error_catalog_contains_only_stable_codes() -> None:
         ErrorCode.FILE_STORAGE_ERROR,
         ErrorCode.FILE_TOO_LARGE,
         ErrorCode.UNSUPPORTED_FILE_TYPE,
+        ErrorCode.OFFER_UNAVAILABLE,
+        ErrorCode.OFFER_CHANGED,
+        ErrorCode.OFFER_INCOMPLETE,
+        ErrorCode.OFFER_NOT_DRAFT,
+        ErrorCode.OFFER_NOT_APPROVED,
+        ErrorCode.LEGAL_REVIEW_EVIDENCE_REQUIRED,
     }
-    assert len(ERROR_CATALOG) == 17
+    assert len(ERROR_CATALOG) == 23
 
 
 def test_error_code_values_are_stable() -> None:
@@ -54,6 +60,12 @@ def test_error_code_values_are_stable() -> None:
         "FILE_STORAGE_ERROR",
         "FILE_TOO_LARGE",
         "UNSUPPORTED_FILE_TYPE",
+        "OFFER_UNAVAILABLE",
+        "OFFER_CHANGED",
+        "OFFER_INCOMPLETE",
+        "OFFER_NOT_DRAFT",
+        "OFFER_NOT_APPROVED",
+        "LEGAL_REVIEW_EVIDENCE_REQUIRED",
     ]
 
 
@@ -77,6 +89,12 @@ def test_error_code_values_are_stable() -> None:
         (ErrorCode.FILE_STORAGE_ERROR, 503),
         (ErrorCode.FILE_TOO_LARGE, 413),
         (ErrorCode.UNSUPPORTED_FILE_TYPE, 415),
+        (ErrorCode.OFFER_UNAVAILABLE, 409),
+        (ErrorCode.OFFER_CHANGED, 409),
+        (ErrorCode.OFFER_INCOMPLETE, 422),
+        (ErrorCode.OFFER_NOT_DRAFT, 409),
+        (ErrorCode.OFFER_NOT_APPROVED, 409),
+        (ErrorCode.LEGAL_REVIEW_EVIDENCE_REQUIRED, 422),
     ],
 )
 def test_error_http_status_mapping_is_stable(
@@ -131,6 +149,24 @@ def test_error_http_status_mapping_is_stable(
             "Fayl hajmi ruxsat etilgan limitdan oshgan.",
         ),
         (ErrorCode.UNSUPPORTED_FILE_TYPE, "Bu fayl turi qabul qilinmaydi."),
+        (ErrorCode.OFFER_UNAVAILABLE, "Joriy taklif hozir mavjud emas."),
+        (ErrorCode.OFFER_CHANGED, "Taklif o'zgargan. Sahifani yangilang."),
+        (
+            ErrorCode.OFFER_INCOMPLETE,
+            "Taklifning barcha til variantlarini to'ldiring.",
+        ),
+        (
+            ErrorCode.OFFER_NOT_DRAFT,
+            "Faqat qoralama taklifni tahrirlash mumkin.",
+        ),
+        (
+            ErrorCode.OFFER_NOT_APPROVED,
+            "Faqat tasdiqlangan taklifni joriy qilish mumkin.",
+        ),
+        (
+            ErrorCode.LEGAL_REVIEW_EVIDENCE_REQUIRED,
+            "Tashqi yuridik ko'rib chiqish dalili talab qilinadi.",
+        ),
     ],
 )
 def test_error_user_messages_are_safe_and_stable(
@@ -172,6 +208,24 @@ def test_m5_error_codes_are_in_catalog_without_extra_shop_not_found_code() -> No
     assert m5_codes.issubset(ERROR_CATALOG)
     assert "SHOP_NOT_FOUND" not in {code.value for code in ErrorCode}
     assert "SHOP_NOT_FOUND" not in str(ERROR_CATALOG)
+
+
+def test_m9_offer_error_codes_are_exactly_the_six_frozen_codes() -> None:
+    offer_codes = {
+        code
+        for code in ErrorCode
+        if code.value.startswith("OFFER_")
+        or code is ErrorCode.LEGAL_REVIEW_EVIDENCE_REQUIRED
+    }
+
+    assert offer_codes == {
+        ErrorCode.OFFER_UNAVAILABLE,
+        ErrorCode.OFFER_CHANGED,
+        ErrorCode.OFFER_INCOMPLETE,
+        ErrorCode.OFFER_NOT_DRAFT,
+        ErrorCode.OFFER_NOT_APPROVED,
+        ErrorCode.LEGAL_REVIEW_EVIDENCE_REQUIRED,
+    }
 
 
 def test_tenant_missing_and_forbidden_use_same_external_error_shape() -> None:
