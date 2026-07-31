@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block title %}Yangi offer qoralamasi — Nasiya{% endblock %}
+
+{% block content %}
+<main class="offer-admin-page">
+    <nav aria-label="Offer navigatsiyasi">
+        <a href="/admin/offers">← Offer versiyalariga qaytish</a>
+    </nav>
+    <h1>Yangi offer qoralamasi</h1>
+    <p>Versiya raqami server tomonidan avtomatik belgilanadi.</p>
+
+    {% if error_message %}
+    <p role="alert">{{ error_message }}</p>
+    {% endif %}
+
+    <form method="post" action="/admin/offers">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div>
+            <label for="offer-purpose">Offer maqsadi</label>
+            <select id="offer-purpose" name="purpose" required>
+                {% for purpose in purposes %}
+                <option value="{{ purpose.value }}">{{ purpose.value }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <button type="submit">Qoralama yaratish</button>
+    </form>
+</main>
+{% endblock %}

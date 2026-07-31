@@ -18,6 +18,10 @@ CONTENT_SECURITY_POLICY: Final = (
 )
 STRICT_TRANSPORT_SECURITY: Final = "max-age=31536000"
 AUTH_NO_STORE_CACHE_CONTROL: Final = "no-store"
+M9_NO_STORE_PATH_PREFIXES: Final = (
+    "/admin/offers",
+    "/auth/registration-offer",
+)
 SECURITY_HEADERS: Final[Mapping[str, str]] = {
     "Content-Security-Policy": CONTENT_SECURITY_POLICY,
     "X-Frame-Options": "DENY",
@@ -47,6 +51,8 @@ def install_security_headers_middleware(
     ) -> Response:
         response = await call_next(request)
         set_security_headers(response, settings)
+        if request.url.path.startswith(M9_NO_STORE_PATH_PREFIXES):
+            mark_auth_response_no_store(response)
         return response
 
 

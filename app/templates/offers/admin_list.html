@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block title %}Offer versiyalari — Nasiya{% endblock %}
+
+{% block content %}
+<main class="offer-admin-page">
+    <h1>Offer versiyalari</h1>
+    <p>Platform darajasidagi legal offer versiyalari.</p>
+
+    {% if offers %}
+    <section aria-labelledby="offer-list-heading">
+        <h2 id="offer-list-heading">Versiyalar</h2>
+        <ul class="offer-list">
+            {% for offer in offers %}
+            <li class="offer-card">
+                <h3>
+                    <a href="/admin/offers/{{ offer.id }}">
+                        {{ offer.purpose.value }} · v{{ offer.version_number }}
+                    </a>
+                </h3>
+                <dl>
+                    <dt>Holat</dt>
+                    <dd>{{ offer.status.value }}</dd>
+                    <dt>Legal tillar</dt>
+                    <dd>
+                        {% for text in offer.texts %}
+                        <span class="badge">{{ text.language.value }}</span>
+                        {% else %}
+                        Hali matn yo‘q
+                        {% endfor %}
+                    </dd>
+                    <dt>To‘liqlik</dt>
+                    <dd>{{ "To‘liq" if offer.complete else "To‘liq emas" }}</dd>
+                </dl>
+            </li>
+            {% endfor %}
+        </ul>
+    </section>
+    {% else %}
+    <p role="status">Offer versiyalari hali yaratilmagan.</p>
+    {% endif %}
+</main>
+{% endblock %}

@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block title %}Registration offer — Nasiya{% endblock %}
+
+{% block content %}
+<main class="registration-offer-page">
+    <h1>Registration offer</h1>
+    <nav aria-label="Legal matn tili" class="offer-language-nav">
+        {% for language in legal_languages %}
+        <a href="/auth/registration-offer?language={{ language.value }}"
+           {% if language == selected_language %}aria-current="page"{% endif %}>
+            {{ language.value }}
+        </a>
+        {% endfor %}
+    </nav>
+
+    {% if error_message %}
+    <p role="alert">{{ error_message }}</p>
+    {% endif %}
+    {% if notice_message %}
+    <p class="offer-notice" role="status">{{ notice_message }}</p>
+    {% endif %}
+
+    {% if offer %}
+    <article class="offer-legal-text" lang="{{ legal_language_tag }}">
+        <h2>{{ offer.text.variant.title }}</h2>
+        <p class="offer-legal-body">{{ offer.text.variant.body }}</p>
+    </article>
+    <form method="post" action="/auth/registration-offer/accept" class="offer-accept-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="language" value="{{ selected_language.value }}">
+        <input type="hidden" name="displayed_offer_text_id" value="{{ offer.text.id }}">
+        <button type="submit">Registration offerni qabul qilish</button>
+    </form>
+    {% endif %}
+</main>
+{% endblock %}

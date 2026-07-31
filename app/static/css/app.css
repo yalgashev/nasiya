@@ -419,6 +419,109 @@ dd {
     outline-offset: 3px;
 }
 
+.offer-admin-page,
+.registration-offer-page {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+
+.offer-list {
+    display: grid;
+    gap: 16px;
+    padding: 0;
+    list-style: none;
+}
+
+.offer-card,
+.offer-legal-text,
+.offer-text-form fieldset,
+.offer-approve-form,
+.offer-current-form,
+.offer-accept-form {
+    min-inline-size: 0;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    padding: 16px;
+    background: #ffffff;
+}
+
+.offer-text-form fieldset {
+    display: grid;
+    gap: 16px;
+    margin: 0;
+}
+
+.offer-admin-page select,
+.offer-admin-page textarea {
+    width: 100%;
+    min-height: 44px;
+    border: 1px solid #94a3b8;
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: #111827;
+    background: #ffffff;
+    font: inherit;
+}
+
+.offer-admin-page textarea {
+    min-height: 12rem;
+    line-height: 1.6;
+    resize: vertical;
+}
+
+.offer-language-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.offer-language-nav a {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    border: 1px solid #0f766e;
+    border-radius: 8px;
+    padding: 8px 12px;
+    text-decoration: none;
+}
+
+.offer-language-nav a[aria-current="page"] {
+    color: #ffffff;
+    background: #0f766e;
+}
+
+.offer-legal-text {
+    margin-top: 16px;
+}
+
+.offer-legal-body {
+    max-width: 70ch;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    line-height: 1.7;
+}
+
+.offer-notice {
+    margin-top: 16px;
+    border-left: 4px solid #0f766e;
+    padding: 10px 12px;
+    color: #134e4a;
+    background: #ecfdf5;
+    font-weight: 700;
+}
+
+.offer-admin-page input:focus-visible,
+.offer-admin-page select:focus-visible,
+.offer-admin-page textarea:focus-visible,
+.offer-admin-page button:focus-visible,
+.offer-admin-page a:focus-visible,
+.registration-offer-page button:focus-visible,
+.registration-offer-page a:focus-visible {
+    outline: 3px solid #f59e0b;
+    outline-offset: 3px;
+}
+
 @media (max-width: 430px) {
     main {
         width: min(100% - 24px, 640px);
@@ -458,6 +561,17 @@ dd {
     .shop-actions a {
         width: 100%;
     }
+
+    .offer-admin-page,
+    .registration-offer-page {
+        width: min(100% - 24px, 640px);
+    }
+
+    .offer-language-nav a,
+    .offer-admin-page button,
+    .registration-offer-page button {
+        width: 100%;
+    }
 }
 
 @media (max-width: 320px) {
@@ -466,6 +580,11 @@ dd {
     .shop-workspace,
     .shop-select,
     .shop-staff {
+        width: min(100% - 16px, 640px);
+    }
+
+    .offer-admin-page,
+    .registration-offer-page {
         width: min(100% - 16px, 640px);
     }
 }

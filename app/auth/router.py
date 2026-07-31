@@ -46,6 +46,7 @@ from app.auth.sessions import (
 )
 from app.auth.telegram_reauth import TelegramReauthRateLimitPolicy
 from app.auth.template_context import with_csrf_context
+from app.offers.router import router as offers_router
 from app.otp.crypto import derive_browser_binding_digest
 from app.otp.issuance import request_login_otp, request_new_login_code
 from app.otp.session_login import rotate_session_after_otp_consume
@@ -89,6 +90,7 @@ OTP_PATH = "/auth/otp"
 TELEGRAM_PATH = "/auth/telegram"
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 router = APIRouter(prefix="/auth")
+router.routes.extend(offers_router.routes)
 
 
 @router.get("/otp", response_class=HTMLResponse, response_model=None)

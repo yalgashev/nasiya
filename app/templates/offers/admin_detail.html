@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+
+{% block title %}Offer v{{ offer.summary.version_number }} — Nasiya{% endblock %}
+
+{% block content %}
+<main class="offer-admin-page">
+    <nav aria-label="Offer navigatsiyasi">
+        <a href="/admin/offers">← Offer versiyalariga qaytish</a>
+    </nav>
+
+    <h1>{{ offer.summary.purpose.value }} · v{{ offer.summary.version_number }}</h1>
+    {% if notice_message %}
+    <p class="offer-notice" role="status">{{ notice_message }}</p>
+    {% endif %}
+    {% if error_message %}
+    <p role="alert">{{ error_message }}</p>
+    {% endif %}
+    <dl>
+        <dt>Holat</dt>
+        <dd>{{ offer.summary.status.value }}</dd>
+        <dt>To‘liqlik</dt>
+        <dd>{{ "To‘liq" if offer.summary.complete else "To‘liq emas" }}</dd>
+        {% if offer.summary.legal_review_reference %}
+        <dt>Legal review reference</dt>
+        <dd>{{ offer.summary.legal_review_reference }}</dd>
+        {% endif %}
+    </dl>
+
+    <section aria-labelledby="legal-texts-heading">
+        <h2 id="legal-texts-heading">Legal matnlar</h2>
+        {% if can_edit %}
+            {% for form in text_forms %}
+            <form method="post" action="/admin/offers/{{ offer.summary.id }}/texts/{{ form.language.value }}" class="offer-text-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <fieldset>
+                    <legend>{{ form.language.value }}</legend>
+                    <div>
+                        <label for="offer-title-{{ form.language.value }}">Sarlavha</label>
+                        <input id="offer-title-{{ form.language.value }}" name="title" value="{{ form.title }}" required>
+                    </div>
+                    <div>
+                        <label for="offer-body-{{ form.language.value }}">Legal matn</label>
+                        <textarea id="offer-body-{{ form.language.value }}" name="body" rows="12" required>{{ form.body }}</textarea>
+                    </div>
+                    <button type="submit">{{ form.language.value }} matnini saqlash</button>
+                </fieldset>
+            </form>
+            {% endfor %}
+        {% else %}
+            {% for text in offer.texts %}
+            <article class="offer-legal-text" lang="{{ text.language.value }}">
+                <h3>{{ text.language.value }} — {{ text.title }}</h3>
+                <p class="offer-legal-body">{{ text.body }}</p>
+            </article>
+            {% endfor %}
+        {% endif %}
+    </section>
+
+    {% if can_edit %}
+    <section aria-labelledby="offer-approval-heading">
+        <h2 id="offer-approval-heading">Offerni tasdiqlash</h2>
+        <p>
+            To‘liqlik:
+            <strong>{{ "To‘liq" if offer.summary.complete else "To‘liq emas" }}</strong>
+        </p>
+        {% if offer.summary.missing_languages %}
+        <p>
+            Yetishmayotgan tillar:
+            {% for language in offer.summary.missing_languages %}
+            {{ language.value }}{% if not loop.last %}, {% endif %}
+            {% endfor %}
+        </p>
+        {% endif %}
+        <form method="post" action="/admin/offers/{{ offer.summary.id }}/approve" class="offer-approve-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div>
+                <label for="legal-review-authority">Reviewer / authority</label>
+                <input id="legal-review-authority" name="legal_review_authority" required>
+            </div>
+            <div>
+                <label for="legal-reviewed-at">Ko‘rib chiqilgan vaqt (UTC)</label>
+                <input id="legal-reviewed-at" name="legal_reviewed_at" type="datetime-local" required>
+            </div>
+            <div>
+                <label for="legal-review-reference">Review reference</label>
+                <input id="legal-review-reference" name="legal_review_reference" required>
+            </div>
+            <button type="submit">Offerni tasdiqlash</button>
+        </form>
+    </section>
+    {% endif %}
+
+    {% if can_make_current %}
+    <section aria-labelledby="offer-current-heading">
+        <h2 id="offer-current-heading">Joriy versiyani almashtirish</h2>
+        {% if current_offer %}
+        <p>
+            Hozirgi joriy offer:
+            <strong>{{ current_offer.purpose.value }} · v{{ current_offer.version_number }}</strong>
+        </p>
+        {% else %}
+        <p>Bu maqsad uchun joriy offer yo‘q.</p>
+        {% endif %}
+        <form method="post" action="/admin/offers/{{ offer.summary.id }}/make-current" class="offer-current-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="expected_current_version_id" value="{{ current_offer.id if current_offer else '' }}">
+            <p>Ushbu amal tasdiqlangan v{{ offer.summary.version_number }} versiyani joriy qiladi.</p>
+            <button type="submit">
+                {{ "Allaqachon joriy" if offer.summary.status.value == "CURRENT" else "Joriy versiya qilish" }}
+            </button>
+        </form>
+    </section>
+    {% endif %}
+</main>
+{% endblock %}
