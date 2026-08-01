@@ -6,12 +6,14 @@ import pytest
 
 from app.customer_document.contracts import (
     CustomerDocumentAccessParentRequest,
+    CustomerDocumentActor,
     CustomerDocumentAttachment,
     CustomerDocumentAttachmentResult,
     CustomerDocumentStatus,
     CustomerDocumentSubmissionId,
     ExpectedCurrentCustomerDocument,
     HasCurrentCustomerIdentityDocument,
+    UploadOwnCustomerDocument,
 )
 
 DOCUMENT_ID = UUID("11111111-1111-1111-1111-111111111111")
@@ -101,6 +103,7 @@ def test_submission_snapshot_result_and_access_parent_redact_identifiers() -> No
     parent = CustomerDocumentAccessParentRequest(
         customer_id=CUSTOMER_ID,
         document_id=REPLACEMENT_ID,
+        object_file_id=OBJECT_FILE_ID,
     )
 
     rendered = f"{submission!r} {expected!r} {result!r} {parent!r}"
@@ -109,8 +112,23 @@ def test_submission_snapshot_result_and_access_parent_redact_identifiers() -> No
         DOCUMENT_ID,
         REPLACEMENT_ID,
         CUSTOMER_ID,
+        OBJECT_FILE_ID,
     ):
         assert str(identifier) not in rendered
+
+
+def test_upload_command_is_typed_frozen_and_identifier_safe() -> None:
+    command = UploadOwnCustomerDocument(
+        actor=CustomerDocumentActor(ACTOR_ID),
+        submission_id=CustomerDocumentSubmissionId(SUBMISSION_ID),
+        expected_current=ExpectedCurrentCustomerDocument(DOCUMENT_ID),
+    )
+
+    rendered = repr(command)
+    for identifier in (ACTOR_ID, SUBMISSION_ID, DOCUMENT_ID):
+        assert str(identifier) not in rendered
+    with pytest.raises(FrozenInstanceError):
+        command.actor = CustomerDocumentActor(REPLACEMENT_ID)
 
 
 def test_attachment_result_rejects_self_replacement_and_replay_mutation() -> None:

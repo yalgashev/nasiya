@@ -16,11 +16,13 @@ from app.customer_document.contracts import (
     CustomerDocumentStatus,
     CustomerDocumentSubmissionId,
     ExpectedCurrentCustomerDocument,
+    UnattachedObjectCompensationStatus,
 )
 from app.customer_document.models import CustomerDocument
 from app.customer_document.repository import (
     CustomerDocumentPersistenceConflict,
     SqlAlchemyCustomerDocumentRepository,
+    claim_unattached_object_for_compensation,
 )
 from app.storage.models import ObjectFile, ObjectFileStatus
 from app.storage.repository import load_object_file_for_update
@@ -237,6 +239,41 @@ def test_document_repository_follows_outer_rollback(
         assert (
             verification.scalar(select(func.count()).select_from(CustomerDocument)) == 0
         )
+
+
+def test_compensation_claim_is_atomic_and_attached_object_is_always_noop(
+    m2_test_database: Engine,
+) -> None:
+    with Session(m2_test_database) as session, session.begin():
+        user, customer = _seed_owner(session, phone="+998900001104")
+        attached_object = _available_object(session, actor_id=user.id)
+        orphan_object = _available_object(session, actor_id=user.id)
+        load_object_file_for_update(session, object_file_id=attached_object.id)
+        SqlAlchemyCustomerDocumentRepository(session).attach_current_document(
+            attachment=_attachment(
+                customer_id=customer.id,
+                object_file_id=attached_object.id,
+                actor_id=user.id,
+                submission_id=uuid4(),
+            ),
+            expected_current=ExpectedCurrentCustomerDocument(None),
+        )
+
+        attached_outcome = claim_unattached_object_for_compensation(
+            session,
+            object_file_id=attached_object.id,
+            now=NOW,
+        )
+        orphan_outcome = claim_unattached_object_for_compensation(
+            session,
+            object_file_id=orphan_object.id,
+            now=NOW,
+        )
+
+        assert attached_outcome is UnattachedObjectCompensationStatus.NOOP
+        assert orphan_outcome is UnattachedObjectCompensationStatus.CLAIMED
+        assert attached_object.status == ObjectFileStatus.AVAILABLE.value
+        assert orphan_object.status == ObjectFileStatus.DELETE_PENDING.value
 
 
 def test_document_repository_source_has_no_storage_io_or_transaction_owner() -> None:

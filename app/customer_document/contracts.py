@@ -12,6 +12,11 @@ class CustomerDocumentStatus(StrEnum):
     SUPERSEDED = "SUPERSEDED"
 
 
+class UnattachedObjectCompensationStatus(StrEnum):
+    CLAIMED = "CLAIMED"
+    NOOP = "NOOP"
+
+
 def parse_customer_document_status(value: str) -> CustomerDocumentStatus:
     try:
         return CustomerDocumentStatus(value)
@@ -40,6 +45,38 @@ class ExpectedCurrentCustomerDocument:
 
     def __repr__(self) -> str:
         return "ExpectedCurrentCustomerDocument(document_id=<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class CustomerDocumentActor:
+    user_id: UUID = field(repr=False)
+
+    def __post_init__(self) -> None:
+        _require_uuid(self.user_id, field_name="actor_user_id")
+
+    def __repr__(self) -> str:
+        return "CustomerDocumentActor(user_id=<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class UploadOwnCustomerDocument:
+    actor: CustomerDocumentActor
+    submission_id: CustomerDocumentSubmissionId = field(repr=False)
+    expected_current: ExpectedCurrentCustomerDocument = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.actor, CustomerDocumentActor):
+            raise ValueError("Customer document actor is invalid")
+        if not isinstance(self.submission_id, CustomerDocumentSubmissionId):
+            raise ValueError("Customer document submission ID is invalid")
+        if not isinstance(self.expected_current, ExpectedCurrentCustomerDocument):
+            raise ValueError("Expected current customer document is invalid")
+
+    def __repr__(self) -> str:
+        return (
+            "UploadOwnCustomerDocument(actor=<redacted>, "
+            "submission_id=<redacted>, expected_current=<redacted>)"
+        )
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -149,15 +186,18 @@ class CustomerDocumentAttachmentResult:
 class CustomerDocumentAccessParentRequest:
     customer_id: UUID = field(repr=False)
     document_id: UUID = field(repr=False)
+    object_file_id: UUID = field(repr=False)
 
     def __post_init__(self) -> None:
         _require_uuid(self.customer_id, field_name="customer_id")
         _require_uuid(self.document_id, field_name="document_id")
+        _require_uuid(self.object_file_id, field_name="object_file_id")
 
     def __repr__(self) -> str:
         return (
             "CustomerDocumentAccessParentRequest("
-            "customer_id=<redacted>, document_id=<redacted>)"
+            "customer_id=<redacted>, document_id=<redacted>, "
+            "object_file_id=<redacted>)"
         )
 
 

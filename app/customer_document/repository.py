@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -14,8 +15,14 @@ from app.customer_document.contracts import (
     CustomerDocumentStatus,
     CustomerDocumentSubmissionId,
     ExpectedCurrentCustomerDocument,
+    UnattachedObjectCompensationStatus,
 )
 from app.customer_document.models import CustomerDocument
+from app.storage.models import ObjectFileStatus
+from app.storage.repository import (
+    load_object_file_for_update,
+    mark_object_file_delete_pending,
+)
 
 _OBJECT_CONSTRAINT = "uq_customer_documents_object_file_id"
 _SUBMISSION_CONSTRAINT = "uq_customer_documents_customer_id_submission_id"
@@ -142,16 +149,18 @@ class SqlAlchemyCustomerDocumentRepository(CustomerDocumentRepository):
         *,
         customer_id: UUID,
     ) -> CustomerDocumentAccessParentRequest | None:
-        statement = select(CustomerDocument.id).where(
+        statement = select(CustomerDocument).where(
             CustomerDocument.customer_id == customer_id,
             CustomerDocument.status == CustomerDocumentStatus.CURRENT.value,
         )
-        document_ids = tuple(self._session.scalars(statement))
-        if len(document_ids) != 1:
+        documents = tuple(self._session.scalars(statement))
+        if len(documents) != 1:
             return None
+        document = documents[0]
         return CustomerDocumentAccessParentRequest(
             customer_id=customer_id,
-            document_id=document_ids[0],
+            document_id=document.id,
+            object_file_id=document.object_file_id,
         )
 
     def _lock_current_models(
@@ -201,3 +210,32 @@ def _to_attachment(model: CustomerDocument) -> CustomerDocumentAttachment:
 def _constraint_name(exc: IntegrityError) -> str | None:
     diagnostic = getattr(exc.orig, "diag", None)
     return getattr(diagnostic, "constraint_name", None)
+
+
+def claim_unattached_object_for_compensation(
+    session: Session,
+    *,
+    object_file_id: UUID,
+    now: datetime,
+) -> UnattachedObjectCompensationStatus:
+    """Claim a detached AVAILABLE object for existing M8 reconciliation."""
+    object_file = load_object_file_for_update(
+        session,
+        object_file_id=object_file_id,
+    )
+    if object_file is None or object_file.status != ObjectFileStatus.AVAILABLE.value:
+        return UnattachedObjectCompensationStatus.NOOP
+    attachment_id = session.scalar(
+        select(CustomerDocument.id).where(
+            CustomerDocument.object_file_id == object_file_id
+        )
+    )
+    if attachment_id is not None:
+        return UnattachedObjectCompensationStatus.NOOP
+    mark_object_file_delete_pending(
+        session,
+        object_file_id=object_file_id,
+        failure_code=None,
+        now=now,
+    )
+    return UnattachedObjectCompensationStatus.CLAIMED
