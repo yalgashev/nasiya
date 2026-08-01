@@ -30,6 +30,12 @@ class ErrorCode(StrEnum):
     OFFER_NOT_DRAFT = "OFFER_NOT_DRAFT"
     OFFER_NOT_APPROVED = "OFFER_NOT_APPROVED"
     LEGAL_REVIEW_EVIDENCE_REQUIRED = "LEGAL_REVIEW_EVIDENCE_REQUIRED"
+    DUPLICATE_JSHSHIR = "DUPLICATE_JSHSHIR"
+    CUSTOMER_DRAFT_REQUIRED = "CUSTOMER_DRAFT_REQUIRED"
+    CUSTOMER_IDENTITY_CHANGED = "CUSTOMER_IDENTITY_CHANGED"
+    CUSTOMER_DOCUMENT_CHANGED = "CUSTOMER_DOCUMENT_CHANGED"
+    CUSTOMER_IDENTITY_UNAVAILABLE = "CUSTOMER_IDENTITY_UNAVAILABLE"
+    CUSTOMER_DOCUMENT_UNAVAILABLE = "CUSTOMER_DOCUMENT_UNAVAILABLE"
 
 
 @dataclass(frozen=True)
@@ -155,6 +161,36 @@ ERROR_CATALOG: Final[Mapping[ErrorCode, ErrorDefinition]] = MappingProxyType(
             code=ErrorCode.LEGAL_REVIEW_EVIDENCE_REQUIRED,
             user_message="Tashqi yuridik ko'rib chiqish dalili talab qilinadi.",
             http_status=HTTPStatus.UNPROCESSABLE_ENTITY,
+        ),
+        ErrorCode.DUPLICATE_JSHSHIR: ErrorDefinition(
+            code=ErrorCode.DUPLICATE_JSHSHIR,
+            user_message="Bu JSHSHIR bilan mijoz allaqachon mavjud.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.CUSTOMER_DRAFT_REQUIRED: ErrorDefinition(
+            code=ErrorCode.CUSTOMER_DRAFT_REQUIRED,
+            user_message="Avval mijoz qoralamasini yarating.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.CUSTOMER_IDENTITY_CHANGED: ErrorDefinition(
+            code=ErrorCode.CUSTOMER_IDENTITY_CHANGED,
+            user_message="Shaxsiy ma'lumotlar o'zgargan. Sahifani yangilang.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.CUSTOMER_DOCUMENT_CHANGED: ErrorDefinition(
+            code=ErrorCode.CUSTOMER_DOCUMENT_CHANGED,
+            user_message="Hujjat o'zgargan. Sahifani yangilang.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.CUSTOMER_IDENTITY_UNAVAILABLE: ErrorDefinition(
+            code=ErrorCode.CUSTOMER_IDENTITY_UNAVAILABLE,
+            user_message="Shaxsiy ma'lumotlar hozir mavjud emas.",
+            http_status=HTTPStatus.SERVICE_UNAVAILABLE,
+        ),
+        ErrorCode.CUSTOMER_DOCUMENT_UNAVAILABLE: ErrorDefinition(
+            code=ErrorCode.CUSTOMER_DOCUMENT_UNAVAILABLE,
+            user_message="Hujjat hozir mavjud emas.",
+            http_status=HTTPStatus.SERVICE_UNAVAILABLE,
         ),
     }
 )

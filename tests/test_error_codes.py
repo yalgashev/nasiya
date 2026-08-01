@@ -37,8 +37,14 @@ def test_error_catalog_contains_only_stable_codes() -> None:
         ErrorCode.OFFER_NOT_DRAFT,
         ErrorCode.OFFER_NOT_APPROVED,
         ErrorCode.LEGAL_REVIEW_EVIDENCE_REQUIRED,
+        ErrorCode.DUPLICATE_JSHSHIR,
+        ErrorCode.CUSTOMER_DRAFT_REQUIRED,
+        ErrorCode.CUSTOMER_IDENTITY_CHANGED,
+        ErrorCode.CUSTOMER_DOCUMENT_CHANGED,
+        ErrorCode.CUSTOMER_IDENTITY_UNAVAILABLE,
+        ErrorCode.CUSTOMER_DOCUMENT_UNAVAILABLE,
     }
-    assert len(ERROR_CATALOG) == 23
+    assert len(ERROR_CATALOG) == 29
 
 
 def test_error_code_values_are_stable() -> None:
@@ -66,6 +72,12 @@ def test_error_code_values_are_stable() -> None:
         "OFFER_NOT_DRAFT",
         "OFFER_NOT_APPROVED",
         "LEGAL_REVIEW_EVIDENCE_REQUIRED",
+        "DUPLICATE_JSHSHIR",
+        "CUSTOMER_DRAFT_REQUIRED",
+        "CUSTOMER_IDENTITY_CHANGED",
+        "CUSTOMER_DOCUMENT_CHANGED",
+        "CUSTOMER_IDENTITY_UNAVAILABLE",
+        "CUSTOMER_DOCUMENT_UNAVAILABLE",
     ]
 
 
@@ -95,6 +107,12 @@ def test_error_code_values_are_stable() -> None:
         (ErrorCode.OFFER_NOT_DRAFT, 409),
         (ErrorCode.OFFER_NOT_APPROVED, 409),
         (ErrorCode.LEGAL_REVIEW_EVIDENCE_REQUIRED, 422),
+        (ErrorCode.DUPLICATE_JSHSHIR, 409),
+        (ErrorCode.CUSTOMER_DRAFT_REQUIRED, 409),
+        (ErrorCode.CUSTOMER_IDENTITY_CHANGED, 409),
+        (ErrorCode.CUSTOMER_DOCUMENT_CHANGED, 409),
+        (ErrorCode.CUSTOMER_IDENTITY_UNAVAILABLE, 503),
+        (ErrorCode.CUSTOMER_DOCUMENT_UNAVAILABLE, 503),
     ],
 )
 def test_error_http_status_mapping_is_stable(
@@ -166,6 +184,27 @@ def test_error_http_status_mapping_is_stable(
         (
             ErrorCode.LEGAL_REVIEW_EVIDENCE_REQUIRED,
             "Tashqi yuridik ko'rib chiqish dalili talab qilinadi.",
+        ),
+        (
+            ErrorCode.DUPLICATE_JSHSHIR,
+            "Bu JSHSHIR bilan mijoz allaqachon mavjud.",
+        ),
+        (ErrorCode.CUSTOMER_DRAFT_REQUIRED, "Avval mijoz qoralamasini yarating."),
+        (
+            ErrorCode.CUSTOMER_IDENTITY_CHANGED,
+            "Shaxsiy ma'lumotlar o'zgargan. Sahifani yangilang.",
+        ),
+        (
+            ErrorCode.CUSTOMER_DOCUMENT_CHANGED,
+            "Hujjat o'zgargan. Sahifani yangilang.",
+        ),
+        (
+            ErrorCode.CUSTOMER_IDENTITY_UNAVAILABLE,
+            "Shaxsiy ma'lumotlar hozir mavjud emas.",
+        ),
+        (
+            ErrorCode.CUSTOMER_DOCUMENT_UNAVAILABLE,
+            "Hujjat hozir mavjud emas.",
         ),
     ],
 )
