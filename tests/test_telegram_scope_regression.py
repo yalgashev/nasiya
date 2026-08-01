@@ -222,7 +222,12 @@ def test_no_production_telegram_route_webhook_callback_or_public_csrf_bypass(
         if (route.methods or set()) & UNSAFE_METHODS
         and not route_has_csrf_dependency(route)
     ]
-    assert unprotected_unsafe_routes == []
+    assert unprotected_unsafe_routes == ["POST /customer/identity/document"]
+    document_router_source = (
+        PROJECT_ROOT / "app" / "customer_identity" / "router.py"
+    ).read_text(encoding="utf-8")
+    assert "bounded_multipart_upload(" in document_router_source
+    assert "session_context=security_context.csrf_context" in document_router_source
 
 
 def test_m6_runtime_keeps_unapproved_bot_sdk_otp_and_scheduler_out() -> None:

@@ -277,6 +277,110 @@ def test_wrong_customer_key_and_ciphertext_tampering_fail_closed(failure: str) -
     assert "12345678901234" not in str(caught.value)
 
 
+def test_ciphertext_cannot_be_swapped_between_customer_envelopes() -> None:
+    config = _config()
+    first = encrypt_customer_identity(
+        _identity(),
+        customer_id=CUSTOMER_ID,
+        crypto_config=config,
+    )
+    second = encrypt_customer_identity(
+        _identity(),
+        customer_id=OTHER_CUSTOMER_ID,
+        crypto_config=config,
+    )
+
+    for envelope, customer_id in (
+        (first, OTHER_CUSTOMER_ID),
+        (second, CUSTOMER_ID),
+    ):
+        with pytest.raises(CustomerIdentityCryptoError) as caught:
+            decrypt_customer_identity(
+                envelope,
+                customer_id=customer_id,
+                crypto_config=config,
+            )
+        assert caught.value.__cause__ is None
+
+
+@pytest.mark.parametrize(
+    ("field", "offset"),
+    [
+        ("ciphertext", 0),
+        ("ciphertext", -1),
+        ("nonce", 0),
+        ("nonce", -1),
+    ],
+)
+def test_random_bit_flips_in_authenticated_envelope_fail_closed(
+    field: str,
+    offset: int,
+) -> None:
+    config = _config()
+    envelope = encrypt_customer_identity(
+        _identity(),
+        customer_id=CUSTOMER_ID,
+        crypto_config=config,
+    )
+    ciphertext = envelope.ciphertext
+    nonce = envelope.nonce
+    original = ciphertext if field == "ciphertext" else nonce
+    resolved_offset = offset if offset >= 0 else len(original) + offset
+    flipped = (
+        original[:resolved_offset]
+        + bytes((original[resolved_offset] ^ 0x80,))
+        + original[resolved_offset + 1 :]
+    )
+    tested = CustomerIdentityEnvelope(
+        ciphertext=flipped if field == "ciphertext" else ciphertext,
+        nonce=flipped if field == "nonce" else nonce,
+        key_id=envelope.key_id,
+        schema_version=envelope.schema_version,
+    )
+
+    with pytest.raises(CustomerIdentityCryptoError) as caught:
+        decrypt_customer_identity(
+            tested,
+            customer_id=CUSTOMER_ID,
+            crypto_config=config,
+        )
+
+    assert caught.value.__cause__ is None
+
+
+def test_wrong_stored_key_id_and_truncated_nonce_fail_closed() -> None:
+    config = _config()
+    envelope = encrypt_customer_identity(
+        _identity(),
+        customer_id=CUSTOMER_ID,
+        crypto_config=config,
+    )
+    wrong_key_id = CustomerIdentityEnvelope(
+        ciphertext=envelope.ciphertext,
+        nonce=envelope.nonce,
+        key_id=CustomerIdentityKeyId(HISTORICAL_KEY_ID_TEXT),
+        schema_version=envelope.schema_version,
+    )
+
+    with pytest.raises(CustomerIdentityCryptoError) as caught:
+        decrypt_customer_identity(
+            wrong_key_id,
+            customer_id=CUSTOMER_ID,
+            crypto_config=config,
+        )
+    assert caught.value.__cause__ is None
+
+    for nonce in (envelope.nonce[:-1], envelope.nonce + b"N"):
+        with pytest.raises(CustomerIdentityCryptoError) as caught:
+            CustomerIdentityEnvelope(
+                ciphertext=envelope.ciphertext,
+                nonce=nonce,
+                key_id=envelope.key_id,
+                schema_version=envelope.schema_version,
+            )
+        assert caught.value.__cause__ is None
+
+
 def test_unknown_key_and_unsupported_schema_fail_closed() -> None:
     config = _config()
     envelope = encrypt_customer_identity(

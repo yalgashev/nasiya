@@ -9,11 +9,13 @@ from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
 from alembic import command
+from tests import test_customer_document_concurrency_postgresql as concurrency_tests
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 M9_REVISION = "a9b0c1d2e3f4"
 M10_REVISION = "b0c1d2e3f4a5"
 NOW = datetime(2026, 8, 1, 13, 0, tzinfo=UTC)
+RACE_PHONE = "+998900001202"
 
 
 def _config() -> Config:
@@ -25,6 +27,31 @@ def _current_revision(engine: Engine) -> str:
         revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
     assert isinstance(revision, str)
     return revision
+
+
+def _remove_compensation_race_rows(engine: Engine) -> None:
+    with engine.begin() as connection:
+        user_id = connection.scalar(
+            text("SELECT id FROM users WHERE phone = :phone"),
+            {"phone": RACE_PHONE},
+        )
+        assert user_id is not None
+        connection.execute(
+            text("DELETE FROM customer_documents WHERE attached_by_user_id = :id"),
+            {"id": user_id},
+        )
+        connection.execute(
+            text("DELETE FROM object_files WHERE created_by_user_id = :id"),
+            {"id": user_id},
+        )
+        connection.execute(
+            text("DELETE FROM customers WHERE user_id = :id"),
+            {"id": user_id},
+        )
+        connection.execute(
+            text("DELETE FROM users WHERE id = :id"),
+            {"id": user_id},
+        )
 
 
 def test_m10_revision_is_single_linear_child_of_m9_head() -> None:
@@ -167,7 +194,20 @@ def test_m9_m10_m9_m10_walk_preserves_inherited_data(
             )
 
         command.upgrade(config, M10_REVISION)
+        concurrency_tests.test_attach_winner_serializes_compensation_to_noop(
+            m2_test_database
+        )
+        _remove_compensation_race_rows(m2_test_database)
         command.downgrade(config, M9_REVISION)
+        downgraded_inspector = inspect(m2_test_database)
+        assert "customer_identities" not in downgraded_inspector.get_table_names()
+        assert "customer_documents" not in downgraded_inspector.get_table_names()
+        downgraded_audit_checks = " ".join(
+            check["sqltext"]
+            for check in downgraded_inspector.get_check_constraints("audit_log")
+        )
+        assert "customer.identity_saved" not in downgraded_audit_checks
+        assert "customer.document_attached" not in downgraded_audit_checks
         with m2_test_database.connect() as connection:
             assert (
                 connection.scalar(
@@ -184,6 +224,25 @@ def test_m9_m10_m9_m10_walk_preserves_inherited_data(
                 == "draft"
             )
         command.upgrade(config, M10_REVISION)
+        concurrency_tests.test_compensation_winner_blocks_attachment_with_zero_write(
+            m2_test_database
+        )
+        _remove_compensation_race_rows(m2_test_database)
         assert _current_revision(m2_test_database) == M10_REVISION
+        with m2_test_database.connect() as connection:
+            assert (
+                connection.scalar(
+                    text("SELECT count(*) FROM users WHERE id = :id"),
+                    {"id": user_id},
+                )
+                == 1
+            )
+            assert (
+                connection.scalar(
+                    text("SELECT count(*) FROM customers WHERE id = :id"),
+                    {"id": customer_id},
+                )
+                == 1
+            )
     finally:
         command.upgrade(config, "head")

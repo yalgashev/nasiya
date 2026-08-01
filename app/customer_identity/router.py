@@ -222,17 +222,17 @@ async def upload_document(
                 actor=security_context.actor,
                 fields=upload.auxiliary_fields,
             )
-            storage = get_customer_document_storage_service(request)
             client_ip = resolve_client_ip(request, settings)
-            await upload_and_attach_own_customer_document(
-                session_factory,
-                command=command,
-                source=upload.as_upload_file(),
-                client_ip=client_ip,
-                now=now,
-                settings=settings,
-                storage=storage,
-            )
+            with get_customer_document_storage_service(request) as storage:
+                await upload_and_attach_own_customer_document(
+                    session_factory,
+                    command=command,
+                    source=upload.as_upload_file(),
+                    client_ip=client_ip,
+                    now=now,
+                    settings=settings,
+                    storage=storage,
+                )
     except LoginRequired:
         return _unauthorized_redirect(settings)
     except CsrfFailed:
@@ -270,14 +270,14 @@ def current_document(
             settings=settings,
             now=now,
         )
-        storage = get_customer_document_storage_service(request)
-        url = create_own_current_customer_document_url(
-            session_factory,
-            actor=security_context.actor,
-            storage=storage,
-            settings=settings,
-            now=now,
-        )
+        with get_customer_document_storage_service(request) as storage:
+            url = create_own_current_customer_document_url(
+                session_factory,
+                actor=security_context.actor,
+                storage=storage,
+                settings=settings,
+                now=now,
+            )
     except LoginRequired:
         return _unauthorized_redirect(settings)
     except StorageAccessDeniedError:

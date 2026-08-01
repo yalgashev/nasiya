@@ -438,7 +438,7 @@ def test_own_current_access_presigns_after_authorization_and_audits(
         phone="+998900001305",
         is_platform_admin=True,
     )
-    storage = FakeObjectStorageService()
+    storage = SessionCheckingStorage(m2_test_database)
     settings = _settings(m2_test_database)
     attached = _run_upload(
         m2_test_database,

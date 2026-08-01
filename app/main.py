@@ -17,11 +17,10 @@ from app.db import (
 )
 from app.offers.router import router as offers_router
 from app.security_headers import install_security_headers_middleware
-from app.settings import ObjectStorageSettingsError, Settings
+from app.settings import Settings
 from app.shop.router import router as shop_router
 from app.storage.body_guard import StorageBodyLimitMiddleware
-from app.storage.contracts import ObjectStorageService, StorageProviderError
-from app.storage.s3 import S3ObjectStorageService, create_s3_client
+from app.storage.contracts import ObjectStorageService
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
@@ -58,8 +57,6 @@ def create_app(
     application.state.database_session_factory = database_session_factory
     application.state.customer_document_storage_service = (
         customer_document_storage_service
-        if customer_document_storage_service is not None
-        else _create_customer_document_storage_service(app_settings)
     )
     application.state.get_database_session = create_database_session_dependency(
         database_session_factory
@@ -80,16 +77,6 @@ def create_app(
         return {"status": "ok"}
 
     return application
-
-
-def _create_customer_document_storage_service(
-    settings: Settings,
-) -> ObjectStorageService | None:
-    try:
-        config = settings.require_object_storage_config()
-        return S3ObjectStorageService(create_s3_client(config))
-    except (ObjectStorageSettingsError, StorageProviderError, ValueError):
-        return None
 
 
 def load_default_settings() -> Settings:

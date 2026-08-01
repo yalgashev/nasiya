@@ -128,3 +128,62 @@ def test_parallel_create_and_update_each_have_one_audited_winner(
         assert row is not None
         assert row.revision == 2
         assert session.scalar(select(func.count()).select_from(AuditLog)) == 2
+
+
+def test_parallel_cross_customer_jshshir_duplicate_has_one_safe_winner(
+    m2_test_database: Engine,
+) -> None:
+    actor_ids: list[UUID] = []
+    with Session(m2_test_database) as session, session.begin():
+        for phone in ("+998900001407", "+998900001408"):
+            user = User(
+                phone=phone,
+                password_hash=None,
+                is_active=True,
+                is_platform_admin=False,
+                created_at=NOW,
+                updated_at=NOW,
+            )
+            session.add(user)
+            session.flush()
+            session.add(
+                Customer(
+                    user_id=user.id,
+                    onboarding_status=CUSTOMER_ONBOARDING_STATUS_DRAFT,
+                    created_at=NOW,
+                    updated_at=NOW,
+                )
+            )
+            actor_ids.append(user.id)
+
+    barrier = Barrier(2)
+
+    def worker(actor_id: UUID) -> str:
+        with Session(m2_test_database) as session, session.begin():
+            barrier.wait(timeout=10)
+            try:
+                save_own_customer_identity(
+                    repository=SqlAlchemyCustomerIdentityRepository(session),
+                    audit_writer=SqlAlchemyAuditWriter(session),
+                    crypto_config=_config(),
+                    command=_command(
+                        actor_id,
+                        expected_revision=0,
+                        first_name="Parallel",
+                    ),
+                    now=NOW,
+                )
+            except CustomerIdentityServiceError as exc:
+                assert exc.code is ErrorCode.DUPLICATE_JSHSHIR
+                assert exc.__cause__ is None
+                assert session.scalar(select(1)) == 1
+                return "duplicate"
+            return "saved"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = tuple(executor.map(worker, actor_ids))
+
+    assert sorted(outcomes) == ["duplicate", "saved"]
+    with Session(m2_test_database) as session:
+        assert session.scalar(select(func.count()).select_from(CustomerIdentity)) == 1
+        assert session.scalar(select(func.count()).select_from(AuditLog)) == 1

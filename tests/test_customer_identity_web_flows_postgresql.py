@@ -25,6 +25,8 @@ from app.customer_document.models import CustomerDocument
 from app.customer_identity.models import CustomerIdentity
 from app.main import create_app
 from app.settings import Settings
+from app.shop.enums import ShopRole
+from app.shop.models import Shop, ShopStaff
 from app.storage.models import ObjectFile, ObjectFileStatus
 from tests.storage_fake import FakeObjectStorageService, FakeStorageOperation
 
@@ -205,6 +207,7 @@ def test_identity_get_post_prg_masking_localization_and_encrypted_persistence(
     assert saved.status_code == 303
     assert saved.headers["location"] == ("/customer/identity?notice=identity-saved")
     assert saved.headers["cache-control"] == "no-store"
+    rendered_saved_headers = repr(tuple(saved.headers.items()))
     for plaintext in (
         RAW_FIRST_NAME,
         RAW_LAST_NAME,
@@ -213,6 +216,7 @@ def test_identity_get_post_prg_masking_localization_and_encrypted_persistence(
         RAW_DOCUMENT_NUMBER,
     ):
         assert plaintext not in saved.headers["location"]
+        assert plaintext not in rendered_saved_headers
 
     page = client.get(saved.headers["location"])
     assert page.status_code == 200
@@ -364,6 +368,137 @@ def test_identity_and_document_routes_have_no_authority_identifiers() -> None:
         "/customer/identity/document",
     }
     assert all("{" not in path and "}" not in path for path in route_paths)
+
+
+@pytest.mark.parametrize(
+    "other_role",
+    [
+        "account",
+        "platform-admin",
+        ShopRole.CASHIER.value,
+        ShopRole.MANAGER.value,
+        ShopRole.OWNER.value,
+    ],
+)
+def test_identity_document_authority_ignores_admin_shop_and_forged_ids(
+    m2_test_database: Engine,
+    db_session: Session,
+    other_role: str,
+) -> None:
+    storage = SessionCheckingStorage(m2_test_database)
+    owner_client, settings = _client(m2_test_database, storage)
+    _, owner_customer, owner_created = _seed_authenticated_draft(
+        db_session,
+        settings=settings,
+        phone="+998900001510",
+    )
+    _set_cookie(owner_client, settings, owner_created)
+    owner_page = owner_client.get("/customer/identity")
+    saved = owner_client.post(
+        "/customer/identity",
+        data=_identity_form(_hidden(owner_page.text, "csrf_token")),
+        follow_redirects=False,
+    )
+    assert saved.status_code == 303
+    upload_page = owner_client.get(saved.headers["location"])
+    uploaded = owner_client.post(
+        "/customer/identity/document",
+        data={
+            "csrf_token": _hidden(upload_page.text, "csrf_token"),
+            "submission_id": _hidden(upload_page.text, "submission_id"),
+            "expected_current_document_id": _hidden(
+                upload_page.text,
+                "expected_current_document_id",
+            ),
+        },
+        files={"document_file": ("owner-document.png", _png_bytes(), "image/png")},
+        follow_redirects=False,
+    )
+    assert uploaded.status_code == 303
+    own_access = owner_client.get(
+        "/customer/identity/document",
+        follow_redirects=False,
+    )
+    assert own_access.status_code == 303
+    assert own_access.headers["location"].startswith("https://")
+
+    other_client, _ = _client(m2_test_database, storage)
+    other_user, _, other_created = _seed_authenticated_draft(
+        db_session,
+        settings=settings,
+        phone="+998900001511",
+    )
+    if other_role == "platform-admin":
+        other_user.is_platform_admin = True
+    elif other_role in {
+        ShopRole.CASHIER.value,
+        ShopRole.MANAGER.value,
+        ShopRole.OWNER.value,
+    }:
+        shop = Shop(
+            name="Synthetic M10 shop",
+            phone="+998900001512",
+            address_text=None,
+            status="active",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        db_session.add(shop)
+        db_session.flush()
+        db_session.add(
+            ShopStaff(
+                shop_id=shop.id,
+                user_id=other_user.id,
+                role=other_role,
+                is_active=True,
+                created_at=NOW,
+                updated_at=NOW,
+                revoked_at=None,
+            )
+        )
+        other_created.session.active_shop_id = shop.id
+    db_session.commit()
+    _set_cookie(other_client, settings, other_created)
+
+    with Session(m2_test_database) as verification:
+        object_file_id = verification.scalar(select(ObjectFile.id))
+    assert object_file_id is not None
+    forged_query = f"?customer_id={owner_customer.id}&object_file_id={object_file_id}"
+    other_page = other_client.get(f"/customer/identity{forged_query}")
+    assert other_page.status_code == 200
+    for owner_plaintext in (
+        RAW_FIRST_NAME,
+        RAW_LAST_NAME,
+        RAW_MIDDLE_NAME,
+        RAW_JSHSHIR,
+        RAW_DOCUMENT_NUMBER,
+    ):
+        assert owner_plaintext not in other_page.text
+    assert str(owner_customer.id) not in other_page.text
+    assert str(object_file_id) not in other_page.text
+
+    calls_before_denial = storage.calls
+    denied = other_client.get(
+        f"/customer/identity/document{forged_query}",
+        follow_redirects=False,
+    )
+    assert denied.status_code == 303
+    assert denied.headers["location"] == ("/customer/identity?error=FILE_ACCESS_DENIED")
+    assert storage.calls == calls_before_denial
+
+    forged_path = other_client.get(
+        f"/customer/identity/{owner_customer.id}",
+        follow_redirects=False,
+    )
+    assert forged_path.status_code == 404
+    assert RAW_JSHSHIR not in forged_path.text
+    assert RAW_DOCUMENT_NUMBER not in forged_path.text
+
+    anonymous_client, _ = _client(m2_test_database, storage)
+    for path in ("/customer/identity", "/customer/identity/document"):
+        anonymous = anonymous_client.get(path, follow_redirects=False)
+        assert anonymous.status_code == 303
+        assert anonymous.headers["location"].startswith("/auth/login")
 
 
 def test_identity_csrf_errors_prg_without_state_and_account_link_is_localized(

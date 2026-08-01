@@ -2,6 +2,7 @@ import asyncio
 import inspect
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -9,6 +10,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 from app.auth.error_codes import ErrorCode
+from app.customer_document import dependencies as customer_document_dependencies
+from app.customer_document.dependencies import get_customer_document_storage_service
 from app.main import create_app
 from app.otp import dispatcher as otp_dispatcher
 from app.settings import Settings
@@ -125,7 +128,9 @@ def test_missing_storage_config_fails_operation_before_db_source_or_provider(
     assert storage.calls == ()
 
 
-def test_web_worker_dispatcher_and_compose_have_no_storage_runtime_dependency() -> None:
+def test_web_composition_is_operation_time_and_workers_have_no_storage_dependency() -> (
+    None
+):
     main_source = (PROJECT_ROOT / "app/main.py").read_text()
     worker_source = inspect.getsource(telegram_worker)
     dispatcher_source = inspect.getsource(otp_dispatcher)
@@ -140,8 +145,16 @@ def test_web_worker_dispatcher_and_compose_have_no_storage_runtime_dependency() 
         1,
     )[0]
 
-    assert "app.storage" not in main_source
-    assert "object_storage" not in main_source
+    main_storage_imports = tuple(
+        line for line in main_source.splitlines() if line.startswith("from app.storage")
+    )
+    assert main_storage_imports == (
+        "from app.storage.body_guard import StorageBodyLimitMiddleware",
+        "from app.storage.contracts import ObjectStorageService",
+    )
+    assert "create_s3_client" not in main_source
+    assert "S3ObjectStorageService" not in main_source
+    assert "require_object_storage_config" not in main_source
     assert "app.storage" not in worker_source
     assert "object_storage" not in worker_source
     assert "app.storage" not in dispatcher_source
@@ -151,6 +164,44 @@ def test_web_worker_dispatcher_and_compose_have_no_storage_runtime_dependency() 
     assert "object_storage" not in worker_section.casefold()
     assert "minio" not in dispatcher_section.casefold()
     assert "object_storage" not in dispatcher_section.casefold()
+
+
+def test_customer_document_storage_is_composed_and_closed_per_operation(
+    test_database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ClosingClient:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    created_clients: list[ClosingClient] = []
+
+    def create_client(_config):
+        client = ClosingClient()
+        created_clients.append(client)
+        return client
+
+    monkeypatch.setattr(
+        customer_document_dependencies,
+        "create_s3_client",
+        create_client,
+    )
+    application = create_app(
+        settings=_settings(test_database_url, with_storage=True),
+    )
+    assert created_clients == []
+    request = SimpleNamespace(app=application)
+
+    with get_customer_document_storage_service(request) as storage:  # type: ignore[arg-type]
+        assert storage.__class__.__name__ == "S3ObjectStorageService"
+        assert len(created_clients) == 1
+        assert created_clients[0].closed is False
+
+    assert created_clients[0].closed is True
+    application.state.database_engine.dispose()
 
 
 def test_storage_provider_has_one_attempt_and_preflight_has_no_retry_loop() -> None:

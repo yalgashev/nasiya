@@ -241,6 +241,64 @@ def test_document_repository_follows_outer_rollback(
         )
 
 
+def test_supersede_follows_outer_rollback_without_changing_current(
+    m2_test_database: Engine,
+) -> None:
+    with Session(m2_test_database) as session, session.begin():
+        user, customer = _seed_owner(session, phone="+998900001105")
+        first_object = _available_object(session, actor_id=user.id)
+        second_object = _available_object(session, actor_id=user.id)
+        load_object_file_for_update(session, object_file_id=first_object.id)
+        first = _attachment(
+            customer_id=customer.id,
+            object_file_id=first_object.id,
+            actor_id=user.id,
+            submission_id=uuid4(),
+        )
+        SqlAlchemyCustomerDocumentRepository(session).attach_current_document(
+            attachment=first,
+            expected_current=ExpectedCurrentCustomerDocument(None),
+        )
+        first_id = first.id
+        second_object_id = second_object.id
+        customer_id = customer.id
+        actor_id = user.id
+
+    replacement_id = uuid4()
+    with Session(m2_test_database) as session:
+        assert (
+            load_object_file_for_update(
+                session,
+                object_file_id=second_object_id,
+            )
+            is not None
+        )
+        SqlAlchemyCustomerDocumentRepository(session).attach_current_document(
+            attachment=_attachment(
+                customer_id=customer_id,
+                object_file_id=second_object_id,
+                actor_id=actor_id,
+                submission_id=uuid4(),
+                document_id=replacement_id,
+                attached_at=NOW + timedelta(seconds=1),
+            ),
+            expected_current=ExpectedCurrentCustomerDocument(first_id),
+        )
+        session.rollback()
+
+    with Session(m2_test_database) as verification:
+        current = verification.scalar(
+            select(CustomerDocument).where(
+                CustomerDocument.customer_id == customer_id,
+                CustomerDocument.status == CustomerDocumentStatus.CURRENT.value,
+            )
+        )
+        assert current is not None
+        assert current.id == first_id
+        assert current.superseded_by_document_id is None
+        assert verification.get(CustomerDocument, replacement_id) is None
+
+
 def test_compensation_claim_is_atomic_and_attached_object_is_always_noop(
     m2_test_database: Engine,
 ) -> None:
