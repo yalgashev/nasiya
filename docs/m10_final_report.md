@@ -1,11 +1,10 @@
 # M10 Final Technical Report
 
-Status: `M10 TECHNICAL GREEN — REMOTE CI PENDING`
+Status: `M10 REMOTE GREEN — CLOSED`
 Date: 2026-08-01
 
-This report records the final local technical baseline for M10. It does not
-claim remote CI success or formal milestone closure. Those claims require the
-exact implementation SHA to be pushed and verified by GitHub Actions.
+This report records the final local technical baseline, exact pushed
+implementation SHA, successful remote CI evidence, and formal M10 closure.
 
 ## Baseline And Authority
 
@@ -15,10 +14,9 @@ exact implementation SHA to be pushed and verified by GitHub Actions.
   APPROVED`, `docs/m10_scope_contract.md`, and `docs/m10_decisions.md`.
 - Repository integration evidence: `docs/m10_repository_map.md`.
 - Residual boundaries: `docs/m10_known_limitations.md`.
-- Current implementation checkpoint before the final technical commit:
-  `db8b4818248fef019d9f3d7dbee082eed7d410ea`.
-- The seven existing M10 checkpoint subjects are intact. The eighth and final
-  implementation checkpoint is intentionally pending M10.86.
+- Final implementation checkpoint:
+  `b79250858a3f6a63908a288f891d5dad1126dd48`.
+- All eight exact M10 implementation checkpoint subjects are intact.
 
 ## Delivered Capability
 
@@ -85,6 +83,28 @@ The focused sets overlap the full suite and are not additive totals. The two
 warnings are dependency deprecation notices already visible in the full run;
 they are not failures, skips, xfails, or xpasses.
 
+## Exact Remote Evidence
+
+| Evidence | Exact result |
+|---|---|
+| Implementation SHA | `b79250858a3f6a63908a288f891d5dad1126dd48` |
+| GitHub Actions run | `30705134413` |
+| Workflow / job | `CI` / `dependency-sync` |
+| Job identifier | `91382838013` |
+| Run and job conclusion | `success` / `success` |
+| Remote full PostgreSQL pytest | 2735 passed |
+| Remote outcome matrix | 0 failed, 0 skipped, 0 xfailed, 0 xpassed |
+| Alembic head/current | `b0c1d2e3f4a5` / `b0c1d2e3f4a5` |
+| Implementation history | `8/8` exact M10 checkpoints |
+| Frozen crypto dependency, Ruff, migration, security, containment | GREEN |
+| Private MinIO integration and synthetic backup/restore | GREEN |
+
+The successful run checked out the exact implementation SHA above, completed
+frozen dependency sync, applied and verified the real PostgreSQL migration,
+passed Ruff, provisioned the bounded private MinIO runtime, exercised the
+inherited storage recovery boundary, passed the full suite, and enforced zero
+skipped/xfailed/xpassed outcomes.
+
 ## Browser And Real MinIO Acceptance
 
 All manual acceptance data was synthetic. No credential, session, token,
@@ -113,12 +133,16 @@ temporary access URL is recorded here.
    injection produced `DELETE_PENDING/DELETE_OUTCOME_UNKNOWN`, and a later
    existing CLI reconciliation completed it as `DELETED`.
 
-## Checkpoint And Remote State
+## Closure And Preserved Scope
 
-Local technical validation is GREEN and this report is intentionally
-remote-pending. M10.86 must create the exact final implementation checkpoint,
-M10.87 must prove the eight-checkpoint pre-push state, and M10.88 must verify a
-successful GitHub Actions run for that exact pushed SHA. Until then neither
-this report nor any other document may claim formal remote closure.
+The eight implementation checkpoints remain unchanged and end at the exact
+remote-green implementation SHA. This docs-only closeout records remote
+evidence without rewriting or relabeling implementation history.
 
-`M10 TECHNICAL GREEN — REMOTE CI PENDING`
+Every accepted customer remains `draft`. M10 adds no activation, public
+registration, REGISTRATION OTP, customer lead, `shop_customer`, shop-assisted
+PII capture, debt/payment, rating, disclosure, notification, scheduler,
+OCR/MRZ, biometrics, government registry integration, or generic
+attachment/CMS/admin/KMS platform. M11 implementation has not started.
+
+`M10 REMOTE GREEN — CLOSED`

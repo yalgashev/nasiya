@@ -1,6 +1,6 @@
 # Nasiya M10 Known Limitations
 
-Status: authoritative M10 limitations, pre-implementation.
+Status: authoritative residual limitations for `M10 REMOTE GREEN — CLOSED`.
 Baseline: M9 remote-green/docs-only closeout
 `f96b9f0a6d6b506f6715aa354cb4346199f1f5c5`.
 Amendment: `CR-M10-01 — FINAL APPROVED` amends only PO-M10-14/15 and is
@@ -15,10 +15,13 @@ TX-C atomically proves global nonattachment and claims `DELETE_PENDING`; and
 the existing M8 reconciliation performs eventual provider cleanup. This does
 not create a second limiter, request delete, or M10 scheduler.
 
-M10.08 freezes scope and repository decisions; it does not claim that M10
-product code, migration, dependency, tests, checkpoints, or remote evidence
-exists. These limitations are the permitted residual boundaries after a
-future valid M10 closure. They do not authorize their implementation in M10.
+M10 implementation is closed at exact SHA
+`b79250858a3f6a63908a288f891d5dad1126dd48`; GitHub Actions run
+`30705134413` succeeded with 2735 passed and zero failed, skipped, xfailed, or
+xpassed outcomes. Alembic head/current is `b0c1d2e3f4a5`, all eight exact M10
+implementation checkpoints remain in ancestry, and M10.81–M10.83 real Chrome,
+PostgreSQL, and MinIO acceptance is GREEN. These entries are the intentional
+residual boundaries after valid M10 closure and do not authorize widening M10.
 
 ## KL-M10-01 — Orphan Cleanup Is Eventual, Not Immediate
 
@@ -125,7 +128,6 @@ biometrics, registry integration, generic attachment/CMS/admin/KMS, public
 registration, activation, and shop linkage are OUT scope, not gaps to fill in
 M10. Any request to add them triggers the scope stop condition.
 
-At M10.08, implementation and remote-green closure are still pending. These
-entries may be updated only by an authorized later M10 limitation/closeout
-task and may not silently weaken the scope, CR-M10-01, or inherited M3/M8/M9
-contracts.
+The docs-only closeout does not alter these limitations, CR-M10-01, the M3/M8/M9
+contracts, or the implementation checkpoint history. Customer status remains
+exactly `draft`; M11 implementation has not started.
