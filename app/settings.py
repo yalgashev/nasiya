@@ -1,8 +1,13 @@
+from __future__ import annotations
+
+import base64
+import binascii
+import json
 import re
 from dataclasses import dataclass
 from enum import StrEnum
 from ipaddress import IPv4Network, IPv6Network, ip_network
-from typing import Annotated, Self
+from typing import TYPE_CHECKING, Annotated, Self
 from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -10,6 +15,9 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from app.storage.contracts import StorageConfig
 from app.telegram.bot import TelegramBotUsername
+
+if TYPE_CHECKING:
+    from app.customer_identity.crypto import CustomerIdentityCryptoConfig
 
 MIN_RATE_LIMIT_HMAC_KEY_LENGTH = 32
 MIN_OTP_HMAC_KEY_LENGTH = 32
@@ -101,6 +109,18 @@ class Settings(BaseSettings):
     otp_send_timeout_seconds: int = Field(default=5, ge=1, le=15)
     otp_terminal_retention_days: int = Field(default=30, gt=0)
     otp_event_retention_days: int = Field(default=90, gt=0)
+    customer_identity_active_key_id: SecretStr | None = Field(
+        default=None,
+        repr=False,
+    )
+    customer_identity_encryption_keys: SecretStr | None = Field(
+        default=None,
+        repr=False,
+    )
+    customer_identity_blind_index_key: SecretStr | None = Field(
+        default=None,
+        repr=False,
+    )
     object_storage_endpoint_url: SecretStr | None = None
     object_storage_region: str | None = None
     object_storage_bucket: str | None = Field(default=None, repr=False)
@@ -490,6 +510,61 @@ class Settings(BaseSettings):
             reconcile_stale_seconds=self.object_storage_reconcile_stale_seconds,
         )
 
+    def require_customer_identity_crypto_config(
+        self,
+    ) -> CustomerIdentityCryptoConfig:
+        from app.customer_identity.crypto import (
+            CustomerIdentityAesKey,
+            CustomerIdentityBlindIndexKey,
+            CustomerIdentityCryptoConfig,
+            CustomerIdentityCryptoConfigurationError,
+            CustomerIdentityKeyId,
+        )
+
+        try:
+            if (
+                self.customer_identity_active_key_id is None
+                or self.customer_identity_encryption_keys is None
+                or self.customer_identity_blind_index_key is None
+            ):
+                raise CustomerIdentityCryptoConfigurationError()
+            active_key_id = CustomerIdentityKeyId(
+                self.customer_identity_active_key_id.get_secret_value()
+            )
+            raw_mapping = json.loads(
+                self.customer_identity_encryption_keys.get_secret_value(),
+                object_pairs_hook=_strict_customer_identity_key_mapping,
+            )
+            if not isinstance(raw_mapping, dict) or not raw_mapping:
+                raise CustomerIdentityCryptoConfigurationError()
+            encryption_keys = {
+                CustomerIdentityKeyId(raw_key_id): (
+                    CustomerIdentityAesKey.from_bytes(
+                        _decode_customer_identity_key(raw_key_value)
+                    )
+                )
+                for raw_key_id, raw_key_value in raw_mapping.items()
+            }
+            blind_key_bytes = _decode_customer_identity_key(
+                self.customer_identity_blind_index_key.get_secret_value()
+            )
+            for shared_secret in (self.rate_limit_hmac_key, self.otp_hmac_key):
+                if shared_secret is not None and blind_key_bytes == (
+                    shared_secret.get_secret_value().encode("utf-8")
+                ):
+                    raise CustomerIdentityCryptoConfigurationError()
+            return CustomerIdentityCryptoConfig(
+                active_key_id=active_key_id,
+                encryption_keys=encryption_keys,
+                blind_index_key=CustomerIdentityBlindIndexKey.from_bytes(
+                    blind_key_bytes
+                ),
+            )
+        except CustomerIdentityCryptoConfigurationError:
+            raise
+        except (binascii.Error, TypeError, UnicodeEncodeError, ValueError):
+            raise CustomerIdentityCryptoConfigurationError() from None
+
 
 def _optional_string_value(value: object, *, field_name: str) -> str | None:
     if value is None or value == "":
@@ -515,3 +590,30 @@ def _optional_secret_value(value: object, *, field_name: str) -> str | None:
     if secret != secret.strip():
         raise ValueError(f"{field_name} must not contain outer whitespace")
     return secret
+
+
+def _strict_customer_identity_key_mapping(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate customer identity key id")
+        result[key] = value
+    return result
+
+
+def _decode_customer_identity_key(value: object) -> bytes:
+    from app.customer_identity.crypto import (
+        CustomerIdentityCryptoConfigurationError,
+    )
+
+    if not isinstance(value, str):
+        raise CustomerIdentityCryptoConfigurationError()
+    try:
+        decoded = base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError):
+        raise CustomerIdentityCryptoConfigurationError() from None
+    if base64.b64encode(decoded).decode("ascii") != value:
+        raise CustomerIdentityCryptoConfigurationError()
+    return decoded

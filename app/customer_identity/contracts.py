@@ -271,6 +271,57 @@ class OwnCustomerDraft:
         return "OwnCustomerDraft(customer_id=<redacted>)"
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class CustomerIdentityActor:
+    user_id: UUID = field(repr=False)
+
+    def __post_init__(self) -> None:
+        _require_uuid(self.user_id, field_name="actor_user_id")
+
+    def __repr__(self) -> str:
+        return "CustomerIdentityActor(user_id=<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class SaveCustomerIdentity:
+    actor: CustomerIdentityActor
+    expected_revision: int
+    first_name: str = field(repr=False)
+    last_name: str = field(repr=False)
+    middle_name: str | None = field(repr=False)
+    jshshir: str = field(repr=False)
+    document_type: str = field(repr=False)
+    document_number: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.actor, CustomerIdentityActor):
+            raise ValueError("Customer identity actor is invalid")
+        if (
+            not isinstance(self.expected_revision, int)
+            or isinstance(self.expected_revision, bool)
+            or self.expected_revision < 0
+        ):
+            raise ValueError("Expected identity revision must be non-negative")
+        raw_values = (
+            self.first_name,
+            self.last_name,
+            self.jshshir,
+            self.document_type,
+            self.document_number,
+        )
+        if any(not isinstance(value, str) for value in raw_values):
+            raise ValueError("Customer identity fields must be strings")
+        if self.middle_name is not None and not isinstance(self.middle_name, str):
+            raise ValueError("Customer middle name must be a string or null")
+
+    def __repr__(self) -> str:
+        return (
+            "SaveCustomerIdentity("
+            "actor=<redacted>, expected_revision="
+            f"{self.expected_revision!r}, fields=<redacted>)"
+        )
+
+
 @runtime_checkable
 class CustomerIdentityRepository(Protocol):
     def lock_own_customer_draft(
