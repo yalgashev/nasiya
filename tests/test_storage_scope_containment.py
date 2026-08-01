@@ -9,6 +9,8 @@ from fastapi.testclient import TestClient
 import app.audit.models  # noqa: F401
 import app.auth.models  # noqa: F401
 import app.customer.models  # noqa: F401
+import app.customer_document.models  # noqa: F401
+import app.customer_identity.models  # noqa: F401
 import app.offers.models  # noqa: F401
 import app.otp.models  # noqa: F401
 import app.shop.models  # noqa: F401
@@ -52,12 +54,14 @@ PRE_M8_TABLES = {
     "telegram_update_failures",
     "users",
 }
-M8_AND_M9_AUTHORIZED_TABLES = {
+M8_M9_AND_M10_AUTHORIZED_TABLES = {
     "audit_log",
     "object_files",
     "offer_acceptances",
     "offer_texts",
     "offer_versions",
+    "customer_identities",
+    "customer_documents",
 }
 FORBIDDEN_STORAGE_IMPORT_PREFIXES = (
     "app.customer",
@@ -106,12 +110,12 @@ def _settings() -> Settings:
     )
 
 
-def test_m8_storage_and_m9_offer_tables_are_exactly_scoped_in_metadata() -> None:
+def test_m8_m9_and_m10_tables_are_exactly_scoped_in_metadata() -> None:
     all_tables = set(Base.metadata.tables)
 
-    assert all_tables - PRE_M8_TABLES == M8_AND_M9_AUTHORIZED_TABLES
+    assert all_tables - PRE_M8_TABLES == M8_M9_AND_M10_AUTHORIZED_TABLES
     assert PRE_M8_TABLES <= all_tables
-    assert len(all_tables) == len(PRE_M8_TABLES) + len(M8_AND_M9_AUTHORIZED_TABLES)
+    assert len(all_tables) == len(PRE_M8_TABLES) + len(M8_M9_AND_M10_AUTHORIZED_TABLES)
 
 
 def test_production_runtime_has_no_file_route_or_upload_template() -> None:

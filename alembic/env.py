@@ -8,6 +8,8 @@ from alembic import context
 from app.audit import models as _audit_models  # noqa: F401
 from app.auth import models as _auth_models  # noqa: F401
 from app.customer import models as _customer_models  # noqa: F401
+from app.customer_document import models as _customer_document_models  # noqa: F401
+from app.customer_identity import models as _customer_identity_models  # noqa: F401
 from app.db import Base
 from app.offers import models as _offer_models  # noqa: F401
 from app.otp import models as _otp_models  # noqa: F401

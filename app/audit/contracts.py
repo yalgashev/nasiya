@@ -17,6 +17,10 @@ class AuditEventType(StrEnum):
     OFFER_VERSION_MADE_CURRENT = "offer.version_made_current"
     OFFER_VERSION_DEMOTED = "offer.version_demoted"
     OFFER_REGISTRATION_ACCEPTED = "offer.registration_accepted"
+    CUSTOMER_IDENTITY_SAVED = "customer.identity_saved"
+    CUSTOMER_DOCUMENT_ATTACHED = "customer.document_attached"
+    CUSTOMER_DOCUMENT_SUPERSEDED = "customer.document_superseded"
+    CUSTOMER_DOCUMENT_ACCESS_GRANTED = "customer.document_access_granted"
 
 
 class AuditObjectType(StrEnum):
@@ -24,6 +28,8 @@ class AuditObjectType(StrEnum):
     OFFER_VERSION = "offer_version"
     OFFER_TEXT = "offer_text"
     OFFER_ACCEPTANCE = "offer_acceptance"
+    CUSTOMER_IDENTITY = "customer_identity"
+    CUSTOMER_DOCUMENT = "customer_document"
 
 
 class AuditActorKind(StrEnum):
@@ -40,6 +46,14 @@ _EVENT_OBJECT_TYPES: Final[Mapping[AuditEventType, AuditObjectType]] = MappingPr
         AuditEventType.OFFER_VERSION_MADE_CURRENT: (AuditObjectType.OFFER_VERSION),
         AuditEventType.OFFER_VERSION_DEMOTED: AuditObjectType.OFFER_VERSION,
         AuditEventType.OFFER_REGISTRATION_ACCEPTED: (AuditObjectType.OFFER_ACCEPTANCE),
+        AuditEventType.CUSTOMER_IDENTITY_SAVED: AuditObjectType.CUSTOMER_IDENTITY,
+        AuditEventType.CUSTOMER_DOCUMENT_ATTACHED: AuditObjectType.CUSTOMER_DOCUMENT,
+        AuditEventType.CUSTOMER_DOCUMENT_SUPERSEDED: (
+            AuditObjectType.CUSTOMER_DOCUMENT
+        ),
+        AuditEventType.CUSTOMER_DOCUMENT_ACCESS_GRANTED: (
+            AuditObjectType.CUSTOMER_DOCUMENT
+        ),
     }
 )
 
@@ -97,9 +111,9 @@ class AuditEvent:
             f"event_type={self.event_type.value!r}, "
             f"actor_kind={self.actor_kind.value!r}, "
             f"object_type={self.object_type.value!r}, "
-            f"object_id={self.object_id!r}, "
-            f"occurred_at={self.occurred_at!r}, "
-            "actor_user_id=<redacted>, candidate_metadata=<redacted>)"
+            "object_id=<redacted>, "
+            f"occurred_at={self.occurred_at!r}, actor_user_id=<redacted>, "
+            "candidate_metadata=<redacted>)"
         )
 
 

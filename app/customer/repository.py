@@ -13,6 +13,24 @@ def get_customer_by_user_id(session: Session, user_id: UUID) -> Customer | None:
     return session.execute(statement).scalar_one_or_none()
 
 
+def load_existing_own_customer_draft_for_update(
+    session: Session,
+    *,
+    actor_user_id: UUID,
+) -> Customer | None:
+    if not isinstance(actor_user_id, UUID):
+        raise TypeError("Actor user id must be a UUID")
+    statement = (
+        select(Customer)
+        .where(
+            Customer.user_id == actor_user_id,
+            Customer.onboarding_status == CUSTOMER_ONBOARDING_STATUS_DRAFT,
+        )
+        .with_for_update()
+    )
+    return session.scalar(statement)
+
+
 def create_customer_draft_if_missing(
     session: Session,
     user_id: UUID,

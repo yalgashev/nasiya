@@ -92,6 +92,41 @@ _AUDIT_PAYLOAD_EXACT_SHAPE_SQL = (
                     "content_hash",
                 ),
             ),
+            _exact_payload_clause(
+                AuditEventType.CUSTOMER_IDENTITY_SAVED,
+                ("revision", "created_or_updated", "document_type"),
+                extra_predicate=(
+                    "jsonb_typeof(payload -> 'revision') = 'number' "
+                    "AND (payload ->> 'revision')::integer > 0 "
+                    "AND payload ->> 'created_or_updated' IN ('created', 'updated') "
+                    "AND payload ->> 'document_type' IN ('PASSPORT', 'ID_CARD')"
+                ),
+            ),
+            _exact_payload_clause(
+                AuditEventType.CUSTOMER_DOCUMENT_ATTACHED,
+                ("status", "submission_replayed"),
+                extra_predicate=(
+                    "payload ->> 'status' = 'CURRENT' "
+                    "AND payload -> 'submission_replayed' = 'false'::jsonb"
+                ),
+            ),
+            _exact_payload_clause(
+                AuditEventType.CUSTOMER_DOCUMENT_SUPERSEDED,
+                ("replacement_document_id",),
+                extra_predicate=(
+                    "payload ->> 'replacement_document_id' "
+                    "~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+                    "[89ab][0-9a-f]{3}-[0-9a-f]{12}$'"
+                ),
+            ),
+            _exact_payload_clause(
+                AuditEventType.CUSTOMER_DOCUMENT_ACCESS_GRANTED,
+                ("ttl_seconds",),
+                extra_predicate=(
+                    "jsonb_typeof(payload -> 'ttl_seconds') = 'number' "
+                    "AND (payload ->> 'ttl_seconds')::integer BETWEEN 60 AND 900"
+                ),
+            ),
         )
     )
     + ")"
@@ -111,6 +146,10 @@ class AuditLog(Base):
                 f"'{AuditEventType.OFFER_VERSION_MADE_CURRENT.value}', "
                 f"'{AuditEventType.OFFER_VERSION_DEMOTED.value}', "
                 f"'{AuditEventType.OFFER_REGISTRATION_ACCEPTED.value}'"
+                f", '{AuditEventType.CUSTOMER_IDENTITY_SAVED.value}'"
+                f", '{AuditEventType.CUSTOMER_DOCUMENT_ATTACHED.value}'"
+                f", '{AuditEventType.CUSTOMER_DOCUMENT_SUPERSEDED.value}'"
+                f", '{AuditEventType.CUSTOMER_DOCUMENT_ACCESS_GRANTED.value}'"
                 ")"
             ),
             name="ck_audit_log_event_type_allowed",
@@ -130,6 +169,8 @@ class AuditLog(Base):
                 f"'{AuditObjectType.OFFER_VERSION.value}', "
                 f"'{AuditObjectType.OFFER_TEXT.value}', "
                 f"'{AuditObjectType.OFFER_ACCEPTANCE.value}'"
+                f", '{AuditObjectType.CUSTOMER_IDENTITY.value}'"
+                f", '{AuditObjectType.CUSTOMER_DOCUMENT.value}'"
                 ")"
             ),
             name="ck_audit_log_object_type_allowed",
@@ -163,6 +204,14 @@ class AuditLog(Base):
                 f"OR (event_type = "
                 f"'{AuditEventType.OFFER_REGISTRATION_ACCEPTED.value}' "
                 f"AND object_type = '{AuditObjectType.OFFER_ACCEPTANCE.value}')"
+                f" OR (event_type = "
+                f"'{AuditEventType.CUSTOMER_IDENTITY_SAVED.value}' "
+                f"AND object_type = '{AuditObjectType.CUSTOMER_IDENTITY.value}')"
+                f" OR (event_type IN ("
+                f"'{AuditEventType.CUSTOMER_DOCUMENT_ATTACHED.value}', "
+                f"'{AuditEventType.CUSTOMER_DOCUMENT_SUPERSEDED.value}', "
+                f"'{AuditEventType.CUSTOMER_DOCUMENT_ACCESS_GRANTED.value}') "
+                f"AND object_type = '{AuditObjectType.CUSTOMER_DOCUMENT.value}')"
             ),
             name="ck_audit_log_object_matches_event",
         ),
@@ -211,6 +260,6 @@ class AuditLog(Base):
             f"event_type={self.event_type!r}, "
             f"actor_kind={self.actor_kind!r}, "
             f"object_type={self.object_type!r}, "
-            f"object_id={self.object_id!r}, "
-            "actor_user_id=<redacted>, payload=<redacted>)"
+            "object_id=<redacted>, actor_user_id=<redacted>, "
+            "payload=<redacted>)"
         )

@@ -62,7 +62,7 @@ def test_empty_database_m8_m9_m8_m9_walk_has_one_linear_head(
         command.downgrade(config, "base")
         assert set(inspect(m2_test_database).get_table_names()) <= {"alembic_version"}
 
-        command.upgrade(config, "head")
+        command.upgrade(config, M9_REVISION)
         assert _current_revision(m2_test_database) == M9_REVISION
         assert set(inspect(m2_test_database).get_table_names()) == (
             M8_TABLES | M9_TABLES
@@ -77,8 +77,8 @@ def test_empty_database_m8_m9_m8_m9_walk_has_one_linear_head(
         }
 
         command.upgrade(config, M9_REVISION)
-        command.upgrade(config, "head")
-        command.upgrade(config, "head")
+        command.upgrade(config, M9_REVISION)
+        command.upgrade(config, M9_REVISION)
         assert _current_revision(m2_test_database) == M9_REVISION
         assert set(inspect(m2_test_database).get_table_names()) == (
             M8_TABLES | M9_TABLES
@@ -90,8 +90,10 @@ def test_empty_database_m8_m9_m8_m9_walk_has_one_linear_head(
 @pytest.mark.integration
 def test_real_database_has_exact_m9_schema_objects(
     m2_test_database: Engine,
+    request: pytest.FixtureRequest,
 ) -> None:
-    command.upgrade(_config(), "head")
+    request.addfinalizer(lambda: command.upgrade(_config(), "head"))
+    command.downgrade(_config(), M9_REVISION)
     inspector = inspect(m2_test_database)
 
     assert _current_revision(m2_test_database) == M9_REVISION

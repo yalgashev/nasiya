@@ -16,7 +16,7 @@ OBJECT_ID = UUID("22222222-2222-4222-8222-222222222222")
 NOW = datetime(2026, 7, 31, 13, 0, tzinfo=UTC)
 
 
-def test_audit_registries_are_exactly_seven_events_and_four_objects() -> None:
+def test_audit_registries_are_exactly_eleven_events_and_six_objects() -> None:
     assert {event.value for event in AuditEventType} == {
         "platform_admin.bootstrapped",
         "offer.version_created",
@@ -25,12 +25,18 @@ def test_audit_registries_are_exactly_seven_events_and_four_objects() -> None:
         "offer.version_made_current",
         "offer.version_demoted",
         "offer.registration_accepted",
+        "customer.identity_saved",
+        "customer.document_attached",
+        "customer.document_superseded",
+        "customer.document_access_granted",
     }
     assert {object_type.value for object_type in AuditObjectType} == {
         "user",
         "offer_version",
         "offer_text",
         "offer_acceptance",
+        "customer_identity",
+        "customer_document",
     }
     assert {kind.value for kind in AuditActorKind} == {"USER", "SYSTEM"}
 
@@ -153,5 +159,6 @@ def test_audit_event_repr_redacts_actor_and_candidate_metadata() -> None:
     rendered = repr(event)
 
     assert str(ACTOR_ID) not in rendered
+    assert str(OBJECT_ID) not in rendered
     assert "SECRET" not in rendered
     assert "candidate_metadata=<redacted>" in rendered

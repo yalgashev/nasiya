@@ -120,8 +120,11 @@ class CustomerDocumentAttachmentResult:
             raise ValueError("Customer document status is invalid")
         if not isinstance(self.submission_replayed, bool):
             raise ValueError("Submission replay marker must be a boolean")
-        if self.status is not CustomerDocumentStatus.CURRENT:
-            raise ValueError("Attachment result must resolve to current document")
+        if (
+            not self.submission_replayed
+            and self.status is not CustomerDocumentStatus.CURRENT
+        ):
+            raise ValueError("New attachment result must resolve to current document")
         if self.superseded_document_id is not None:
             _require_uuid(
                 self.superseded_document_id,
@@ -135,7 +138,8 @@ class CustomerDocumentAttachmentResult:
     def __repr__(self) -> str:
         return (
             "CustomerDocumentAttachmentResult("
-            "document_id=<redacted>, status='CURRENT', "
+            "document_id=<redacted>, "
+            f"status={self.status.value!r}, "
             f"submission_replayed={self.submission_replayed!r}, "
             "superseded_document_id=<redacted>)"
         )
@@ -160,6 +164,41 @@ class CustomerDocumentAccessParentRequest:
 @runtime_checkable
 class HasCurrentCustomerIdentityDocument(Protocol):
     def __call__(self, *, customer_id: UUID) -> bool: ...
+
+
+@runtime_checkable
+class CustomerDocumentRepository(Protocol):
+    def lock_current_documents(
+        self,
+        *,
+        customer_id: UUID,
+    ) -> tuple[CustomerDocumentAttachment, ...]: ...
+
+    def load_submission_replay(
+        self,
+        *,
+        customer_id: UUID,
+        submission_id: CustomerDocumentSubmissionId,
+    ) -> CustomerDocumentAttachment | None: ...
+
+    def load_object_attachment(
+        self,
+        *,
+        object_file_id: UUID,
+    ) -> CustomerDocumentAttachment | None: ...
+
+    def attach_current_document(
+        self,
+        *,
+        attachment: CustomerDocumentAttachment,
+        expected_current: ExpectedCurrentCustomerDocument,
+    ) -> CustomerDocumentAttachmentResult: ...
+
+    def resolve_access_parent(
+        self,
+        *,
+        customer_id: UUID,
+    ) -> CustomerDocumentAccessParentRequest | None: ...
 
 
 def _as_utc(value: datetime, *, field_name: str) -> datetime:

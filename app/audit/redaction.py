@@ -8,9 +8,11 @@ from typing import Final
 from uuid import UUID
 
 from app.audit.contracts import AuditEvent, AuditEventType
+from app.customer_document.contracts import CustomerDocumentStatus
+from app.customer_identity.contracts import CustomerDocumentType
 from app.offers.enums import OfferLanguage, OfferPurpose, OfferStatus
 
-AuditPayload = dict[str, str | int | None]
+AuditPayload = dict[str, str | int | bool | None]
 _CONTENT_HASH_PATTERN: Final = re.compile(r"[0-9a-f]{64}")
 _LEGAL_REVIEW_REFERENCE_PATTERN: Final = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9._ -]{0,199}"
@@ -160,6 +162,63 @@ def _registration_accepted_payload(
     }
 
 
+def _customer_identity_saved_payload(
+    metadata: Mapping[str, object],
+) -> AuditPayload:
+    values = _required(
+        metadata,
+        "revision",
+        "created_or_updated",
+        "document_type",
+    )
+    created_or_updated = values["created_or_updated"]
+    if created_or_updated not in {"created", "updated"}:
+        raise ValueError("Audit identity save outcome is invalid")
+    document_type = values["document_type"]
+    if not isinstance(document_type, CustomerDocumentType):
+        raise ValueError("Audit customer document type is invalid")
+    return {
+        "revision": _positive_integer(values["revision"]),
+        "created_or_updated": created_or_updated,
+        "document_type": document_type.value,
+    }
+
+
+def _customer_document_attached_payload(
+    metadata: Mapping[str, object],
+) -> AuditPayload:
+    values = _required(metadata, "status", "submission_replayed")
+    if values["status"] is not CustomerDocumentStatus.CURRENT:
+        raise ValueError("Audit attached document status is invalid")
+    if values["submission_replayed"] is not False:
+        raise ValueError("Audit attached document replay marker is invalid")
+    return {
+        "status": CustomerDocumentStatus.CURRENT.value,
+        "submission_replayed": False,
+    }
+
+
+def _customer_document_superseded_payload(
+    metadata: Mapping[str, object],
+) -> AuditPayload:
+    values = _required(metadata, "replacement_document_id")
+    return {"replacement_document_id": _uuid(values["replacement_document_id"])}
+
+
+def _customer_document_access_granted_payload(
+    metadata: Mapping[str, object],
+) -> AuditPayload:
+    values = _required(metadata, "ttl_seconds")
+    ttl_seconds = values["ttl_seconds"]
+    if (
+        not isinstance(ttl_seconds, int)
+        or isinstance(ttl_seconds, bool)
+        or not 60 <= ttl_seconds <= 900
+    ):
+        raise ValueError("Audit document access TTL is invalid")
+    return {"ttl_seconds": ttl_seconds}
+
+
 _PAYLOAD_BUILDERS: Final[
     Mapping[AuditEventType, Callable[[Mapping[str, object]], AuditPayload]]
 ] = {
@@ -170,6 +229,14 @@ _PAYLOAD_BUILDERS: Final[
     AuditEventType.OFFER_VERSION_MADE_CURRENT: _version_made_current_payload,
     AuditEventType.OFFER_VERSION_DEMOTED: _version_demoted_payload,
     AuditEventType.OFFER_REGISTRATION_ACCEPTED: _registration_accepted_payload,
+    AuditEventType.CUSTOMER_IDENTITY_SAVED: _customer_identity_saved_payload,
+    AuditEventType.CUSTOMER_DOCUMENT_ATTACHED: _customer_document_attached_payload,
+    AuditEventType.CUSTOMER_DOCUMENT_SUPERSEDED: (
+        _customer_document_superseded_payload
+    ),
+    AuditEventType.CUSTOMER_DOCUMENT_ACCESS_GRANTED: (
+        _customer_document_access_granted_payload
+    ),
 }
 
 

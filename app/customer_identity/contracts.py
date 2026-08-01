@@ -260,6 +260,45 @@ class HasCompleteCustomerIdentity(Protocol):
     def __call__(self, *, customer_id: UUID) -> bool: ...
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class OwnCustomerDraft:
+    customer_id: UUID = field(repr=False)
+
+    def __post_init__(self) -> None:
+        _require_uuid(self.customer_id, field_name="customer_id")
+
+    def __repr__(self) -> str:
+        return "OwnCustomerDraft(customer_id=<redacted>)"
+
+
+@runtime_checkable
+class CustomerIdentityRepository(Protocol):
+    def lock_own_customer_draft(
+        self,
+        *,
+        actor_user_id: UUID,
+    ) -> OwnCustomerDraft | None: ...
+
+    def get_identity(
+        self,
+        *,
+        customer_id: UUID,
+    ) -> EncryptedCustomerIdentityRecord | None: ...
+
+    def lock_identity(
+        self,
+        *,
+        customer_id: UUID,
+    ) -> EncryptedCustomerIdentityRecord | None: ...
+
+    def save_identity(
+        self,
+        *,
+        record: EncryptedCustomerIdentityRecord,
+        expected_revision: int,
+    ) -> EncryptedCustomerIdentityRecord: ...
+
+
 def _require_uuid(value: object, *, field_name: str) -> None:
     if not isinstance(value, UUID):
         raise ValueError(f"{field_name} must be a UUID")
