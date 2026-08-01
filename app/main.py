@@ -9,6 +9,7 @@ from fastapi.templating import Jinja2Templates
 from app.auth.deps import CsrfFailed, csrf_failed_exception_handler
 from app.auth.router import router as auth_router
 from app.customer.router import router as customer_router
+from app.customer_identity.router import router as customer_identity_router
 from app.db import (
     create_database_engine,
     create_database_session_dependency,
@@ -16,8 +17,11 @@ from app.db import (
 )
 from app.offers.router import router as offers_router
 from app.security_headers import install_security_headers_middleware
-from app.settings import Settings
+from app.settings import ObjectStorageSettingsError, Settings
 from app.shop.router import router as shop_router
+from app.storage.body_guard import StorageBodyLimitMiddleware
+from app.storage.contracts import ObjectStorageService, StorageProviderError
+from app.storage.s3 import S3ObjectStorageService, create_s3_client
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
@@ -32,10 +36,19 @@ SETTINGS_ENV_KEYS = frozenset(
 )
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    customer_document_storage_service: ObjectStorageService | None = None,
+) -> FastAPI:
     app_settings = settings or load_default_settings()
 
     application = FastAPI(title="Nasiya")
+    application.add_middleware(
+        StorageBodyLimitMiddleware,
+        protected_paths={"/customer/identity/document"},
+        max_body_bytes=app_settings.object_storage_max_multipart_bytes,
+    )
     application.add_exception_handler(CsrfFailed, csrf_failed_exception_handler)
     install_security_headers_middleware(application, app_settings)
     application.state.settings = app_settings
@@ -43,12 +56,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     database_session_factory = create_database_session_factory(database_engine)
     application.state.database_engine = database_engine
     application.state.database_session_factory = database_session_factory
+    application.state.customer_document_storage_service = (
+        customer_document_storage_service
+        if customer_document_storage_service is not None
+        else _create_customer_document_storage_service(app_settings)
+    )
     application.state.get_database_session = create_database_session_dependency(
         database_session_factory
     )
     application.include_router(auth_router)
     application.include_router(offers_router)
     application.include_router(customer_router)
+    application.include_router(customer_identity_router)
     application.include_router(shop_router)
     application.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -61,6 +80,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"status": "ok"}
 
     return application
+
+
+def _create_customer_document_storage_service(
+    settings: Settings,
+) -> ObjectStorageService | None:
+    try:
+        config = settings.require_object_storage_config()
+        return S3ObjectStorageService(create_s3_client(config))
+    except (ObjectStorageSettingsError, StorageProviderError, ValueError):
+        return None
 
 
 def load_default_settings() -> Settings:

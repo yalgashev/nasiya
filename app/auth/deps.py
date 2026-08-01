@@ -9,7 +9,7 @@ from urllib.parse import parse_qs
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DatabaseSession
 
@@ -216,6 +216,13 @@ async def csrf_failed_exception_handler(
         internal_detail=str(exc.detail),
     )
     headers = {"X-Error-Code": ErrorCode.CSRF_FAILED.value}
+    if request.url.path == "/customer/identity":
+        response = RedirectResponse(
+            "/customer/identity?error=CSRF_FAILED",
+            status_code=status.HTTP_303_SEE_OTHER,
+            headers=headers,
+        )
+        return mark_auth_response_no_store(response)
     if _is_htmx_request(request):
         response = HTMLResponse(
             content=_render_csrf_fragment(public_body),

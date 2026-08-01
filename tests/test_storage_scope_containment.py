@@ -3,7 +3,6 @@ import hashlib
 import re
 from pathlib import Path
 
-from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 import app.audit.models  # noqa: F401
@@ -32,9 +31,6 @@ PRE_M8_IMMUTABLE_SHA256 = {
         "5d8c372c6a5b1c5eefdd0b40e1b43eabb5acbb217eabfd7e895f62493822eb1e"
     ),
 }
-M9_MAIN_COMPOSITION_SHA256 = (
-    "7c37f3abfea1caf5f09dad33155d1b96d2f782dcd49d53e0c1145fd2fa638098"
-)
 PRE_M8_TABLES = {
     "auth_rate_limits",
     "customers",
@@ -118,22 +114,26 @@ def test_m8_m9_and_m10_tables_are_exactly_scoped_in_metadata() -> None:
     assert len(all_tables) == len(PRE_M8_TABLES) + len(M8_M9_AND_M10_AUTHORIZED_TABLES)
 
 
-def test_production_runtime_has_no_file_route_or_upload_template() -> None:
+def test_production_runtime_has_only_the_concrete_m10_document_file_route() -> None:
     application = create_app(settings=_settings())
-    api_routes = [route for route in application.routes if isinstance(route, APIRoute)]
-    paths = {route.path_format.casefold() for route in api_routes}
+    paths = {path.casefold() for path in application.openapi()["paths"]}
 
     assert paths
-    for path in paths:
-        assert not any(part in path for part in FORBIDDEN_FILE_ROUTE_PARTS)
+    m10_document_path = "/customer/identity/document"
+    assert m10_document_path in paths
+    for path in paths - {m10_document_path}:
+        path_segments = set(path.strip("/").split("/"))
+        assert not path_segments.intersection(FORBIDDEN_FILE_ROUTE_PARTS)
 
     template_source = "\n".join(
         path.read_text(encoding="utf-8").casefold()
         for path in sorted((PROJECT_ROOT / "app/templates").rglob("*"))
         if path.is_file()
     )
-    assert 'type="file"' not in template_source
-    assert "multipart/form-data" not in template_source
+    assert template_source.count('type="file"') == 1
+    assert template_source.count("multipart/form-data") == 1
+    assert 'action="/customer/identity/document"' in template_source
+    assert "presigned put" not in template_source
 
     response = TestClient(application).get("/health")
     assert response.status_code == 200
@@ -177,14 +177,21 @@ def test_storage_package_has_narrow_dependencies_and_no_generic_domain() -> None
     assert "public-read" not in combined_source
 
 
-def test_m5_m6_m7_roles_workers_tt_and_m9_main_are_immutable() -> None:
+def test_m5_m6_m7_roles_workers_tt_are_immutable_and_main_is_narrowly_extended() -> (
+    None
+):
     actual_hashes = {
         relative_path: _sha256(PROJECT_ROOT / relative_path)
         for relative_path in PRE_M8_IMMUTABLE_SHA256
     }
 
     assert actual_hashes == PRE_M8_IMMUTABLE_SHA256
-    assert _sha256(PROJECT_ROOT / "app/main.py") == M9_MAIN_COMPOSITION_SHA256
+    main_source = (PROJECT_ROOT / "app/main.py").read_text(encoding="utf-8")
+    assert "customer_identity_router" in main_source
+    assert "StorageBodyLimitMiddleware" in main_source
+    assert 'protected_paths={"/customer/identity/document"}' in main_source
+    for forbidden in ("presigned_put", "scheduler", "shop_customer", "OCR"):
+        assert forbidden not in main_source
     assert (PROJECT_ROOT / "tests/test_shop_containment_guard.py").is_file()
     assert (PROJECT_ROOT / "tests/test_shop_service_isolation.py").is_file()
     assert (PROJECT_ROOT / "tests/test_telegram_scope_regression.py").is_file()

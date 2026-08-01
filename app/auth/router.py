@@ -46,6 +46,11 @@ from app.auth.sessions import (
 )
 from app.auth.telegram_reauth import TelegramReauthRateLimitPolicy
 from app.auth.template_context import with_csrf_context
+from app.customer_identity.web_presentation import (
+    CUSTOMER_IDENTITY_LOCALE_COOKIE_NAME,
+    get_customer_identity_web_copy,
+    resolve_customer_identity_web_language,
+)
 from app.offers.web_presentation import (
     OFFER_WEB_LOCALE_COOKIE_NAME,
     get_offer_web_copy,
@@ -530,6 +535,11 @@ def account_page(
         request.cookies.get(OFFER_WEB_LOCALE_COOKIE_NAME),
         request.headers.get("accept-language"),
     )
+    identity_language = resolve_customer_identity_web_language(
+        request.cookies.get(CUSTOMER_IDENTITY_LOCALE_COOKIE_NAME),
+        request.headers.get("accept-language"),
+    )
+    identity_copy = get_customer_identity_web_copy(identity_language)
     response = templates.TemplateResponse(
         request,
         "auth/account.html",
@@ -540,6 +550,8 @@ def account_page(
                     offer_language
                 ).account_registration_offer_link,
                 "registration_offer_link_language": offer_language.value,
+                "customer_identity_link": identity_copy.page_title,
+                "customer_identity_link_language": identity_language.value,
             },
             session,
         ),

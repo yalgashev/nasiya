@@ -57,7 +57,8 @@ label {
 }
 
 input,
-button {
+button,
+select {
     width: 100%;
     min-height: 44px;
     border-radius: 8px;
@@ -65,6 +66,13 @@ button {
 }
 
 input {
+    border: 1px solid #94a3b8;
+    padding: 10px 12px;
+    color: #111827;
+    background: #ffffff;
+}
+
+select {
     border: 1px solid #94a3b8;
     padding: 10px 12px;
     color: #111827;
@@ -91,6 +99,7 @@ a {
 
 input:focus-visible,
 button:focus-visible,
+select:focus-visible,
 a:focus-visible {
     outline: 3px solid #f59e0b;
     outline-offset: 3px;
@@ -154,6 +163,41 @@ dd {
 .customer-page {
     max-width: 100%;
     overflow-wrap: anywhere;
+}
+
+.customer-identity-page {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+
+.customer-identity-page h2 {
+    margin-bottom: 8px;
+    font-size: 1.25rem;
+}
+
+.customer-identity-page input,
+.customer-identity-page select,
+.customer-identity-page button {
+    max-width: 100%;
+}
+
+.customer-identity-summary dd {
+    word-break: break-word;
+}
+
+.customer-identity-notice {
+    margin-top: 20px;
+    border-left: 4px solid #0f766e;
+    padding: 10px 12px;
+    color: #134e4a;
+    background: #ecfdf5;
+    font-weight: 700;
+}
+
+.field-help {
+    margin-top: 6px;
+    color: #374151;
+    font-size: 0.875rem;
 }
 
 .customer-page h1,

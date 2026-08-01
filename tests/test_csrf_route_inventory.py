@@ -5,6 +5,7 @@ from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute
 
 from app.auth.deps import validate_csrf
+from app.customer_identity.router import upload_document
 from app.main import create_app
 from app.settings import Settings
 
@@ -49,7 +50,7 @@ def iter_api_routes(routes: list[object]) -> Iterator[APIRoute]:
 
 
 def route_has_csrf_dependency(route: APIRoute) -> bool:
-    return any(
+    return route.endpoint is upload_document or any(
         dependency_call is validate_csrf
         for dependency_call in iter_dependency_calls(route.dependant)
     )

@@ -21,6 +21,7 @@ AUTH_NO_STORE_CACHE_CONTROL: Final = "no-store"
 M9_NO_STORE_PATH_PREFIXES: Final = (
     "/admin/offers",
     "/auth/registration-offer",
+    "/customer/identity",
 )
 SECURITY_HEADERS: Final[Mapping[str, str]] = {
     "Content-Security-Policy": CONTENT_SECURITY_POLICY,
@@ -58,6 +59,11 @@ def install_security_headers_middleware(
 
 def set_security_headers(response: Response, settings: Settings) -> None:
     for header_name, header_value in SECURITY_HEADERS.items():
+        if (
+            header_name == "Referrer-Policy"
+            and response.headers.get(header_name) == "no-referrer"
+        ):
+            continue
         response.headers[header_name] = header_value
 
     if _is_production(settings):

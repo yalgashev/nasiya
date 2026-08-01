@@ -14,6 +14,7 @@
         <a href="/auth/sessions">Sessiyalar</a>
         <a href="/auth/registration-offer" lang="{{ registration_offer_link_language }}">{{ registration_offer_link }}</a>
         <a href="/customer/onboarding">Customer draft onboarding</a>
+        <a href="/customer/identity" lang="{{ customer_identity_link_language }}">{{ customer_identity_link }}</a>
     </nav>
     <form method="post" action="/auth/logout">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

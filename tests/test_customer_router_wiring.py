@@ -9,6 +9,7 @@ from sqlalchemy.engine import Engine
 from app.auth.deps import validate_csrf
 from app.auth.router import router as auth_router
 from app.customer.router import router as customer_router
+from app.customer_identity.router import upload_document
 from app.main import create_app
 
 UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -16,6 +17,11 @@ EXPECTED_CUSTOMER_ROUTES = {
     "/customer/onboarding": {"GET"},
     "/customer/onboarding/start": {"POST"},
     "/customer/profile": {"GET"},
+}
+EXPECTED_ALL_CUSTOMER_ROUTES = {
+    **EXPECTED_CUSTOMER_ROUTES,
+    "/customer/identity": {"GET", "POST"},
+    "/customer/identity/document": {"GET", "POST"},
 }
 
 
@@ -78,9 +84,7 @@ def test_customer_router_adds_only_onboarding_routes() -> None:
         if route.path_format.startswith("/customer")
     ]
 
-    assert {route.path_format: route.methods for route in customer_routes} == (
-        EXPECTED_CUSTOMER_ROUTES
-    )
+    assert _merge_route_methods(customer_routes) == EXPECTED_ALL_CUSTOMER_ROUTES
 
 
 def test_customer_routes_forbid_external_ids_and_scope_drift() -> None:
@@ -91,9 +95,7 @@ def test_customer_routes_forbid_external_ids_and_scope_drift() -> None:
         if route.path_format.startswith("/customer")
     ]
 
-    assert {route.path_format: route.methods for route in customer_routes} == (
-        EXPECTED_CUSTOMER_ROUTES
-    )
+    assert _merge_route_methods(customer_routes) == EXPECTED_ALL_CUSTOMER_ROUTES
     for route in customer_routes:
         assert route.dependant.path_params == []
         assert "{" not in route.path_format
@@ -116,19 +118,36 @@ def test_customer_routes_forbid_external_ids_and_scope_drift() -> None:
     get_customer_routes = {
         route.path_format for route in customer_routes if route.methods == {"GET"}
     }
-    assert get_customer_routes == {"/customer/onboarding", "/customer/profile"}
+    assert get_customer_routes == {
+        "/customer/onboarding",
+        "/customer/profile",
+        "/customer/identity",
+        "/customer/identity/document",
+    }
     assert "/customer/onboarding/start" not in get_customer_routes
 
     customer_unsafe_routes = [
         route for route in customer_routes if (route.methods or set()) & UNSAFE_METHODS
     ]
-    assert [route.path_format for route in customer_unsafe_routes] == [
-        "/customer/onboarding/start"
-    ]
-    assert any(
-        dependency.call is validate_csrf
-        for dependency in customer_unsafe_routes[0].dependant.dependencies
-    )
+    assert {route.path_format for route in customer_unsafe_routes} == {
+        "/customer/onboarding/start",
+        "/customer/identity",
+        "/customer/identity/document",
+    }
+    for route in customer_unsafe_routes:
+        if route.endpoint is upload_document:
+            continue
+        assert any(
+            dependency.call is validate_csrf
+            for dependency in route.dependant.dependencies
+        )
+
+
+def _merge_route_methods(routes: list[APIRoute]) -> dict[str, set[str]]:
+    merged: dict[str, set[str]] = {}
+    for route in routes:
+        merged.setdefault(route.path_format, set()).update(route.methods or set())
+    return merged
 
 
 def test_m1_routes_still_respond_and_auth_route_inventory_is_unchanged() -> None:

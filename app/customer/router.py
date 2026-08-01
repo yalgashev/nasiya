@@ -24,6 +24,11 @@ from app.customer.service import (
     get_current_customer_draft_state,
     start_customer_draft,
 )
+from app.customer_identity.web_presentation import (
+    CUSTOMER_IDENTITY_LOCALE_COOKIE_NAME,
+    get_customer_identity_web_copy,
+    resolve_customer_identity_web_language,
+)
 from app.security_headers import mark_auth_response_no_store
 from app.settings import Settings
 
@@ -90,10 +95,18 @@ def profile_page(
         )
         return mark_auth_response_no_store(response)
 
+    identity_language = resolve_customer_identity_web_language(
+        request.cookies.get(CUSTOMER_IDENTITY_LOCALE_COOKIE_NAME),
+        request.headers.get("accept-language"),
+    )
     response = templates.TemplateResponse(
         request,
         "customer/profile.html",
-        {"customer_state": customer_state},
+        {
+            "customer_state": customer_state,
+            "identity_copy": get_customer_identity_web_copy(identity_language),
+            "identity_language": identity_language.value,
+        },
     )
     return mark_auth_response_no_store(response)
 

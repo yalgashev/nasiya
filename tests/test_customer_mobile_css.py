@@ -3,6 +3,10 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.customer.view_model import CustomerDraftView
+from app.customer_identity.web_presentation import (
+    CustomerIdentityWebLanguage,
+    get_customer_identity_web_copy,
+)
 
 CSS_PATH = Path("app/static/css/app.css")
 TEMPLATES_DIR = Path("app/templates")
@@ -68,6 +72,10 @@ def test_customer_templates_use_mobile_classes_and_text_status() -> None:
             masked_phone="+998*******67",
             onboarding_status_display="draft",
         ),
+        identity_copy=get_customer_identity_web_copy(
+            CustomerIdentityWebLanguage.UZ_LATN
+        ),
+        identity_language="uz",
     )
 
     for rendered in (onboarding_not_started, onboarding_existing, profile):

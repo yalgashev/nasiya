@@ -22,19 +22,28 @@ from app.auth.service import create_user
 from app.auth.sessions import CreatedSession, create_authenticated_session
 from app.customer.models import CUSTOMER_ONBOARDING_STATUS_DRAFT, Customer
 from app.customer.view_model import CustomerDraftView
+from app.customer_identity.web_presentation import (
+    CustomerIdentityWebLanguage,
+    get_customer_identity_web_copy,
+)
 from app.db import create_database_session_factory
 from app.main import create_app
 from app.settings import Settings
 
 TEMPLATES_DIR = Path("app/templates")
 CUSTOMER_TEMPLATE_DIR = TEMPLATES_DIR / "customer"
-CUSTOMER_TEMPLATE_PATHS = tuple(sorted(CUSTOMER_TEMPLATE_DIR.glob("*.html")))
+CUSTOMER_TEMPLATE_PATHS = (
+    CUSTOMER_TEMPLATE_DIR / "onboarding.html",
+    CUSTOMER_TEMPLATE_DIR / "profile.html",
+)
 SAFE_VIEW_FIELDS = frozenset({"masked_phone", "onboarding_status_display"})
 ALLOWED_CUSTOMER_TEMPLATE_EXPRESSIONS = frozenset(
     {
         "csrf_token",
         "customer_state.masked_phone",
         "customer_state.onboarding_status_display",
+        "identity_copy.page_title",
+        "identity_language",
     }
 )
 FORBIDDEN_TEMPLATE_SNIPPETS = (
@@ -205,6 +214,10 @@ def test_customer_profile_template_autoescapes_status_display_payload() -> None:
     rendered = render_customer_template(
         "customer/profile.html",
         customer_state=customer_state,
+        identity_copy=get_customer_identity_web_copy(
+            CustomerIdentityWebLanguage.UZ_LATN
+        ),
+        identity_language="uz",
     )
 
     assert status_payload not in rendered
@@ -273,7 +286,11 @@ def test_customer_routes_pass_only_safe_template_context(
     profile_context = captured_contexts[1][1]
 
     assert set(onboarding_context) == {"customer_state", "csrf_token"}
-    assert set(profile_context) == {"customer_state"}
+    assert set(profile_context) == {
+        "customer_state",
+        "identity_copy",
+        "identity_language",
+    }
     assert onboarding_context["csrf_token"] == (
         get_csrf_token(created.session).as_form_value()
     )

@@ -6,6 +6,10 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.auth.phone import mask_phone_for_display
 from app.customer.view_model import CustomerDraftView
+from app.customer_identity.web_presentation import (
+    CustomerIdentityWebLanguage,
+    get_customer_identity_web_copy,
+)
 
 TEMPLATES_DIR = Path("app/templates")
 PROFILE_TEMPLATE_PATH = Path("app/templates/customer/profile.html")
@@ -41,7 +45,13 @@ def render_profile(customer_state: CustomerDraftView) -> str:
     )
     environment.globals["url_for"] = static_url_for
     template = environment.get_template("customer/profile.html")
-    return template.render(customer_state=customer_state)
+    return template.render(
+        customer_state=customer_state,
+        identity_copy=get_customer_identity_web_copy(
+            CustomerIdentityWebLanguage.UZ_LATN
+        ),
+        identity_language="uz",
+    )
 
 
 def static_url_for(name: str, **params: str) -> str:
