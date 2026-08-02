@@ -351,6 +351,9 @@ def test_auth_customer_html_and_m4_sources_have_no_identifier_dump_paths() -> No
         PROJECT_ROOT / "app" / "templates" / "auth" / "account.html",
         PROJECT_ROOT / "app" / "templates" / "auth" / "telegram.html",
     }
+    m11_activation_template_path = (
+        PROJECT_ROOT / "app" / "templates" / "customer" / "activation.html"
+    )
     forbidden_identifier_template_snippets = (
         "t.me",
         "?start=",
@@ -370,8 +373,13 @@ def test_auth_customer_html_and_m4_sources_have_no_identifier_dump_paths() -> No
     )
     for path in template_paths:
         template_text = path.read_text(encoding="utf-8")
-        if path not in m6_telegram_account_template_paths:
+        if path not in m6_telegram_account_template_paths | {
+            m11_activation_template_path
+        }:
             assert "telegram" not in template_text.casefold()
+        if path == m11_activation_template_path:
+            assert "telegram_chat_id" not in template_text.casefold()
+            assert "telegram_link_id" not in template_text.casefold()
         for snippet in forbidden_identifier_template_snippets:
             assert snippet not in template_text
 

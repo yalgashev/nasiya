@@ -1,6 +1,7 @@
-from dataclasses import fields
+from dataclasses import FrozenInstanceError, fields
 from datetime import UTC, datetime
 from http import HTTPStatus
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -25,19 +26,33 @@ from app.customer_activation.contracts import (
     RegistrationReadinessView,
 )
 from app.customer_activation.presentation import (
+    CUSTOMER_ACTIVATION_PUBLIC_ERROR_CODES,
     CustomerActivationWebCopy,
     get_customer_activation_copy,
     get_customer_activation_error_message,
     present_customer_activation_readiness,
     resolve_customer_activation_language,
 )
+from app.otp.code import OtpCode
+from app.otp.message import format_registration_otp_message
 from app.otp.web_presentation import OtpWebLanguage
+from app.security_headers import CONTENT_SECURITY_POLICY
 
 M11_ERROR_CODES = (
     ErrorCode.OTP_INVALID,
     ErrorCode.REGISTRATION_OFFER_NOT_ACCEPTED,
     ErrorCode.CUSTOMER_ACTIVATION_CHANGED,
     ErrorCode.TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER,
+)
+ACTIVATION_TEMPLATE = Path("app/templates/customer/activation.html")
+APPLICATION_CSS = Path("app/static/css/app.css")
+MANUAL_ACTIVATION_MOBILE_CHECKLIST = (
+    "Chrome 320px: no horizontal scroll and all actions are fully visible",
+    "Chrome 430px: request, verify, and new-code follow thumb-friendly order",
+    "Keyboard: every interactive control has a visible focus indicator",
+    "Screen reader: OTP label, help, status, and textual errors are announced",
+    "Telegram in-app browser: text OTP keyboard and one-time-code hint remain usable",
+    "Double submit: server PRG/idempotency remains authoritative",
 )
 
 
@@ -171,9 +186,151 @@ def test_uz_latn_and_ru_copy_contracts_have_exact_key_parity() -> None:
     )
     assert all(getattr(uz_copy, field.name) for field in fields(uz_copy))
     assert all(getattr(ru_copy, field.name) for field in fields(ru_copy))
-    assert resolve_customer_activation_language(None, "en-US") is OtpWebLanguage.UZ_LATN
+    with pytest.raises(FrozenInstanceError):
+        uz_copy.heading = "mutated"  # type: ignore[misc]
     for language in OtpWebLanguage:
         assert all(
             get_customer_activation_error_message(language, code)
-            for code in M11_ERROR_CODES
+            for code in CUSTOMER_ACTIVATION_PUBLIC_ERROR_CODES
         )
+
+
+@pytest.mark.parametrize(
+    ("locale_cookie", "accept_language", "expected"),
+    (
+        (None, None, OtpWebLanguage.UZ_LATN),
+        (None, "en-US", OtpWebLanguage.UZ_LATN),
+        (None, "ru-RU,uz;q=0.8", OtpWebLanguage.RU),
+        (None, "uz-Latn,ru;q=0.8", OtpWebLanguage.UZ_LATN),
+        ("ru", "uz", OtpWebLanguage.RU),
+        ("uz-Latn", "ru", OtpWebLanguage.UZ_LATN),
+        ("unsupported", "ru", OtpWebLanguage.RU),
+    ),
+)
+def test_activation_language_resolution_has_uz_fallback_and_cookie_precedence(
+    locale_cookie: str | None,
+    accept_language: str | None,
+    expected: OtpWebLanguage,
+) -> None:
+    assert (
+        resolve_customer_activation_language(locale_cookie, accept_language) is expected
+    )
+
+
+def test_activation_error_copy_is_complete_localized_and_code_free() -> None:
+    assert set(CUSTOMER_ACTIVATION_PUBLIC_ERROR_CODES) == {
+        ErrorCode.CSRF_FAILED,
+        ErrorCode.RATE_LIMITED,
+        ErrorCode.CUSTOMER_DRAFT_REQUIRED,
+        ErrorCode.TELEGRAM_NOT_LINKED,
+        ErrorCode.OFFER_UNAVAILABLE,
+        ErrorCode.OTP_INVALID,
+        ErrorCode.REGISTRATION_OFFER_NOT_ACCEPTED,
+        ErrorCode.CUSTOMER_ACTIVATION_CHANGED,
+        ErrorCode.CUSTOMER_IDENTITY_UNAVAILABLE,
+        ErrorCode.CUSTOMER_DOCUMENT_UNAVAILABLE,
+        ErrorCode.TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER,
+    }
+    for language in OtpWebLanguage:
+        for code in CUSTOMER_ACTIVATION_PUBLIC_ERROR_CODES:
+            message = get_customer_activation_error_message(language, code)
+            assert message
+            assert message != code.value
+            assert code.value not in message
+            assert "_" not in message
+
+
+def test_web_and_telegram_registration_copy_are_semantically_consistent() -> None:
+    uz_web = get_customer_activation_copy(OtpWebLanguage.UZ_LATN)
+    ru_web = get_customer_activation_copy(OtpWebLanguage.RU)
+    uz_telegram = format_registration_otp_message(
+        code=OtpCode("004271"),
+        ttl_seconds=300,
+        locale="uz-Latn",
+    ).casefold()
+    ru_telegram = format_registration_otp_message(
+        code=OtpCode("004271"),
+        ttl_seconds=300,
+        locale="ru",
+    ).casefold()
+
+    assert "faollashtirish" in uz_web.heading.casefold()
+    assert "faollashtirish" in uz_telegram
+    assert "активац" in ru_web.heading.casefold()
+    assert "aktivats" in ru_telegram
+    for copy in (uz_web, ru_web):
+        rendered = " ".join(getattr(copy, field.name) for field in fields(copy))
+        assert all(
+            forbidden not in rendered.casefold()
+            for forbidden in (
+                "offer version",
+                "offer language",
+                "acceptance language",
+                "legal review",
+            )
+        )
+
+
+def test_activation_template_has_no_xss_escape_hatch_or_inline_execution_sink() -> None:
+    source = ACTIVATION_TEMPLATE.read_text(encoding="utf-8")
+    normalized = source.casefold()
+
+    assert "{{ request" not in source
+    assert "|safe" not in source
+    assert "markup(" not in normalized
+    assert "<script" not in normalized
+    assert "<style" not in normalized
+    assert " style=" not in normalized
+    assert "javascript:" not in normalized
+    assert all(
+        f" on{event}=" not in normalized
+        for event in ("click", "submit", "load", "error", "input", "change")
+    )
+
+
+def test_activation_csp_remains_exact_self_only_policy() -> None:
+    assert CONTENT_SECURITY_POLICY == (
+        "default-src 'self'; script-src 'self'; style-src 'self'; "
+        "img-src 'self' data:; object-src 'none'; base-uri 'self'; "
+        "frame-ancestors 'none'; form-action 'self'"
+    )
+
+
+def test_activation_mobile_controls_and_otp_input_contract_are_exact() -> None:
+    template = ACTIVATION_TEMPLATE.read_text(encoding="utf-8")
+    css = APPLICATION_CSS.read_text(encoding="utf-8")
+    compact_template = " ".join(template.split())
+
+    assert '<label for="registration-otp-code">' in template
+    assert (
+        '<input id="registration-otp-code" name="code" type="text" '
+        'inputmode="numeric" autocomplete="one-time-code" minlength="6" '
+        'maxlength="6" required aria-describedby="registration-otp-help">'
+    ) in compact_template
+    assert 'type="number"' not in template.casefold()
+    assert 'id="registration-otp-help"' in template
+    assert 'role="alert"' in template
+    assert 'role="status"' in template
+    assert template.index('/otp/request"') < template.index('/otp/verify"')
+    assert template.index('/otp/verify"') < template.index('/otp/new-code"')
+
+    assert ".customer-activation-page" in css
+    assert "@media (max-width: 430px)" in css
+    assert "width: min(100% - 24px, 640px);" in css
+    assert "min-height: 44px;" in css
+    assert ".customer-activation-page input:focus-visible" in css
+    assert ".customer-activation-page button:focus-visible" in css
+    assert ".customer-activation-page a:focus-visible" in css
+    assert "100vw" not in css
+    assert "overflow-x: scroll" not in css
+    assert "overflow-x: auto" not in css
+
+    assert len(MANUAL_ACTIVATION_MOBILE_CHECKLIST) == 6
+    assert any("320px" in item for item in MANUAL_ACTIVATION_MOBILE_CHECKLIST)
+    assert any("430px" in item for item in MANUAL_ACTIVATION_MOBILE_CHECKLIST)
+    assert any(
+        "Telegram in-app browser" in item for item in MANUAL_ACTIVATION_MOBILE_CHECKLIST
+    )
+    assert any(
+        "server PRG/idempotency" in item for item in MANUAL_ACTIVATION_MOBILE_CHECKLIST
+    )

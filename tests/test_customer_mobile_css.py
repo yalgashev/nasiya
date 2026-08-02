@@ -3,10 +3,12 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.customer.view_model import CustomerDraftView
+from app.customer_activation.presentation import get_customer_activation_copy
 from app.customer_identity.web_presentation import (
     CustomerIdentityWebLanguage,
     get_customer_identity_web_copy,
 )
+from app.otp.web_presentation import OtpWebLanguage
 
 CSS_PATH = Path("app/static/css/app.css")
 TEMPLATES_DIR = Path("app/templates")
@@ -76,6 +78,8 @@ def test_customer_templates_use_mobile_classes_and_text_status() -> None:
             CustomerIdentityWebLanguage.UZ_LATN
         ),
         identity_language="uz",
+        activation_copy=get_customer_activation_copy(OtpWebLanguage.UZ_LATN),
+        activation_language="uz-Latn",
     )
 
     for rendered in (onboarding_not_started, onboarding_existing, profile):

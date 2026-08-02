@@ -13,9 +13,14 @@ from app.auth.deps import get_current_time
 from app.auth.models import User
 from app.auth.service import create_user
 from app.auth.sessions import CreatedSession, create_authenticated_session
-from app.customer.models import CUSTOMER_ONBOARDING_STATUS_DRAFT, Customer
+from app.customer.models import (
+    CUSTOMER_ONBOARDING_STATUS_ACTIVE,
+    CUSTOMER_ONBOARDING_STATUS_DRAFT,
+    Customer,
+)
 from app.db import create_database_session_factory
 from app.main import create_app
+from app.otp.models import OtpChallenge
 from app.settings import Settings
 
 TEST_RATE_LIMIT_HMAC_KEY = "test-rate-limit-hmac-key-for-customer-get-effects"
@@ -212,3 +217,60 @@ def test_customer_gets_do_not_touch_existing_draft_timestamps(
     assert customer.created_at == original_created_at
     assert customer.updated_at == original_updated_at
     assert customer.onboarding_status == CUSTOMER_ONBOARDING_STATUS_DRAFT
+
+
+def test_profile_activation_discovery_is_read_only_for_draft_and_active(
+    m2_test_database: Engine,
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 7, 24, 10, 30, tzinfo=UTC)
+    client, settings = make_client(m2_test_database, now)
+    user = commit_user(db_session, "+998901234603")
+    created = commit_authenticated_session(db_session, user, now, settings)
+    set_client_session_cookie(client, settings, created)
+    customer = Customer(
+        user_id=user.id,
+        onboarding_status=CUSTOMER_ONBOARDING_STATUS_DRAFT,
+        created_at=now,
+        updated_at=now,
+    )
+    db_session.add(customer)
+    db_session.commit()
+
+    before_counts = (
+        count_customers(db_session),
+        db_session.scalar(select(func.count()).select_from(OtpChallenge)),
+    )
+    draft_response = client.get("/customer/profile", follow_redirects=False)
+
+    assert draft_response.status_code == 200
+    assert draft_response.headers["Cache-Control"] == "no-store"
+    assert 'href="/customer/activation"' in draft_response.text
+    assert "Faollashtirishga tayyorgarlik" in unescape(draft_response.text)
+    assert user.phone not in draft_response.text
+
+    customer.onboarding_status = CUSTOMER_ONBOARDING_STATUS_ACTIVE
+    customer.activated_at = now
+    customer.updated_at = now
+    db_session.commit()
+    active_response = client.get("/customer/profile", follow_redirects=False)
+
+    assert active_response.status_code == 200
+    assert active_response.headers["Cache-Control"] == "no-store"
+    assert "Faollashtirilgan" in unescape(active_response.text)
+    assert 'href="/customer/activation"' in active_response.text
+    assert all(
+        forbidden not in active_response.text.casefold()
+        for forbidden in (
+            "shop_customer",
+            "debt",
+            "credit",
+            "eligibility",
+            "telegram_chat_id",
+            "customer_id",
+        )
+    )
+    assert (
+        count_customers(db_session),
+        db_session.scalar(select(func.count()).select_from(OtpChallenge)),
+    ) == before_counts

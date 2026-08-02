@@ -6,10 +6,12 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.auth.phone import mask_phone_for_display
 from app.customer.view_model import CustomerDraftView
+from app.customer_activation.presentation import get_customer_activation_copy
 from app.customer_identity.web_presentation import (
     CustomerIdentityWebLanguage,
     get_customer_identity_web_copy,
 )
+from app.otp.web_presentation import OtpWebLanguage
 
 TEMPLATES_DIR = Path("app/templates")
 PROFILE_TEMPLATE_PATH = Path("app/templates/customer/profile.html")
@@ -51,6 +53,8 @@ def render_profile(customer_state: CustomerDraftView) -> str:
             CustomerIdentityWebLanguage.UZ_LATN
         ),
         identity_language="uz",
+        activation_copy=get_customer_activation_copy(OtpWebLanguage.UZ_LATN),
+        activation_language="uz-Latn",
     )
 
 
@@ -76,6 +80,8 @@ def test_customer_profile_template_renders_safe_draft_profile() -> None:
     assert f"Telefon: {customer_state.masked_phone}" in visible_html
     assert "Holat: draft" in visible_html
     assert 'href="/customer/onboarding"' in rendered
+    assert 'href="/customer/activation"' in rendered
+    assert "Faollashtirishga tayyorgarlik" in visible_html
     assert 'href="/auth/account"' in rendered
     assert raw_phone not in visible_html
     assert str(customer_id) not in visible_html
@@ -98,6 +104,21 @@ def test_customer_profile_template_autoescapes_view_fields() -> None:
     assert customer_state.masked_phone not in rendered
     assert "masked-&#34;phone&#34;-&lt;tag&gt;" in rendered
     assert "|safe" not in PROFILE_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+
+def test_customer_profile_active_status_is_scope_safe() -> None:
+    rendered = render_profile(
+        CustomerDraftView(
+            masked_phone="+998 ** *** ** 67",
+            onboarding_status_display="active",
+        )
+    )
+    visible_html = unescape(rendered)
+
+    assert "Faollashtirilgan" in visible_html
+    assert 'href="/customer/activation"' in rendered
+    for forbidden in ("qarz", "debt", "credit", "shop_customer", "eligibility"):
+        assert forbidden not in visible_html.casefold()
 
 
 def assert_forbidden_profile_scope_absent(html: str) -> None:

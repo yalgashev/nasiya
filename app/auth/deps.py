@@ -216,6 +216,13 @@ async def csrf_failed_exception_handler(
         internal_detail=str(exc.detail),
     )
     headers = {"X-Error-Code": ErrorCode.CSRF_FAILED.value}
+    if request.url.path.startswith("/customer/activation/otp/"):
+        response = RedirectResponse(
+            "/customer/activation?error=CSRF_FAILED",
+            status_code=status.HTTP_303_SEE_OTHER,
+            headers=headers,
+        )
+        return mark_auth_response_no_store(response)
     if request.url.path == "/customer/identity":
         response = RedirectResponse(
             "/customer/identity?error=CSRF_FAILED",

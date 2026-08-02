@@ -41,7 +41,7 @@ def test_customer_draft_view_exposes_only_safe_template_fields() -> None:
     assert str(user_id) not in repr(view)
 
 
-def test_customer_draft_view_uses_safe_status_fallback() -> None:
+def test_customer_view_displays_active_status_without_internal_state() -> None:
     customer = Customer(
         id=uuid4(),
         user_id=uuid4(),
@@ -50,4 +50,4 @@ def test_customer_draft_view_uses_safe_status_fallback() -> None:
 
     view = build_customer_draft_view(customer, "+998901234567")
 
-    assert view.onboarding_status_display == "unknown"
+    assert view.onboarding_status_display == "active"

@@ -21,6 +21,7 @@ AUTH_NO_STORE_CACHE_CONTROL: Final = "no-store"
 M9_NO_STORE_PATH_PREFIXES: Final = (
     "/admin/offers",
     "/auth/registration-offer",
+    "/customer/activation",
     "/customer/identity",
 )
 SECURITY_HEADERS: Final[Mapping[str, str]] = {

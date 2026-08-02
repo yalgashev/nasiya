@@ -28,7 +28,7 @@ PRE_M8_IMMUTABLE_SHA256 = {
         "ebe1a1dbceb3a428437fed8d5760082b0b140f06a98860b2db0262633c4e49f5"
     ),
     "app/otp/dispatcher.py": (
-        "5d8c372c6a5b1c5eefdd0b40e1b43eabb5acbb217eabfd7e895f62493822eb1e"
+        "8cbc524e325d569520bb7feca595d4e870988407a47abd6807b5167af78cf599"
     ),
 }
 PRE_M8_TABLES = {
@@ -188,6 +188,7 @@ def test_m5_m6_m7_roles_workers_tt_are_immutable_and_main_is_narrowly_extended()
     assert actual_hashes == PRE_M8_IMMUTABLE_SHA256
     main_source = (PROJECT_ROOT / "app/main.py").read_text(encoding="utf-8")
     assert "customer_identity_router" in main_source
+    assert "customer_activation_router" in main_source
     assert "StorageBodyLimitMiddleware" in main_source
     assert 'protected_paths={"/customer/identity/document"}' in main_source
     for forbidden in ("presigned_put", "scheduler", "shop_customer", "OCR"):

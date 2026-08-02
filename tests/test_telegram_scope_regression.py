@@ -17,6 +17,7 @@ from app.auth.deps import get_current_time, validate_csrf
 from app.auth.models import User
 from app.auth.sessions import create_authenticated_session
 from app.customer.models import CUSTOMER_ONBOARDING_STATUS_DRAFT, Customer
+from app.customer_activation.router import validate_activation_csrf
 from app.db import Base, create_database_session_factory
 from app.main import create_app
 from app.settings import Settings
@@ -120,7 +121,7 @@ def iter_dependency_calls(dependant: Dependant) -> Iterator[object]:
 
 def route_has_csrf_dependency(route: APIRoute) -> bool:
     return any(
-        dependency_call is validate_csrf
+        dependency_call in {validate_csrf, validate_activation_csrf}
         for dependency_call in iter_dependency_calls(route.dependant)
     )
 
@@ -187,21 +188,35 @@ def test_no_production_telegram_route_webhook_callback_or_public_csrf_bypass(
         "/auth/otp/request",
         "/auth/otp/verify",
     }
+    allowed_customer_activation_paths = {
+        "/customer/activation",
+        "/customer/activation/otp/request",
+        "/customer/activation/otp/verify",
+        "/customer/activation/otp/new-code",
+    }
+    allowed_otp_paths = allowed_auth_otp_paths | (
+        allowed_customer_activation_paths - {"/customer/activation"}
+    )
 
     assert allowed_auth_telegram_paths.issubset(route_paths)
     assert allowed_auth_otp_paths.issubset(route_paths)
+    assert allowed_customer_activation_paths.issubset(route_paths)
     assert not any(
         path.startswith("/auth/telegram") and path not in allowed_auth_telegram_paths
         for path in route_paths
     )
     assert not any(
-        "otp" in path.casefold() and path not in allowed_auth_otp_paths
+        "otp" in path.casefold() and path not in allowed_otp_paths
         for path in route_paths
     )
     assert not any("webhook" in path.casefold() for path in route_paths)
     assert not any("callback" in path.casefold() for path in route_paths)
     assert not any("qr" in path.casefold() for path in route_paths)
-    assert not any("activation" in path.casefold() for path in route_paths)
+    assert not any(
+        "activation" in path.casefold()
+        and path not in allowed_customer_activation_paths
+        for path in route_paths
+    )
     assert not any("reauth" in path.casefold() for path in route_paths)
 
     for path in (
@@ -232,7 +247,9 @@ def test_no_production_telegram_route_webhook_callback_or_public_csrf_bypass(
 
 def test_m6_runtime_keeps_unapproved_bot_sdk_otp_and_scheduler_out() -> None:
     dependency_names = production_dependency_names()
-    source_text = app_source_text(excluded_prefixes=("app/otp/",)).casefold()
+    source_text = app_source_text(
+        excluded_prefixes=("app/otp/", "app/customer_activation/")
+    ).casefold()
     settings_fields = set(Settings.model_fields)
     main_env_keys = app_main.SETTINGS_ENV_KEYS
     env_example_text = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
@@ -250,7 +267,7 @@ def test_m6_runtime_keeps_unapproved_bot_sdk_otp_and_scheduler_out() -> None:
     assert "TELEGRAM_BOT_TOKEN" not in web_compose
     assert "CLIENT_IP_MODE" not in env_example_text
     assert "TRUSTED_PROXY_CIDRS" not in env_example_text
-    assert "invalidate_login_otp_challenges_for_link_change" in source_text
+    assert "invalidate_otp_challenges_for_link_change" in source_text
 
     for marker in FORBIDDEN_APP_RUNTIME_MARKERS:
         assert marker not in source_text
@@ -287,12 +304,12 @@ def test_m7_otp_package_keeps_dispatcher_narrow_without_routes_or_generic_queue(
 
 
 def test_otp_webhook_and_customer_activation_do_not_appear_in_ui() -> None:
-    non_telegram_templates = template_text(
+    pre_activation_templates = template_text(
         "auth/login.html",
         "auth/sessions.html",
         "customer/onboarding.html",
-        "customer/profile.html",
     ).casefold()
+    customer_profile = template_text("customer/profile.html").casefold()
     account_telegram_templates = template_text(
         "auth/account.html",
         "auth/telegram.html",
@@ -304,7 +321,11 @@ def test_otp_webhook_and_customer_activation_do_not_appear_in_ui() -> None:
     ]
 
     for marker in FORBIDDEN_CUSTOMER_FEATURE_TEXT:
-        assert marker not in non_telegram_templates
+        assert marker not in pre_activation_templates
+
+    assert 'href="/customer/activation"' in customer_profile
+    for marker in ("webhook", "qr", "bot", "public registration"):
+        assert marker not in customer_profile
 
     assert "auth/telegram" in account_telegram_templates
     assert "telegram" in account_telegram_templates
@@ -319,7 +340,7 @@ def test_otp_webhook_and_customer_activation_do_not_appear_in_ui() -> None:
 
 
 @pytest.mark.integration
-def test_m3_customer_pages_render_no_telegram_otp_qr_or_activation_claims(
+def test_customer_pages_render_only_the_m11_activation_discovery_claim(
     db_session: Session,
     m2_test_database: Engine,
 ) -> None:
@@ -352,12 +373,17 @@ def test_m3_customer_pages_render_no_telegram_otp_qr_or_activation_claims(
 
     assert onboarding_response.status_code == 200
     assert profile_response.status_code == 200
-    rendered_text = f"{onboarding_response.text} {profile_response.text}".casefold()
+    onboarding_text = onboarding_response.text.casefold()
+    profile_text = profile_response.text.casefold()
     for marker in FORBIDDEN_CUSTOMER_FEATURE_TEXT:
-        assert marker not in rendered_text
+        assert marker not in onboarding_text
+    assert 'href="/customer/activation"' in profile_text
+    assert "faollashtirishga tayyorgarlik" in profile_text
+    for marker in ("telegram", "otp", "qr", "bot", "webhook"):
+        assert marker not in profile_text
 
 
-def test_customer_schema_remains_draft_only_and_telegram_tables_stay_scoped() -> None:
+def test_customer_schema_has_only_m11_extension_and_telegram_stays_scoped() -> None:
     telegram_tables = {
         table_name
         for table_name in Base.metadata.tables
@@ -390,11 +416,16 @@ def test_customer_schema_remains_draft_only_and_telegram_tables_stay_scoped() ->
         "id",
         "user_id",
         "onboarding_status",
+        "activated_at",
         "created_at",
         "updated_at",
     }
-    assert customer_constraints["ck_customers_onboarding_status_draft_only"] == (
-        "onboarding_status = 'draft'"
+    assert customer_constraints["ck_customers_onboarding_status_allowed"] == (
+        "onboarding_status IN ('draft', 'active')"
+    )
+    assert customer_constraints["ck_customers_activation_state_consistent"] == (
+        "(onboarding_status = 'draft' AND activated_at IS NULL) OR "
+        "(onboarding_status = 'active' AND activated_at IS NOT NULL)"
     )
 
 

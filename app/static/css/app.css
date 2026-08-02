@@ -194,6 +194,62 @@ dd {
     font-weight: 700;
 }
 
+.customer-activation-page {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+
+.customer-activation-page h2,
+.customer-activation-page h3 {
+    margin-bottom: 8px;
+    font-size: 1.25rem;
+}
+
+.customer-activation-page ul {
+    padding-inline-start: 24px;
+}
+
+.customer-activation-page li,
+.customer-activation-page p,
+.customer-activation-page a,
+.customer-activation-page button {
+    overflow-wrap: anywhere;
+}
+
+.customer-activation-page form {
+    min-inline-size: 0;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    padding: 16px;
+    background: #ffffff;
+}
+
+.customer-activation-page input,
+.customer-activation-page button {
+    max-width: 100%;
+}
+
+.customer-activation-page nav a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+}
+
+.customer-activation-page [role="status"] {
+    margin-top: 16px;
+    border-left: 4px solid #0f766e;
+    padding: 10px 12px;
+    color: #134e4a;
+    background: #ecfdf5;
+}
+
+.customer-activation-page input:focus-visible,
+.customer-activation-page button:focus-visible,
+.customer-activation-page a:focus-visible {
+    outline: 3px solid #f59e0b;
+    outline-offset: 3px;
+}
+
 .field-help {
     margin-top: 6px;
     color: #374151;
@@ -578,6 +634,15 @@ dd {
 
     .customer-page {
         width: min(100% - 24px, 640px);
+    }
+
+    .customer-activation-page {
+        width: min(100% - 24px, 640px);
+    }
+
+    .customer-activation-page button,
+    .customer-activation-page nav a {
+        width: 100%;
     }
 
     .customer-actions a {

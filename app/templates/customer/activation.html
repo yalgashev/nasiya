@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block title %}{{ copy.page_title }} - Nasiya{% endblock %}
+
+{% block content %}
+<main class="customer-activation-page">
+    {% if error_message %}
+    <div role="alert" data-error-code="{{ error_code }}">{{ error_message }}</div>
+    {% endif %}
+    {% if notice_message %}
+    <p role="status">{{ notice_message }}</p>
+    {% endif %}
+    {% if readiness.completed %}
+    <h1>{{ copy.completed_heading }}</h1>
+    <p role="status">{{ copy.completed_body }}</p>
+    {% else %}
+    <h1>{{ copy.heading }}</h1>
+    <p>{{ copy.intro }}</p>
+    <section aria-labelledby="activation-readiness-heading">
+        <h2 id="activation-readiness-heading">{{ copy.heading }}</h2>
+        <ul class="customer-activation-checklist">
+            <li>{{ copy.telegram_link_label }}: {{ copy.complete_label if readiness.telegram_link.value == "COMPLETE" else copy.incomplete_label }}</li>
+            <li>{{ copy.current_offer_label }}: {{ copy.complete_label if readiness.current_offer_acceptance.value == "COMPLETE" else copy.incomplete_label }}</li>
+            <li>{{ copy.customer_identity_label }}: {{ copy.complete_label if readiness.customer_identity.value == "COMPLETE" else copy.incomplete_label }}</li>
+            <li>{{ copy.current_document_label }}: {{ copy.complete_label if readiness.current_document.value == "COMPLETE" else copy.incomplete_label }}</li>
+        </ul>
+    </section>
+    {% if readiness.ready_for_otp %}
+    <form method="post" action="/customer/activation/otp/request">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit">{{ copy.request_code_button }}</button>
+    </form>
+    <form method="post" action="/customer/activation/otp/verify">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="registration-otp-code">{{ copy.code_label }}</label>
+        <input id="registration-otp-code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" minlength="6" maxlength="6" required aria-describedby="registration-otp-help">
+        <p id="registration-otp-help">{{ copy.code_help }}</p>
+        <button type="submit">{{ copy.verify_button }}</button>
+    </form>
+    <form method="post" action="/customer/activation/otp/new-code">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit">{{ copy.new_code_button }}</button>
+    </form>
+    {% endif %}
+    {% endif %}
+    <nav aria-label="{{ copy.profile_link }}">
+        <a href="/customer/profile">{{ copy.profile_link }}</a>
+    </nav>
+</main>
+{% endblock %}

@@ -422,7 +422,7 @@ class CommittedCustomerActivation:
 def mark_customer_activation_committed(
     prepared: PreparedCustomerActivation,
 ) -> CommittedCustomerActivation:
-    """Called only by the outer transaction owner after a successful commit."""
+    """Prepare the commit-gated cookie result inside the outer transaction."""
     if not isinstance(prepared, PreparedCustomerActivation):
         raise TypeError("Prepared customer activation result is invalid")
     return CommittedCustomerActivation(

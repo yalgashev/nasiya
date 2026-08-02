@@ -9,6 +9,15 @@
         <h2 id="customer-profile-heading">Draft ma'lumoti</h2>
         <p>Telefon: {{ customer_state.masked_phone }}</p>
         <p class="customer-status">Holat: {{ customer_state.onboarding_status_display }}</p>
+        <section aria-labelledby="customer-activation-status-heading" lang="{{ activation_language }}">
+            <h3 id="customer-activation-status-heading">{{ activation_copy.profile_status_heading }}</h3>
+            {% if customer_state.onboarding_status_display == "active" %}
+            <p class="customer-activation-status">{{ activation_copy.profile_active_status }}</p>
+            {% else %}
+            <p class="customer-activation-status">{{ activation_copy.profile_draft_status }}</p>
+            {% endif %}
+            <a href="/customer/activation">{{ activation_copy.profile_activation_link }}</a>
+        </section>
         <nav class="customer-actions" aria-label="Mijoz profili navigatsiyasi">
             <a href="/customer/onboarding">Onboarding sahifasi</a>
             <a href="/customer/identity" lang="{{ identity_language }}">{{ identity_copy.page_title }}</a>

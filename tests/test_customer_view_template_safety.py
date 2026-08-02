@@ -22,12 +22,14 @@ from app.auth.service import create_user
 from app.auth.sessions import CreatedSession, create_authenticated_session
 from app.customer.models import CUSTOMER_ONBOARDING_STATUS_DRAFT, Customer
 from app.customer.view_model import CustomerDraftView
+from app.customer_activation.presentation import get_customer_activation_copy
 from app.customer_identity.web_presentation import (
     CustomerIdentityWebLanguage,
     get_customer_identity_web_copy,
 )
 from app.db import create_database_session_factory
 from app.main import create_app
+from app.otp.web_presentation import OtpWebLanguage
 from app.settings import Settings
 
 TEMPLATES_DIR = Path("app/templates")
@@ -42,6 +44,11 @@ ALLOWED_CUSTOMER_TEMPLATE_EXPRESSIONS = frozenset(
         "csrf_token",
         "customer_state.masked_phone",
         "customer_state.onboarding_status_display",
+        "activation_copy.profile_active_status",
+        "activation_copy.profile_activation_link",
+        "activation_copy.profile_draft_status",
+        "activation_copy.profile_status_heading",
+        "activation_language",
         "identity_copy.page_title",
         "identity_language",
     }
@@ -218,6 +225,8 @@ def test_customer_profile_template_autoescapes_status_display_payload() -> None:
             CustomerIdentityWebLanguage.UZ_LATN
         ),
         identity_language="uz",
+        activation_copy=get_customer_activation_copy(OtpWebLanguage.UZ_LATN),
+        activation_language="uz-Latn",
     )
 
     assert status_payload not in rendered
@@ -287,6 +296,8 @@ def test_customer_routes_pass_only_safe_template_context(
 
     assert set(onboarding_context) == {"customer_state", "csrf_token"}
     assert set(profile_context) == {
+        "activation_copy",
+        "activation_language",
         "customer_state",
         "identity_copy",
         "identity_language",

@@ -15,6 +15,19 @@ from app.customer_activation.contracts import (
 from app.otp.web_presentation import OtpWebLanguage, resolve_otp_web_language
 
 CUSTOMER_ACTIVATION_LOCALE_COOKIE_NAME: Final = "nasiya_otp_locale"
+CUSTOMER_ACTIVATION_PUBLIC_ERROR_CODES: Final = (
+    ErrorCode.CSRF_FAILED,
+    ErrorCode.RATE_LIMITED,
+    ErrorCode.CUSTOMER_DRAFT_REQUIRED,
+    ErrorCode.TELEGRAM_NOT_LINKED,
+    ErrorCode.OFFER_UNAVAILABLE,
+    ErrorCode.OTP_INVALID,
+    ErrorCode.REGISTRATION_OFFER_NOT_ACCEPTED,
+    ErrorCode.CUSTOMER_ACTIVATION_CHANGED,
+    ErrorCode.CUSTOMER_IDENTITY_UNAVAILABLE,
+    ErrorCode.CUSTOMER_DOCUMENT_UNAVAILABLE,
+    ErrorCode.TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +86,11 @@ class CustomerActivationWebCopy:
     completed_heading: str
     completed_body: str
     profile_link: str
+    profile_status_heading: str
+    profile_missing_status: str
+    profile_draft_status: str
+    profile_active_status: str
+    profile_activation_link: str
 
 
 _UZ_LATN_COPY: Final = CustomerActivationWebCopy(
@@ -94,6 +112,11 @@ _UZ_LATN_COPY: Final = CustomerActivationWebCopy(
     completed_heading="Mijoz faollashtirilgan",
     completed_body="Faollashtirish muvaffaqiyatli yakunlangan.",
     profile_link="Mijoz profiliga qaytish",
+    profile_status_heading="Faollashtirish holati",
+    profile_missing_status="Mijoz qoralamasi mavjud emas",
+    profile_draft_status="Faollashtirishga tayyorgarlik",
+    profile_active_status="Faollashtirilgan",
+    profile_activation_link="Faollashtirish sahifasiga o'tish",
 )
 
 _RU_COPY: Final = CustomerActivationWebCopy(
@@ -115,6 +138,11 @@ _RU_COPY: Final = CustomerActivationWebCopy(
     completed_heading="Клиент активирован",
     completed_body="Активация успешно завершена.",
     profile_link="Вернуться к профилю клиента",
+    profile_status_heading="Статус активации",
+    profile_missing_status="Черновик клиента отсутствует",
+    profile_draft_status="Подготовка к активации",
+    profile_active_status="Активирован",
+    profile_activation_link="Перейти к активации",
 )
 
 _COPY: Final[Mapping[OtpWebLanguage, CustomerActivationWebCopy]] = MappingProxyType(
@@ -126,6 +154,13 @@ _COPY: Final[Mapping[OtpWebLanguage, CustomerActivationWebCopy]] = MappingProxyT
 
 _UZ_LATN_ERRORS: Final[Mapping[ErrorCode, str]] = MappingProxyType(
     {
+        ErrorCode.CSRF_FAILED: (
+            "So'rov tasdiqlanmadi. Sahifani yangilab qayta urinib ko'ring."
+        ),
+        ErrorCode.RATE_LIMITED: "Juda ko'p urinish. Keyinroq qayta urinib ko'ring.",
+        ErrorCode.CUSTOMER_DRAFT_REQUIRED: "Mijoz qoralamasi talab qilinadi.",
+        ErrorCode.TELEGRAM_NOT_LINKED: "Avval Telegram akkauntingizni bog'lang.",
+        ErrorCode.OFFER_UNAVAILABLE: "Joriy taklif hozir mavjud emas.",
         ErrorCode.OTP_INVALID: "Kod noto'g'ri yoki muddati tugagan.",
         ErrorCode.REGISTRATION_OFFER_NOT_ACCEPTED: (
             "Joriy ro'yxatdan o'tish taklifini qabul qiling."
@@ -133,6 +168,10 @@ _UZ_LATN_ERRORS: Final[Mapping[ErrorCode, str]] = MappingProxyType(
         ErrorCode.CUSTOMER_ACTIVATION_CHANGED: (
             "Faollashtirish ma'lumotlari o'zgargan. Yangi kod so'rang."
         ),
+        ErrorCode.CUSTOMER_IDENTITY_UNAVAILABLE: (
+            "Shaxsiy ma'lumotlar hozir mavjud emas."
+        ),
+        ErrorCode.CUSTOMER_DOCUMENT_UNAVAILABLE: "Hujjat hozir mavjud emas.",
         ErrorCode.TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER: (
             "Faol mijoz uchun Telegram bog'lanishi saqlanishi kerak."
         ),
@@ -141,6 +180,11 @@ _UZ_LATN_ERRORS: Final[Mapping[ErrorCode, str]] = MappingProxyType(
 
 _RU_ERRORS: Final[Mapping[ErrorCode, str]] = MappingProxyType(
     {
+        ErrorCode.CSRF_FAILED: "Запрос не подтвержден. Обновите страницу и повторите.",
+        ErrorCode.RATE_LIMITED: "Слишком много попыток. Повторите позже.",
+        ErrorCode.CUSTOMER_DRAFT_REQUIRED: "Требуется черновик клиента.",
+        ErrorCode.TELEGRAM_NOT_LINKED: "Сначала подключите аккаунт Telegram.",
+        ErrorCode.OFFER_UNAVAILABLE: "Текущее предложение сейчас недоступно.",
         ErrorCode.OTP_INVALID: "Код неверный или срок его действия истек.",
         ErrorCode.REGISTRATION_OFFER_NOT_ACCEPTED: (
             "Примите текущее предложение для регистрации."
@@ -148,6 +192,10 @@ _RU_ERRORS: Final[Mapping[ErrorCode, str]] = MappingProxyType(
         ErrorCode.CUSTOMER_ACTIVATION_CHANGED: (
             "Данные активации изменились. Запросите новый код."
         ),
+        ErrorCode.CUSTOMER_IDENTITY_UNAVAILABLE: (
+            "Персональные данные сейчас недоступны."
+        ),
+        ErrorCode.CUSTOMER_DOCUMENT_UNAVAILABLE: "Документ сейчас недоступен.",
         ErrorCode.TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER: (
             "Для активного клиента связь с Telegram должна сохраняться."
         ),

@@ -595,6 +595,26 @@ def issue_registration_otp(
     )
 
 
+def request_registration_otp(
+    session_factory: sessionmaker[Session],
+    *,
+    context: AuthenticatedActivationContext,
+    settings: Settings,
+    identity_crypto_config: CustomerIdentityCryptoConfig,
+    language: OtpWebLanguage,
+    now: datetime,
+) -> RegistrationOtpRequestResult:
+    return _request_registration_otp(
+        session_factory,
+        context=context,
+        settings=settings,
+        identity_crypto_config=identity_crypto_config,
+        language=language,
+        now=now,
+        apply_resend_cooldown=False,
+    )
+
+
 def request_new_registration_otp(
     session_factory: sessionmaker[Session],
     *,
@@ -604,10 +624,33 @@ def request_new_registration_otp(
     language: OtpWebLanguage,
     now: datetime,
 ) -> RegistrationOtpRequestResult:
+    return _request_registration_otp(
+        session_factory,
+        context=context,
+        settings=settings,
+        identity_crypto_config=identity_crypto_config,
+        language=language,
+        now=now,
+        apply_resend_cooldown=True,
+    )
+
+
+def _request_registration_otp(
+    session_factory: sessionmaker[Session],
+    *,
+    context: AuthenticatedActivationContext,
+    settings: Settings,
+    identity_crypto_config: CustomerIdentityCryptoConfig,
+    language: OtpWebLanguage,
+    now: datetime,
+    apply_resend_cooldown: bool,
+) -> RegistrationOtpRequestResult:
     if not isinstance(context, AuthenticatedActivationContext):
         raise TypeError("Activation context is invalid")
     if not isinstance(settings, Settings):
         raise TypeError("Registration settings are invalid")
+    if not isinstance(apply_resend_cooldown, bool):
+        raise TypeError("Registration resend cooldown mode is invalid")
     current_time = _as_utc(now)
     config = settings.require_registration_otp_config()
     with session_factory.begin() as rate_session:
@@ -637,7 +680,9 @@ def request_new_registration_otp(
             identity_crypto_config=identity_crypto_config,
             language=language,
             now=current_time,
-            resend_cooldown_seconds=config.resend_cooldown_seconds,
+            resend_cooldown_seconds=(
+                config.resend_cooldown_seconds if apply_resend_cooldown else None
+            ),
         )
 
 
