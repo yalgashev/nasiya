@@ -181,19 +181,31 @@ class CustomerIdentityCompletenessService:
         self._crypto_config = crypto_config
 
     def __call__(self, *, customer_id: UUID) -> bool:
+        return self.resolve_revision(customer_id=customer_id) is not None
+
+    def resolve_revision(
+        self,
+        *,
+        customer_id: UUID,
+        lock_for_update: bool = False,
+    ) -> IdentityRevision | None:
         if not isinstance(customer_id, UUID):
-            return False
-        record = self._repository.get_identity(customer_id=customer_id)
+            return None
+        record = (
+            self._repository.lock_identity(customer_id=customer_id)
+            if lock_for_update
+            else self._repository.get_identity(customer_id=customer_id)
+        )
         if record is None:
-            return False
+            return None
         try:
             _decrypt_verified_summary(
                 record=record,
                 crypto_config=self._crypto_config,
             )
         except CustomerIdentityServiceError:
-            return False
-        return True
+            return None
+        return record.revision
 
 
 def _decrypt_verified_summary(

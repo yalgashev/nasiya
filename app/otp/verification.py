@@ -19,7 +19,7 @@ from app.otp.contracts import (
     OtpPurpose,
 )
 from app.otp.crypto import OtpBrowserBindingDigest, verify_otp_code_mac
-from app.otp.models import OtpChallenge
+from app.otp.models import OtpChallenge, OtpDispatch
 from app.otp.repository import (
     append_challenge_event,
     burn_challenge,
@@ -28,8 +28,7 @@ from app.otp.repository import (
     expire_challenge,
     increment_challenge_failed_attempts,
     invalidate_challenge,
-    load_dispatch_by_challenge_for_update,
-    load_verification_candidate_by_browser_for_update,
+    lock_verification_candidate_set_by_browser,
 )
 from app.settings import OtpHmacKeySettingsError, Settings
 from app.telegram.models import TelegramLink
@@ -138,14 +137,23 @@ def check_login_otp_candidate(
         _run_dummy_work(otp_hmac_key, None, dummy_work)
         return OtpVerificationCandidateCheck(outcome=OtpInternalOutcome.OTP_INVALID)
 
-    challenge = load_verification_candidate_by_browser_for_update(
+    lock_set = lock_verification_candidate_set_by_browser(
         session,
-        browser_binding_digest=browser_binding_digest,
+        browser_binding_digest=_typed_browser_binding(browser_binding_digest),
         purpose=OtpPurpose.LOGIN,
     )
-    if challenge is None:
+    if len(lock_set.challenges) != 1:
         _run_dummy_work(otp_hmac_key, candidate_code, dummy_work)
         return OtpVerificationCandidateCheck(outcome=OtpInternalOutcome.OTP_INVALID)
+    challenge = lock_set.challenges[0]
+    dispatch = next(
+        (
+            candidate
+            for candidate in lock_set.dispatches
+            if candidate.challenge_id == challenge.id
+        ),
+        None,
+    )
 
     if not _is_active_verification_candidate(challenge):
         _run_dummy_work(otp_hmac_key, candidate_code, dummy_work)
@@ -169,7 +177,10 @@ def check_login_otp_candidate(
         )
     if not _revalidate_current_login_target(session, challenge=challenge):
         _invalidate_verification_candidate(
-            session, challenge=challenge, now=current_time
+            session,
+            challenge=challenge,
+            dispatch=dispatch,
+            now=current_time,
         )
         _run_dummy_work(otp_hmac_key, candidate_code, dummy_work)
         return OtpVerificationCandidateCheck(
@@ -360,13 +371,10 @@ def _invalidate_verification_candidate(
     session: Session,
     *,
     challenge: OtpChallenge,
+    dispatch: OtpDispatch | None,
     now: datetime,
 ) -> None:
     invalidate_challenge(session, challenge=challenge, now=now)
-    dispatch = load_dispatch_by_challenge_for_update(
-        session,
-        challenge_id=challenge.id,
-    )
     if dispatch is not None and dispatch.status in {
         OtpDispatchStatus.PENDING.value,
         OtpDispatchStatus.PREPARED.value,
@@ -380,6 +388,14 @@ def _invalidate_verification_candidate(
         occurred_at=now,
         safe_code="OTP_LINK_CHANGED",
     )
+
+
+def _typed_browser_binding(
+    value: OtpBrowserBindingDigest | str,
+) -> OtpBrowserBindingDigest:
+    if isinstance(value, OtpBrowserBindingDigest):
+        return value
+    return OtpBrowserBindingDigest(value)
 
 
 def _is_wrong_active_candidate(candidate_check: OtpVerificationCandidateCheck) -> bool:

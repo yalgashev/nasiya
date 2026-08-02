@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, fields
-from datetime import UTC, datetime
-from uuid import UUID
+from datetime import UTC, datetime, timedelta
+from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
 
 from app.customer_activation.contracts import (
     RegistrationReadinessComponent,
@@ -14,8 +16,20 @@ from app.customer_activation.contracts import (
     RegistrationReadinessState,
     RegistrationReadinessView,
 )
+from app.customer_activation.repository import (
+    SqlAlchemyCustomerDocumentReadiness,
+    SqlAlchemyCustomerIdentityReadiness,
+    SqlAlchemyRegistrationOfferReadiness,
+)
 from app.customer_identity.contracts import IdentityRevision
+from app.offers.enums import OfferLanguage, OfferPurpose
+from app.offers.models import OfferAcceptance, OfferText
 from app.otp.crypto import OtpBrowserBindingDigest
+from tests.m11_seed import (
+    NOW,
+    seed_registration_snapshot,
+    synthetic_identity_crypto_config,
+)
 
 _USER_ID = UUID("11111111-1111-4111-8111-111111111111")
 _CUSTOMER_ID = UUID("22222222-2222-4222-8222-222222222222")
@@ -181,4 +195,92 @@ def test_readiness_view_state_and_component_invariants_are_exact() -> None:
         RegistrationReadinessView(
             state=RegistrationReadinessState.ACTIVE,
             components=_components()[:-1],
+        )
+
+
+@pytest.mark.integration
+def test_readiness_adapters_lock_exact_minimum_snapshot_evidence(
+    m2_test_database: Engine,
+) -> None:
+    with Session(m2_test_database) as session, session.begin():
+        snapshot = seed_registration_snapshot(
+            session,
+            phone="+998900001328",
+        )
+        current_acceptance = session.get(
+            OfferAcceptance,
+            snapshot.registration_offer_acceptance_id,
+        )
+        assert current_acceptance is not None
+        second_text = OfferText(
+            offer_version_id=current_acceptance.offer_version_id,
+            language=OfferLanguage.RU.value,
+            title="Synthetic registration offer",
+            body="Synthetic registration offer body",
+            content_hash="e" * 64,
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        session.add(second_text)
+        session.flush()
+        earliest = OfferAcceptance(
+            user_id=snapshot.user_id,
+            offer_version_id=current_acceptance.offer_version_id,
+            offer_text_id=second_text.id,
+            purpose=OfferPurpose.REGISTRATION.value,
+            language=OfferLanguage.RU.value,
+            version_number=current_acceptance.version_number,
+            content_hash=second_text.content_hash,
+            accepted_at=NOW - timedelta(seconds=1),
+            user_agent=None,
+        )
+        session.add(earliest)
+        session.flush()
+
+        acceptance_id = SqlAlchemyRegistrationOfferReadiness(
+            session
+        ).lock_earliest_exact_current_acceptance(
+            actor_user_id=snapshot.user_id,
+        )
+        revision = SqlAlchemyCustomerIdentityReadiness(
+            session,
+            crypto_config=synthetic_identity_crypto_config(),
+        ).lock_complete_identity_revision(customer_id=snapshot.customer_id)
+        document_id = SqlAlchemyCustomerDocumentReadiness(
+            session
+        ).lock_current_available_document(customer_id=snapshot.customer_id)
+
+        assert acceptance_id == earliest.id
+        assert revision == snapshot.customer_identity_revision
+        assert document_id == snapshot.customer_document_id
+
+
+@pytest.mark.integration
+def test_readiness_adapters_reject_cross_user_or_inexact_evidence(
+    m2_test_database: Engine,
+) -> None:
+    with Session(m2_test_database) as session, session.begin():
+        seed_registration_snapshot(
+            session,
+            phone="+998900001329",
+        )
+
+        assert (
+            SqlAlchemyRegistrationOfferReadiness(
+                session
+            ).lock_earliest_exact_current_acceptance(actor_user_id=uuid4())
+            is None
+        )
+        assert (
+            SqlAlchemyCustomerIdentityReadiness(
+                session,
+                crypto_config=synthetic_identity_crypto_config(),
+            ).lock_complete_identity_revision(customer_id=uuid4())
+            is None
+        )
+        assert (
+            SqlAlchemyCustomerDocumentReadiness(
+                session
+            ).lock_current_available_document(customer_id=uuid4())
+            is None
         )

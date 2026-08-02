@@ -72,6 +72,11 @@ def test_audit_checks_close_registry_actor_object_and_payload_shape() -> None:
     assert all(kind.value in actor_sql for kind in AuditActorKind)
     object_sql = str(checks["ck_audit_log_object_type_allowed"].sqltext)
     assert all(object_type.value in object_sql for object_type in AuditObjectType)
+    object_mapping_sql = str(checks["ck_audit_log_object_matches_event"].sqltext)
+    assert (
+        "event_type = 'customer.activated' AND object_type = 'customer'"
+        in object_mapping_sql
+    )
     payload_sql = str(checks["ck_audit_log_payload_exact_shape"].sqltext)
     assert "jsonb_typeof(payload) = 'object'" in payload_sql
     assert "payload ?& ARRAY" in payload_sql
@@ -79,6 +84,16 @@ def test_audit_checks_close_registry_actor_object_and_payload_shape() -> None:
     assert "= '{}'::jsonb" in payload_sql
     assert "bootstrap_method" in payload_sql
     assert "content_hash" in payload_sql
+    assert (
+        "event_type = 'customer.activated' "
+        "AND payload ?& ARRAY['from_status', 'to_status', 'activation_method']"
+        in payload_sql
+    )
+    assert "payload ->> 'from_status' = 'draft'" in payload_sql
+    assert "payload ->> 'to_status' = 'active'" in payload_sql
+    assert (
+        "payload ->> 'activation_method' = 'TELEGRAM_REGISTRATION_OTP'" in payload_sql
+    )
 
 
 def test_audit_model_has_no_query_update_or_delete_application_api() -> None:

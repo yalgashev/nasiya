@@ -127,6 +127,16 @@ _AUDIT_PAYLOAD_EXACT_SHAPE_SQL = (
                     "AND (payload ->> 'ttl_seconds')::integer BETWEEN 60 AND 900"
                 ),
             ),
+            _exact_payload_clause(
+                AuditEventType.CUSTOMER_ACTIVATED,
+                ("from_status", "to_status", "activation_method"),
+                extra_predicate=(
+                    "payload ->> 'from_status' = 'draft' "
+                    "AND payload ->> 'to_status' = 'active' "
+                    "AND payload ->> 'activation_method' = "
+                    "'TELEGRAM_REGISTRATION_OTP'"
+                ),
+            ),
         )
     )
     + ")"
@@ -150,6 +160,7 @@ class AuditLog(Base):
                 f", '{AuditEventType.CUSTOMER_DOCUMENT_ATTACHED.value}'"
                 f", '{AuditEventType.CUSTOMER_DOCUMENT_SUPERSEDED.value}'"
                 f", '{AuditEventType.CUSTOMER_DOCUMENT_ACCESS_GRANTED.value}'"
+                f", '{AuditEventType.CUSTOMER_ACTIVATED.value}'"
                 ")"
             ),
             name="ck_audit_log_event_type_allowed",
@@ -171,6 +182,7 @@ class AuditLog(Base):
                 f"'{AuditObjectType.OFFER_ACCEPTANCE.value}'"
                 f", '{AuditObjectType.CUSTOMER_IDENTITY.value}'"
                 f", '{AuditObjectType.CUSTOMER_DOCUMENT.value}'"
+                f", '{AuditObjectType.CUSTOMER.value}'"
                 ")"
             ),
             name="ck_audit_log_object_type_allowed",
@@ -212,6 +224,8 @@ class AuditLog(Base):
                 f"'{AuditEventType.CUSTOMER_DOCUMENT_SUPERSEDED.value}', "
                 f"'{AuditEventType.CUSTOMER_DOCUMENT_ACCESS_GRANTED.value}') "
                 f"AND object_type = '{AuditObjectType.CUSTOMER_DOCUMENT.value}')"
+                f" OR (event_type = '{AuditEventType.CUSTOMER_ACTIVATED.value}' "
+                f"AND object_type = '{AuditObjectType.CUSTOMER.value}')"
             ),
             name="ck_audit_log_object_matches_event",
         ),

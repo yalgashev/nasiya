@@ -33,10 +33,6 @@ def build_rotation() -> ActivationSessionRotation:
         safe_device_metadata=ActivationSafeDeviceMetadata(
             user_agent="synthetic-browser"
         ),
-        _previous_secrets=ActivationSessionSecrets(
-            token=RawSessionToken(OLD_TOKEN),
-            csrf_secret=ActivationCsrfSecret(OLD_CSRF),
-        ),
         _replacement_secrets=ActivationSessionSecrets(
             token=RawSessionToken(NEW_TOKEN),
             csrf_secret=ActivationCsrfSecret(NEW_CSRF),
@@ -82,7 +78,6 @@ def test_session_rotation_secrets_are_redacted_at_every_contract_layer() -> None
 
     rendered = " ".join(
         (
-            repr(rotation._previous_secrets),
             repr(rotation._replacement_secrets),
             repr(rotation),
             repr(prepared),
@@ -121,10 +116,6 @@ def test_rotation_rejects_same_session_identity() -> None:
             user_id=uuid4(),
             active_shop_id=None,
             safe_device_metadata=ActivationSafeDeviceMetadata(user_agent=None),
-            _previous_secrets=ActivationSessionSecrets(
-                token=RawSessionToken(OLD_TOKEN),
-                csrf_secret=ActivationCsrfSecret(OLD_CSRF),
-            ),
             _replacement_secrets=ActivationSessionSecrets(
                 token=RawSessionToken(NEW_TOKEN),
                 csrf_secret=ActivationCsrfSecret(NEW_CSRF),

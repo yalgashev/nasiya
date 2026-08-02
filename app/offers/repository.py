@@ -299,6 +299,42 @@ class SqlAlchemyOfferAcceptanceRepository:
         model = self._session.scalar(statement)
         return None if model is None else _to_stored_acceptance(model)
 
+    def lock_earliest_exact_current_registration_acceptance(
+        self,
+        *,
+        user_id: UUID,
+        current_version: OfferVersion,
+    ) -> StoredRegistrationOfferAcceptance | None:
+        if (
+            not isinstance(current_version, OfferVersion)
+            or current_version.purpose is not OfferPurpose.REGISTRATION
+            or current_version.status is not OfferStatus.CURRENT
+        ):
+            raise ValueError("Current registration offer is invalid")
+        statement = (
+            select(OfferAcceptanceModel)
+            .join(
+                OfferTextModel,
+                OfferTextModel.id == OfferAcceptanceModel.offer_text_id,
+            )
+            .where(
+                OfferAcceptanceModel.user_id == user_id,
+                OfferAcceptanceModel.offer_version_id == current_version.id,
+                OfferAcceptanceModel.purpose == OfferPurpose.REGISTRATION.value,
+                OfferAcceptanceModel.version_number == current_version.version_number,
+                OfferAcceptanceModel.language == OfferTextModel.language,
+                OfferAcceptanceModel.content_hash == OfferTextModel.content_hash,
+                OfferTextModel.offer_version_id == current_version.id,
+            )
+            .order_by(
+                OfferAcceptanceModel.accepted_at,
+                OfferAcceptanceModel.id,
+            )
+            .with_for_update(of=OfferAcceptanceModel)
+        )
+        models = tuple(self._session.scalars(statement))
+        return None if not models else _to_stored_acceptance(models[0])
+
     def create_acceptance(
         self,
         *,

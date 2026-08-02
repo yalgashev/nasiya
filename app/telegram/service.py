@@ -5,13 +5,19 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Final
+from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session as DatabaseSession
 
 from app.auth.error_codes import ErrorCode, get_public_error_body
 from app.auth.models import User
-from app.otp.issuance import invalidate_login_otp_challenges_for_link_change
+from app.otp.contracts import OtpPurpose
+from app.otp.issuance import invalidate_otp_challenges_for_link_change
+from app.otp.repository import (
+    OtpChallengeLockSet,
+    lock_outstanding_challenge_set_by_user_for_purposes,
+)
 from app.settings import Settings
 from app.telegram.client_ip import ResolvedClientIp
 from app.telegram.events import append_telegram_link_event
@@ -280,6 +286,10 @@ def consume_start_token(
         current_time = _as_utc(now)
         token = get_valid_link_token_for_consume(session, raw_token, current_time)
         token_user = _get_token_user(session, token)
+        locked_otp = _lock_link_change_otp_state(session, user_id=token_user.id)
+        token_user = _lock_active_user(session, user_id=token_user.id)
+        if token_user is None:
+            raise TelegramLinkTokenConsumeError()
         existing_link = get_telegram_link_by_user_for_update(session, token_user)
 
         if (
@@ -326,10 +336,12 @@ def consume_start_token(
         event = None
         if event_action is not None:
             if event_action == "relinked":
-                invalidate_login_otp_challenges_for_link_change(
+                invalidate_otp_challenges_for_link_change(
                     session,
                     user_id=token_user.id,
+                    purposes=(OtpPurpose.LOGIN, OtpPurpose.REGISTRATION),
                     now=current_time,
+                    locked=locked_otp,
                 )
             event = append_telegram_link_event(
                 session,
@@ -369,26 +381,40 @@ def unlink(
     try:
         current_time = _as_utc(now)
         canonical_user = _get_canonical_current_user(session, current_user)
-        link = unlink_verified_private_chat(session, canonical_user, current_time)
-        if link is None:
+        if not has_active_telegram_link(session, canonical_user):
             raise TelegramLinkTokenIssueError(ErrorCode.TELEGRAM_NOT_LINKED)
-
-        invalidated_token_count = invalidate_outstanding_telegram_link_tokens(
-            session,
-            canonical_user,
-            current_time,
-        )
-        invalidate_login_otp_challenges_for_link_change(
-            session,
-            user_id=canonical_user.id,
-            now=current_time,
-        )
-        event = append_telegram_link_event(
-            session,
-            canonical_user.id,
-            "unlinked",
-            current_time,
-        )
+        with session.begin_nested():
+            invalidated_token_count = invalidate_outstanding_telegram_link_tokens(
+                session,
+                canonical_user,
+                current_time,
+            )
+            locked_otp = _lock_link_change_otp_state(
+                session,
+                user_id=canonical_user.id,
+            )
+            canonical_user = _lock_active_user(
+                session,
+                user_id=canonical_user.id,
+            )
+            if canonical_user is None:
+                raise TelegramLinkTokenIssueError(ErrorCode.UNAUTHORIZED)
+            link = unlink_verified_private_chat(session, canonical_user, current_time)
+            if link is None:
+                raise TelegramLinkTokenIssueError(ErrorCode.TELEGRAM_NOT_LINKED)
+            invalidate_otp_challenges_for_link_change(
+                session,
+                user_id=canonical_user.id,
+                purposes=(OtpPurpose.LOGIN, OtpPurpose.REGISTRATION),
+                now=current_time,
+                locked=locked_otp,
+            )
+            event = append_telegram_link_event(
+                session,
+                canonical_user.id,
+                "unlinked",
+                current_time,
+            )
     except TelegramLinkTokenIssueError:
         raise
     except SQLAlchemyError:
@@ -438,6 +464,29 @@ def _get_token_user(
     user = session.get(User, token.user_id)
     if user is None or not user.is_active:
         raise TelegramLinkTokenConsumeError()
+    return user
+
+
+def _lock_link_change_otp_state(
+    session: DatabaseSession,
+    *,
+    user_id: UUID,
+) -> OtpChallengeLockSet:
+    return lock_outstanding_challenge_set_by_user_for_purposes(
+        session,
+        user_id=user_id,
+        purposes=(OtpPurpose.LOGIN, OtpPurpose.REGISTRATION),
+    )
+
+
+def _lock_active_user(
+    session: DatabaseSession,
+    *,
+    user_id: UUID,
+) -> User | None:
+    user = session.get(User, user_id, with_for_update=True)
+    if user is None or not user.is_active:
+        return None
     return user
 
 

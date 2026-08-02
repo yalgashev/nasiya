@@ -28,16 +28,16 @@ from app.otp.crypto import (
 from app.otp.models import OtpChallenge, OtpDispatch
 from app.otp.repository import (
     OtpChallengeInsertConflict,
+    OtpChallengeLockSet,
     append_challenge_event,
     cancel_dispatch,
     create_pending_challenge,
     create_pending_dispatch,
     expire_challenge,
     invalidate_challenge,
-    load_dispatch_by_challenge_for_update,
-    load_outstanding_challenge_by_browser_for_update,
-    load_outstanding_challenge_by_user_for_update,
-    load_outstanding_challenges_by_user_for_update,
+    load_outstanding_challenge_by_browser,
+    lock_outstanding_challenge_set_by_user_and_browser,
+    lock_outstanding_challenge_set_by_user_for_purposes,
     supersede_challenge,
 )
 from app.settings import Settings
@@ -264,7 +264,7 @@ def request_login_otp(
     eligibility = lookup_login_otp_eligibility(
         session,
         phone_input=phone_input,
-        lock_rows=True,
+        lock_rows=False,
     )
     if eligibility.target is None:
         return OtpIssueResult(outcome=OtpInternalOutcome.OTP_NOT_ELIGIBLE)
@@ -305,15 +305,15 @@ def request_new_login_code(
         return OtpIssueResult(outcome=OtpInternalOutcome.OTP_CONFIGURATION_UNAVAILABLE)
 
     _run_dummy_work(otp_hmac_key, dummy_work)
-    current_challenge = load_outstanding_challenge_by_browser_for_update(
+    discovered_challenge = load_outstanding_challenge_by_browser(
         session,
         browser_binding_digest=browser_binding_digest,
         purpose=OtpPurpose.LOGIN,
     )
-    if current_challenge is None or current_challenge.user_id is None:
+    if discovered_challenge is None or discovered_challenge.user_id is None:
         return OtpIssueResult(outcome=OtpInternalOutcome.OTP_NOT_ELIGIBLE)
     if (
-        current_challenge.created_at
+        discovered_challenge.created_at
         + timedelta(seconds=settings.otp_login_resend_cooldown_seconds)
         > current_time
     ):
@@ -325,12 +325,33 @@ def request_new_login_code(
         canonical_phone=None,
         client_ip=client_ip,
         now=current_time,
-        user_id=current_challenge.user_id,
+        user_id=discovered_challenge.user_id,
         new_code=True,
     )
     if not limit_result.allowed:
         return OtpIssueResult(outcome=OtpInternalOutcome.RATE_LIMITED)
 
+    typed_binding = _typed_browser_binding(browser_binding_digest)
+    locked = lock_outstanding_challenge_set_by_user_and_browser(
+        session,
+        user_id=discovered_challenge.user_id,
+        browser_binding_digest=typed_binding,
+        purpose=OtpPurpose.LOGIN,
+    )
+    current_challenge = next(
+        (
+            challenge
+            for challenge in locked.challenges
+            if challenge.id == discovered_challenge.id
+        ),
+        None,
+    )
+    if current_challenge is None or (
+        current_challenge.created_at
+        + timedelta(seconds=settings.otp_login_resend_cooldown_seconds)
+        > current_time
+    ):
+        return OtpIssueResult(outcome=OtpInternalOutcome.OTP_NOT_ELIGIBLE)
     target = _target_from_challenge_snapshot(
         session,
         current_challenge=current_challenge,
@@ -345,6 +366,8 @@ def request_new_login_code(
         browser_binding_digest=browser_binding_digest,
         locale=locale,
         now=current_time,
+        locked=locked,
+        target_already_locked=True,
     )
 
 
@@ -353,16 +376,46 @@ def invalidate_login_otp_challenges_for_link_change(
     *,
     user_id: UUID,
     now: datetime,
+    locked: OtpChallengeLockSet | None = None,
 ) -> int:
-    current_time = _as_utc(now)
-    challenges = load_outstanding_challenges_by_user_for_update(
+    return invalidate_otp_challenges_for_link_change(
         session,
         user_id=user_id,
-        purpose=OtpPurpose.LOGIN,
+        purposes=(OtpPurpose.LOGIN,),
+        now=now,
+        locked=locked,
+    )
+
+
+def invalidate_otp_challenges_for_link_change(
+    session: Session,
+    *,
+    user_id: UUID,
+    purposes: tuple[OtpPurpose, ...],
+    now: datetime,
+    locked: OtpChallengeLockSet | None = None,
+) -> int:
+    current_time = _as_utc(now)
+    if locked is None:
+        locked = lock_outstanding_challenge_set_by_user_for_purposes(
+            session,
+            user_id=user_id,
+            purposes=purposes,
+        )
+    allowed_purposes = {purpose.value for purpose in purposes}
+    challenges = tuple(
+        challenge
+        for challenge in locked.challenges
+        if challenge.user_id == user_id and challenge.purpose in allowed_purposes
     )
     for challenge in challenges:
         invalidate_challenge(session, challenge=challenge, now=current_time)
-        _cancel_dispatch_if_open(session, challenge_id=challenge.id, now=current_time)
+        _cancel_locked_dispatch_if_open(
+            session,
+            locked=locked,
+            challenge_id=challenge.id,
+            now=current_time,
+        )
         append_challenge_event(
             session,
             challenge_id=challenge.id,
@@ -381,13 +434,28 @@ def _issue_challenge_for_target(
     browser_binding_digest: OtpBrowserBindingDigest | str,
     locale: str,
     now: datetime,
+    locked: OtpChallengeLockSet | None = None,
+    target_already_locked: bool = False,
 ) -> OtpIssueResult:
     current_time = _as_utc(now)
+    typed_binding = _typed_browser_binding(browser_binding_digest)
+    if locked is None:
+        locked = lock_outstanding_challenge_set_by_user_and_browser(
+            session,
+            user_id=target.user.id,
+            browser_binding_digest=typed_binding,
+            purpose=OtpPurpose.LOGIN,
+        )
+    if not target_already_locked:
+        target = _lock_and_revalidate_target(session, target=target)
+        if target is None:
+            return OtpIssueResult(outcome=OtpInternalOutcome.OTP_NOT_ELIGIBLE)
     _terminalize_existing_outstanding(
         session,
         settings=settings,
         target=target,
-        browser_binding_digest=browser_binding_digest,
+        browser_binding_digest=typed_binding,
+        locked=locked,
         now=current_time,
     )
     try:
@@ -427,25 +495,17 @@ def _terminalize_existing_outstanding(
     *,
     settings: Settings,
     target: OtpEligibleTarget,
-    browser_binding_digest: OtpBrowserBindingDigest | str,
+    browser_binding_digest: OtpBrowserBindingDigest,
+    locked: OtpChallengeLockSet,
     now: datetime,
 ) -> None:
-    candidates = [
-        load_outstanding_challenge_by_user_for_update(
-            session,
-            user_id=target.user.id,
-            purpose=OtpPurpose.LOGIN,
-        ),
-        load_outstanding_challenge_by_browser_for_update(
-            session,
-            browser_binding_digest=browser_binding_digest,
-            purpose=OtpPurpose.LOGIN,
-        ),
-    ]
-    unique_challenges = {
-        challenge.id: challenge for challenge in candidates if challenge is not None
-    }
-    for challenge in unique_challenges.values():
+    for challenge in locked.challenges:
+        if (
+            challenge.user_id != target.user.id
+            and challenge.browser_binding_digest
+            != browser_binding_digest.as_stored_value()
+        ):
+            continue
         if _is_stale_challenge(
             challenge,
             now=now,
@@ -456,7 +516,12 @@ def _terminalize_existing_outstanding(
         else:
             supersede_challenge(session, challenge=challenge, now=now)
             event_action = OtpChallengeEventAction.SUPERSEDED
-        _cancel_dispatch_if_open(session, challenge_id=challenge.id, now=now)
+        _cancel_locked_dispatch_if_open(
+            session,
+            locked=locked,
+            challenge_id=challenge.id,
+            now=now,
+        )
         append_challenge_event(
             session,
             challenge_id=challenge.id,
@@ -466,13 +531,21 @@ def _terminalize_existing_outstanding(
         )
 
 
-def _cancel_dispatch_if_open(
+def _cancel_locked_dispatch_if_open(
     session: Session,
     *,
+    locked: OtpChallengeLockSet,
     challenge_id: UUID,
     now: datetime,
 ) -> None:
-    dispatch = load_dispatch_by_challenge_for_update(session, challenge_id=challenge_id)
+    dispatch = next(
+        (
+            candidate
+            for candidate in locked.dispatches
+            if candidate.challenge_id == challenge_id
+        ),
+        None,
+    )
     if dispatch is None or dispatch.status not in {
         OtpDispatchStatus.PENDING.value,
         OtpDispatchStatus.PREPARED.value,
@@ -513,6 +586,38 @@ def _target_from_challenge_snapshot(
         telegram_link=link,
         canonical_phone=user.phone,
     )
+
+
+def _lock_and_revalidate_target(
+    session: Session,
+    *,
+    target: OtpEligibleTarget,
+) -> OtpEligibleTarget | None:
+    user = session.get(User, target.user.id, with_for_update=True)
+    if user is None or not user.is_active or user.phone != target.canonical_phone:
+        return None
+    link = session.get(TelegramLink, target.telegram_link.id, with_for_update=True)
+    if (
+        link is None
+        or link.user_id != user.id
+        or link.telegram_chat_id is None
+        or link.unlinked_at is not None
+        or link.linked_at != target.telegram_link.linked_at
+    ):
+        return None
+    return OtpEligibleTarget(
+        user=user,
+        telegram_link=link,
+        canonical_phone=user.phone,
+    )
+
+
+def _typed_browser_binding(
+    value: OtpBrowserBindingDigest | str,
+) -> OtpBrowserBindingDigest:
+    if isinstance(value, OtpBrowserBindingDigest):
+        return value
+    return OtpBrowserBindingDigest(value)
 
 
 def _is_stale_challenge(

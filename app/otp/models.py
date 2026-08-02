@@ -26,8 +26,27 @@ class OtpChallenge(Base):
     __tablename__ = "otp_challenges"
     __table_args__ = (
         CheckConstraint(
-            "purpose = 'LOGIN'",
-            name="ck_otp_challenges_purpose_login",
+            "purpose IN ('LOGIN', 'REGISTRATION')",
+            name="ck_otp_challenges_purpose_allowed",
+        ),
+        CheckConstraint(
+            "("
+            "purpose = 'LOGIN' "
+            "AND customer_id IS NULL "
+            "AND registration_offer_acceptance_id IS NULL "
+            "AND customer_identity_revision IS NULL "
+            "AND customer_document_id IS NULL"
+            ") OR ("
+            "purpose = 'REGISTRATION' "
+            "AND user_id IS NOT NULL "
+            "AND telegram_link_id IS NOT NULL "
+            "AND telegram_linked_at IS NOT NULL "
+            "AND customer_id IS NOT NULL "
+            "AND registration_offer_acceptance_id IS NOT NULL "
+            "AND customer_identity_revision > 0 "
+            "AND customer_document_id IS NOT NULL"
+            ")",
+            name="ck_otp_challenges_registration_context_matches_purpose",
         ),
         CheckConstraint(
             "browser_binding_digest ~ '^[0-9a-f]{64}$'",
@@ -157,6 +176,37 @@ class OtpChallenge(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    customer_id: Mapped[UUID | None] = mapped_column(
+        PostgresUUID(as_uuid=True),
+        ForeignKey(
+            "customers.id",
+            name="fk_otp_challenges_customer_id_customers_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
+    )
+    registration_offer_acceptance_id: Mapped[UUID | None] = mapped_column(
+        PostgresUUID(as_uuid=True),
+        ForeignKey(
+            "offer_acceptances.id",
+            name="fk_otp_challenges_registration_acceptance_offer_acceptances",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
+    )
+    customer_identity_revision: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    customer_document_id: Mapped[UUID | None] = mapped_column(
+        PostgresUUID(as_uuid=True),
+        ForeignKey(
+            "customer_documents.id",
+            name="fk_otp_challenges_customer_document_id_customer_documents",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
+    )
     browser_binding_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     code_mac: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -194,6 +244,16 @@ class OtpChallenge(Base):
         default=utc_now,
         server_default=sqlalchemy_text("CURRENT_TIMESTAMP"),
     )
+
+    def __repr__(self) -> str:
+        return (
+            "OtpChallenge("
+            "id=<redacted>, user_id=<redacted>, telegram_link_id=<redacted>, "
+            "registration_context=<redacted>, browser_binding=<redacted>, "
+            "code_mac=<redacted>, "
+            f"purpose={self.purpose!r}, status={self.status!r}, "
+            f"failed_attempts={self.failed_attempts!r})"
+        )
 
 
 class OtpDispatch(Base):
@@ -316,7 +376,8 @@ class OtpChallengeEvent(Base):
             "action IN ("
             "'ISSUED', 'DISPATCH_PREPARED', 'DISPATCH_RESULT', "
             "'VERIFY_FAILED', 'CONSUMED', 'SUPERSEDED', 'EXPIRED', 'BURNED', "
-            "'INVALIDATED_BY_LINK_CHANGE'"
+            "'INVALIDATED_BY_LINK_CHANGE', "
+            "'INVALIDATED_BY_REGISTRATION_STATE_CHANGE'"
             ")",
             name="ck_otp_challenge_events_action_allowed",
         ),

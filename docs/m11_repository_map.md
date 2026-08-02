@@ -79,7 +79,7 @@ OUT. Repository gaps cannot replace or contradict product authority.
 | `app/telegram/service.py`, `repository.py` | CR-order invalidation and active ordinary-unlink guard |
 | `app/audit/contracts.py`, `models.py`, `redaction.py` | exact activation event/object/payload extension |
 | `app/auth/error_codes.py` | four exact stable codes and UZ-Latn safe definitions |
-| `alembic/versions/c1d2e3f4a5b6_create_customer_activation_foundation.py` | one zero-new-table M11 revision |
+| `alembic/versions/c1d2e3f4a5b6_extend_customer_activation_foundation.py` | one zero-new-table M11 revision |
 
 No other package, table, dependency, worker, dispatcher, broker or route family
 is planned.
@@ -118,8 +118,11 @@ is planned.
 ## Exact Schema Appendix
 
 Migration revision `c1d2e3f4a5b6`, down revision `b0c1d2e3f4a5`.
+The migration alters only `customers`, `otp_challenges`,
+`otp_challenge_events`, and `audit_log`; it creates no table, enum, sequence,
+index, trigger, function, or view.
 
-New customer column/check names:
+### Customer lifecycle
 
 ```text
 customers.activated_at TIMESTAMPTZ NULL
@@ -128,13 +131,28 @@ ck_customers_activation_state_consistent
 ck_customers_timestamp_order
 ```
 
-New challenge columns/names:
+`ck_customers_onboarding_status_draft_only` is replaced. The three exact
+predicates are:
 
 ```text
-customer_id UUID NULL
-registration_offer_acceptance_id UUID NULL
-customer_identity_revision INTEGER NULL
-customer_document_id UUID NULL
+onboarding_status IN ('draft', 'active')
+(onboarding_status = 'draft' AND activated_at IS NULL)
+OR (onboarding_status = 'active' AND activated_at IS NOT NULL)
+updated_at >= created_at
+AND (activated_at IS NULL OR activated_at >= created_at)
+AND (activated_at IS NULL OR updated_at >= activated_at)
+```
+
+No default or index is added for `activated_at`. Adding the nullable column
+leaves every M10 row exactly `draft / NULL`; no customer data rewrite occurs.
+
+### REGISTRATION challenge context
+
+```text
+otp_challenges.customer_id UUID NULL
+otp_challenges.registration_offer_acceptance_id UUID NULL
+otp_challenges.customer_identity_revision INTEGER NULL
+otp_challenges.customer_document_id UUID NULL
 ck_otp_challenges_purpose_allowed
 ck_otp_challenges_registration_context_matches_purpose
 fk_otp_challenges_customer_id_customers_id
@@ -142,7 +160,35 @@ fk_otp_challenges_registration_acceptance_offer_acceptances
 fk_otp_challenges_customer_document_id_customer_documents
 ```
 
-Replaced/extended existing checks:
+The purpose checks replace `ck_otp_challenges_purpose_login` with these exact
+predicates:
+
+```text
+purpose IN ('LOGIN', 'REGISTRATION')
+(purpose = 'LOGIN'
+ AND customer_id IS NULL
+ AND registration_offer_acceptance_id IS NULL
+ AND customer_identity_revision IS NULL
+ AND customer_document_id IS NULL)
+OR
+(purpose = 'REGISTRATION'
+ AND user_id IS NOT NULL
+ AND telegram_link_id IS NOT NULL
+ AND telegram_linked_at IS NOT NULL
+ AND customer_id IS NOT NULL
+ AND registration_offer_acceptance_id IS NOT NULL
+ AND customer_identity_revision > 0
+ AND customer_document_id IS NOT NULL)
+```
+
+The three named FKs target `customers.id`, `offer_acceptances.id`, and
+`customer_documents.id`, respectively, and all use `ON DELETE RESTRICT`.
+Identity revision is a positive snapshot scalar, not a new identity FK.
+Existing LOGIN rows receive four NULLs and remain valid. Existing purpose-
+bearing partial unique indexes and `ix_otp_challenges_terminal_at` are retained
+byte-for-byte; no context index is added.
+
+### Event and central-audit checks
 
 ```text
 ck_otp_challenge_events_action_allowed
@@ -152,8 +198,63 @@ ck_audit_log_object_matches_event
 ck_audit_log_payload_exact_shape
 ```
 
-Existing purpose-bearing OTP partial uniques are unchanged. No new index or
-table is required. All FKs use `ON DELETE RESTRICT`.
+The OTP action set gains only
+`INVALIDATED_BY_REGISTRATION_STATE_CHANGE`. The audit registry gains only
+`customer.activated`, object type `customer`, and this exact object mapping and
+payload clause:
+
+```text
+customer.activated -> customer
+payload keys exactly: from_status, to_status, activation_method
+from_status = 'draft'
+to_status = 'active'
+activation_method = 'TELEGRAM_REGISTRATION_OTP'
+```
+
+All M10 audit event/object/payload clauses remain exact. The replacement
+payload check rejects extra JSON keys for `customer.activated`.
+
+### Executable alter and lock order
+
+One transactional upgrade performs these bounded operations in order:
+
+1. add the five nullable columns without defaults, so PostgreSQL performs no
+   table rewrite;
+2. add the three RESTRICT FKs as `NOT VALID` and add new customer/purpose
+   checks as `NOT VALID`;
+3. validate those new constraints, then drop the superseded customer
+   draft-only and OTP LOGIN-only checks;
+4. transactionally replace the OTP-event check;
+5. transactionally replace the four audit registry/object/payload checks in
+   their existing names.
+
+`ADD/DROP COLUMN` and `ADD/DROP CONSTRAINT` take brief `ACCESS EXCLUSIVE`
+table locks. `VALIDATE CONSTRAINT` uses the weaker PostgreSQL validation lock
+and scans existing rows without a rewrite. The migration runs in a maintenance
+window; it contains no retry, lock timeout, sleep, concurrent-index workaround,
+or advisory lock. New constraints protect new writes even while `NOT VALID`.
+
+### Fail-closed downgrade and walk
+
+Before changing any schema, downgrade executes one no-identifier precondition:
+
+```text
+fail if EXISTS customers WHERE onboarding_status = 'active'
+                           OR activated_at IS NOT NULL
+```
+
+On failure it leaves the complete M11 schema and data untouched. If the guard
+passes, downgrade restores the exact M10 audit and OTP-event checks, restores
+`ck_otp_challenges_purpose_login`, removes only the three M11 FKs and four
+context columns, restores `ck_customers_onboarding_status_draft_only`, and
+drops `customers.activated_at`. It never rewrites active to draft.
+
+Real-PostgreSQL migration tests use Alembic, never `create_all` or manual DDL,
+for both an empty base-to-head walk and a populated
+`b0c1d2e3f4a5 -> c1d2e3f4a5b6 -> b0c1d2e3f4a5 -> c1d2e3f4a5b6` walk. The
+populated walk pins existing customer `draft / NULL`, LOGIN context NULLs,
+M10 audit acceptance, the single head/parent, zero new tables/indexes, and the
+active-row downgrade refusal.
 
 ## M11.07 Threat-To-Test Matrix — 48 Threats / 16 Files
 

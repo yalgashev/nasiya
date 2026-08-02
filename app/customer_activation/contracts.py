@@ -7,11 +7,26 @@ from uuid import UUID
 
 from app.auth.sessions import RawSessionToken
 from app.auth.user_agent import truncate_user_agent
+from app.customer.ports import (
+    CustomerActivationTransitionOutcome,
+    CustomerActivationTransitionResult,
+    CustomerLifecycleState,
+    CustomerLifecycleStatus,
+    transition_customer_to_active,
+)
 from app.customer_identity.contracts import IdentityRevision
 from app.otp.code import OtpCode
 from app.otp.contracts import OtpPurpose
 from app.otp.crypto import OtpBrowserBindingDigest
 from app.telegram.client_ip import ResolvedClientIp
+
+__all__ = (
+    "CustomerActivationTransitionOutcome",
+    "CustomerActivationTransitionResult",
+    "CustomerLifecycleState",
+    "CustomerLifecycleStatus",
+    "transition_customer_to_active",
+)
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -227,99 +242,6 @@ class RegistrationOtpVerificationResult:
             raise TypeError("Registration OTP verification outcome is invalid")
 
 
-class CustomerLifecycleStatus(StrEnum):
-    DRAFT = "draft"
-    ACTIVE = "active"
-
-
-@dataclass(frozen=True, slots=True)
-class CustomerLifecycleState:
-    status: CustomerLifecycleStatus
-    created_at: datetime
-    updated_at: datetime
-    activated_at: datetime | None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.status, CustomerLifecycleStatus):
-            raise TypeError("Customer lifecycle status is invalid")
-        created_at = _as_utc(self.created_at)
-        updated_at = _as_utc(self.updated_at)
-        activated_at = None if self.activated_at is None else _as_utc(self.activated_at)
-        if updated_at < created_at:
-            raise ValueError("Customer lifecycle timestamps are invalid")
-        if self.status is CustomerLifecycleStatus.DRAFT and activated_at is not None:
-            raise ValueError("Draft customer cannot have activation time")
-        if self.status is CustomerLifecycleStatus.ACTIVE and activated_at is None:
-            raise ValueError("Active customer requires activation time")
-        if activated_at is not None and (
-            activated_at < created_at or updated_at < activated_at
-        ):
-            raise ValueError("Customer activation timestamps are invalid")
-        object.__setattr__(self, "created_at", created_at)
-        object.__setattr__(self, "updated_at", updated_at)
-        object.__setattr__(self, "activated_at", activated_at)
-
-
-class CustomerActivationTransitionOutcome(StrEnum):
-    ACTIVATED = "ACTIVATED"
-    ALREADY_ACTIVE = "ALREADY_ACTIVE"
-    MISSING = "MISSING"
-
-
-@dataclass(frozen=True, slots=True)
-class CustomerActivationTransitionResult:
-    outcome: CustomerActivationTransitionOutcome
-    state: CustomerLifecycleState | None = None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.outcome, CustomerActivationTransitionOutcome):
-            raise TypeError("Customer activation transition outcome is invalid")
-        if self.state is not None and not isinstance(
-            self.state, CustomerLifecycleState
-        ):
-            raise TypeError("Customer lifecycle state is invalid")
-        if self.outcome is CustomerActivationTransitionOutcome.MISSING:
-            if self.state is not None:
-                raise ValueError("Missing customer cannot have lifecycle state")
-            return
-        if (
-            self.state is None
-            or self.state.status is not CustomerLifecycleStatus.ACTIVE
-        ):
-            raise ValueError("Activation result requires active customer state")
-
-
-def transition_customer_to_active(
-    state: CustomerLifecycleState | None,
-    *,
-    now: datetime,
-) -> CustomerActivationTransitionResult:
-    current_time = _as_utc(now)
-    if state is None:
-        return CustomerActivationTransitionResult(
-            outcome=CustomerActivationTransitionOutcome.MISSING
-        )
-    if not isinstance(state, CustomerLifecycleState):
-        raise TypeError("Customer lifecycle state is invalid")
-    if state.status is CustomerLifecycleStatus.ACTIVE:
-        return CustomerActivationTransitionResult(
-            outcome=CustomerActivationTransitionOutcome.ALREADY_ACTIVE,
-            state=state,
-        )
-    if current_time < state.updated_at:
-        raise ValueError("Customer activation time is invalid")
-    active_state = CustomerLifecycleState(
-        status=CustomerLifecycleStatus.ACTIVE,
-        created_at=state.created_at,
-        updated_at=current_time,
-        activated_at=current_time,
-    )
-    return CustomerActivationTransitionResult(
-        outcome=CustomerActivationTransitionOutcome.ACTIVATED,
-        state=active_state,
-    )
-
-
 class ActivationAtomicMutation(StrEnum):
     CHALLENGE_CONSUMED = "CHALLENGE_CONSUMED"
     OTP_CONSUMED_EVENT_APPENDED = "OTP_CONSUMED_EVENT_APPENDED"
@@ -388,7 +310,6 @@ class ActivationSessionRotation:
     user_id: UUID = field(repr=False)
     active_shop_id: UUID | None = field(repr=False)
     safe_device_metadata: ActivationSafeDeviceMetadata = field(repr=False)
-    _previous_secrets: ActivationSessionSecrets = field(repr=False)
     _replacement_secrets: ActivationSessionSecrets = field(repr=False)
     scope: ActivationSessionRotationScope = field(
         default=ActivationSessionRotationScope.CURRENT_SESSION_ONLY,
@@ -405,8 +326,6 @@ class ActivationSessionRotation:
             _require_uuid(self.active_shop_id, field_name="active_shop_id")
         if not isinstance(self.safe_device_metadata, ActivationSafeDeviceMetadata):
             raise TypeError("Activation device metadata is invalid")
-        if not isinstance(self._previous_secrets, ActivationSessionSecrets):
-            raise TypeError("Previous activation session secrets are invalid")
         if not isinstance(self._replacement_secrets, ActivationSessionSecrets):
             raise TypeError("Replacement activation session secrets are invalid")
 
@@ -418,8 +337,8 @@ class ActivationSessionRotation:
             "ActivationSessionRotation("
             "previous_session_id=<redacted>, replacement_session_id=<redacted>, "
             "user_id=<redacted>, active_shop_id=<redacted>, "
-            "safe_device_metadata=<redacted>, previous_secrets=<redacted>, "
-            "replacement_secrets=<redacted>, scope='CURRENT_SESSION_ONLY')"
+            "safe_device_metadata=<redacted>, replacement_secrets=<redacted>, "
+            "scope='CURRENT_SESSION_ONLY')"
         )
 
 

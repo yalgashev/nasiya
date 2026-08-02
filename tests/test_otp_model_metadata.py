@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
@@ -86,6 +88,10 @@ def test_otp_tables_are_registered_with_exact_columns() -> None:
         "purpose",
         "telegram_link_id",
         "telegram_linked_at",
+        "customer_id",
+        "registration_offer_acceptance_id",
+        "customer_identity_revision",
+        "customer_document_id",
         "browser_binding_digest",
         "code_mac",
         "status",
@@ -145,6 +151,33 @@ def test_otp_primary_key_and_foreign_key_contracts() -> None:
     assert link_fk.target_fullname == "telegram_links.id"
     assert link_fk.ondelete == "RESTRICT"
 
+    context_foreign_keys = {
+        "customer_id": (
+            "fk_otp_challenges_customer_id_customers_id",
+            "customers.id",
+        ),
+        "registration_offer_acceptance_id": (
+            "fk_otp_challenges_registration_acceptance_offer_acceptances",
+            "offer_acceptances.id",
+        ),
+        "customer_document_id": (
+            "fk_otp_challenges_customer_document_id_customer_documents",
+            "customer_documents.id",
+        ),
+    }
+    for column_name, (constraint_name, target) in context_foreign_keys.items():
+        column = OtpChallenge.__table__.columns[column_name]
+        foreign_key = single_foreign_key(OtpChallenge, column_name)
+        assert isinstance(column.type, PostgresUUID)
+        assert column.nullable is True
+        assert foreign_key.constraint.name == constraint_name
+        assert foreign_key.target_fullname == target
+        assert foreign_key.ondelete == "RESTRICT"
+
+    identity_revision = OtpChallenge.__table__.columns["customer_identity_revision"]
+    assert isinstance(identity_revision.type, Integer)
+    assert identity_revision.nullable is True
+
     dispatch_fk = single_foreign_key(OtpDispatch, "challenge_id")
     assert dispatch_fk.constraint.name == (
         "fk_otp_dispatches_challenge_id_otp_challenges_id"
@@ -174,7 +207,20 @@ def test_otp_challenge_types_checks_and_indexes_match_contract() -> None:
     assert isinstance(columns["failed_attempts"].type, Integer)
 
     assert constraints == {
-        "ck_otp_challenges_purpose_login": "purpose = 'LOGIN'",
+        "ck_otp_challenges_purpose_allowed": ("purpose IN ('LOGIN', 'REGISTRATION')"),
+        "ck_otp_challenges_registration_context_matches_purpose": (
+            "(purpose = 'LOGIN' AND customer_id IS NULL "
+            "AND registration_offer_acceptance_id IS NULL "
+            "AND customer_identity_revision IS NULL "
+            "AND customer_document_id IS NULL) OR "
+            "(purpose = 'REGISTRATION' AND user_id IS NOT NULL "
+            "AND telegram_link_id IS NOT NULL "
+            "AND telegram_linked_at IS NOT NULL "
+            "AND customer_id IS NOT NULL "
+            "AND registration_offer_acceptance_id IS NOT NULL "
+            "AND customer_identity_revision > 0 "
+            "AND customer_document_id IS NOT NULL)"
+        ),
         "ck_otp_challenges_browser_binding_digest_hmac_sha256_hex": (
             "browser_binding_digest ~ '^[0-9a-f]{64}$'"
         ),
@@ -321,7 +367,8 @@ def test_otp_event_types_checks_and_indexes_match_contract() -> None:
         "ck_otp_challenge_events_action_allowed": (
             "action IN ('ISSUED', 'DISPATCH_PREPARED', 'DISPATCH_RESULT', "
             "'VERIFY_FAILED', 'CONSUMED', 'SUPERSEDED', 'EXPIRED', 'BURNED', "
-            "'INVALIDATED_BY_LINK_CHANGE')"
+            "'INVALIDATED_BY_LINK_CHANGE', "
+            "'INVALIDATED_BY_REGISTRATION_STATE_CHANGE')"
         ),
         "ck_otp_challenge_events_safe_code_format": (
             "safe_code IS NULL OR safe_code ~ '^[A-Z][A-Z0-9_]{0,63}$'"
@@ -394,3 +441,39 @@ def test_otp_timestamps_are_timezone_aware() -> None:
 def test_otp_models_have_no_forbidden_raw_or_generic_columns() -> None:
     for model in (OtpChallenge, OtpDispatch, OtpChallengeEvent, OtpDispatcherState):
         assert FORBIDDEN_OTP_COLUMNS.isdisjoint(model.__table__.columns)
+
+
+def test_otp_challenge_repr_redacts_all_registration_snapshot_authority() -> None:
+    challenge = OtpChallenge(
+        id=uuid4(),
+        user_id=uuid4(),
+        purpose="REGISTRATION",
+        telegram_link_id=uuid4(),
+        customer_id=uuid4(),
+        registration_offer_acceptance_id=uuid4(),
+        customer_identity_revision=7,
+        customer_document_id=uuid4(),
+        browser_binding_digest="a" * 64,
+        code_mac="b" * 64,
+        status="ACTIVE",
+        failed_attempts=0,
+    )
+
+    rendered = repr(challenge)
+
+    assert "purpose='REGISTRATION'" in rendered
+    assert "status='ACTIVE'" in rendered
+    assert "registration_context=<redacted>" in rendered
+    assert all(
+        str(value) not in rendered
+        for value in (
+            challenge.id,
+            challenge.user_id,
+            challenge.telegram_link_id,
+            challenge.customer_id,
+            challenge.registration_offer_acceptance_id,
+            challenge.customer_document_id,
+            challenge.browser_binding_digest,
+            challenge.code_mac,
+        )
+    )

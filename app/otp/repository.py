@@ -5,10 +5,11 @@ from typing import Final
 from uuid import UUID
 
 from sqlalchemy import delete as sqlalchemy_delete
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.customer_activation.contracts import RegistrationReadinessSnapshot
 from app.otp.contracts import (
     OtpChallengeEventAction,
     OtpChallengeStatus,
@@ -88,6 +89,15 @@ class OtpRepositoryStateError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True, repr=False)
+class OtpChallengeLockSet:
+    dispatches: tuple[OtpDispatch, ...]
+    challenges: tuple[OtpChallenge, ...]
+
+    def __repr__(self) -> str:
+        return "OtpChallengeLockSet(dispatches=<redacted>, challenges=<redacted>)"
+
+
 @dataclass(frozen=True)
 class OtpPurgeResult:
     dispatches_deleted: int
@@ -142,6 +152,21 @@ def load_outstanding_challenge_by_browser_for_update(
     return session.scalar(statement)
 
 
+def load_outstanding_challenge_by_browser(
+    session: Session,
+    *,
+    browser_binding_digest: OtpBrowserBindingDigest | str,
+    purpose: OtpPurpose | str,
+) -> OtpChallenge | None:
+    statement = select(OtpChallenge).where(
+        OtpChallenge.browser_binding_digest
+        == _browser_binding_value(browser_binding_digest),
+        OtpChallenge.purpose == _purpose_value(purpose),
+        OtpChallenge.status.in_(_OUTSTANDING_CHALLENGE_STATUSES),
+    )
+    return session.scalar(statement)
+
+
 def load_verification_candidate_by_browser_for_update(
     session: Session,
     *,
@@ -186,6 +211,82 @@ def load_outstanding_challenges_by_user_for_update(
     return list(session.scalars(statement).all())
 
 
+def lock_outstanding_challenge_set_by_user(
+    session: Session,
+    *,
+    user_id: UUID,
+    purpose: OtpPurpose,
+) -> OtpChallengeLockSet:
+    return _lock_outstanding_challenge_set(
+        session,
+        user_id=_validate_uuid(user_id, "OTP user id"),
+        browser_binding_digest=None,
+        purpose=_require_typed_purpose(purpose),
+    )
+
+
+def lock_outstanding_challenge_set_by_user_for_purposes(
+    session: Session,
+    *,
+    user_id: UUID,
+    purposes: tuple[OtpPurpose, ...],
+) -> OtpChallengeLockSet:
+    if not purposes or len(set(purposes)) != len(purposes):
+        raise ValueError("OTP lock purposes must be unique and non-empty")
+    typed_purposes = tuple(_require_typed_purpose(purpose) for purpose in purposes)
+    return _lock_outstanding_challenge_set_for_purposes(
+        session,
+        user_id=_validate_uuid(user_id, "OTP user id"),
+        browser_binding_digest=None,
+        purposes=typed_purposes,
+    )
+
+
+def lock_outstanding_challenge_set_by_user_and_browser(
+    session: Session,
+    *,
+    user_id: UUID,
+    browser_binding_digest: OtpBrowserBindingDigest,
+    purpose: OtpPurpose,
+) -> OtpChallengeLockSet:
+    if not isinstance(browser_binding_digest, OtpBrowserBindingDigest):
+        raise TypeError("OTP browser binding must be typed")
+    return _lock_outstanding_challenge_set(
+        session,
+        user_id=_validate_uuid(user_id, "OTP user id"),
+        browser_binding_digest=browser_binding_digest,
+        purpose=_require_typed_purpose(purpose),
+    )
+
+
+def lock_verification_candidate_set_by_browser(
+    session: Session,
+    *,
+    browser_binding_digest: OtpBrowserBindingDigest,
+    purpose: OtpPurpose,
+) -> OtpChallengeLockSet:
+    if not isinstance(browser_binding_digest, OtpBrowserBindingDigest):
+        raise TypeError("OTP browser binding must be typed")
+    return _lock_outstanding_challenge_set(
+        session,
+        user_id=None,
+        browser_binding_digest=browser_binding_digest,
+        purpose=_require_typed_purpose(purpose),
+    )
+
+
+def lock_registration_candidate_set_by_browser(
+    session: Session,
+    *,
+    browser_binding_digest: OtpBrowserBindingDigest,
+) -> OtpChallengeLockSet:
+    return lock_verification_candidate_set_by_browser(
+        session,
+        browser_binding_digest=browser_binding_digest,
+        purpose=OtpPurpose.REGISTRATION,
+    )
+
+
 def create_pending_challenge(
     session: Session,
     *,
@@ -195,8 +296,13 @@ def create_pending_challenge(
     user_id: UUID | None = None,
     telegram_link_id: UUID | None = None,
     telegram_linked_at: datetime | None = None,
+    customer_id: UUID | None = None,
+    registration_offer_acceptance_id: UUID | None = None,
+    customer_identity_revision: int | None = None,
+    customer_document_id: UUID | None = None,
 ) -> OtpChallenge:
     current_time = _as_utc(now)
+    purpose_value = _purpose_value(purpose)
     normalized_user_id, normalized_link_id, normalized_linked_at = (
         _validate_identity_snapshot(
             user_id=user_id,
@@ -204,11 +310,25 @@ def create_pending_challenge(
             telegram_linked_at=telegram_linked_at,
         )
     )
-    challenge = OtpChallenge(
+    registration_context = _validate_registration_context(
+        purpose=purpose_value,
         user_id=normalized_user_id,
-        purpose=_purpose_value(purpose),
         telegram_link_id=normalized_link_id,
         telegram_linked_at=normalized_linked_at,
+        customer_id=customer_id,
+        registration_offer_acceptance_id=registration_offer_acceptance_id,
+        customer_identity_revision=customer_identity_revision,
+        customer_document_id=customer_document_id,
+    )
+    challenge = OtpChallenge(
+        user_id=normalized_user_id,
+        purpose=purpose_value,
+        telegram_link_id=normalized_link_id,
+        telegram_linked_at=normalized_linked_at,
+        customer_id=registration_context[0],
+        registration_offer_acceptance_id=registration_context[1],
+        customer_identity_revision=registration_context[2],
+        customer_document_id=registration_context[3],
         browser_binding_digest=_browser_binding_value(browser_binding_digest),
         status=OtpChallengeStatus.PENDING_DISPATCH.value,
         failed_attempts=0,
@@ -224,6 +344,29 @@ def create_pending_challenge(
             raise OtpChallengeInsertConflict("OTP challenge insert conflict") from None
         raise
     return challenge
+
+
+def create_pending_registration_challenge(
+    session: Session,
+    *,
+    snapshot: RegistrationReadinessSnapshot,
+    now: datetime,
+) -> OtpChallenge:
+    if not isinstance(snapshot, RegistrationReadinessSnapshot):
+        raise TypeError("Registration readiness snapshot is invalid")
+    return create_pending_challenge(
+        session,
+        browser_binding_digest=snapshot.browser_binding_digest,
+        now=now,
+        purpose=OtpPurpose.REGISTRATION,
+        user_id=snapshot.user_id,
+        telegram_link_id=snapshot.telegram_link_id,
+        telegram_linked_at=snapshot.telegram_linked_at,
+        customer_id=snapshot.customer_id,
+        registration_offer_acceptance_id=(snapshot.registration_offer_acceptance_id),
+        customer_identity_revision=snapshot.customer_identity_revision.value,
+        customer_document_id=snapshot.customer_document_id,
+    )
 
 
 def activate_challenge(
@@ -349,6 +492,115 @@ def burn_challenge(
         status=OtpChallengeStatus.BURNED,
         now=now,
     )
+
+
+def supersede_and_cancel_same_purpose_challenges(
+    session: Session,
+    *,
+    locked: OtpChallengeLockSet,
+    purpose: OtpPurpose,
+    now: datetime,
+) -> int:
+    expected_purpose = _require_typed_purpose(purpose)
+    dispatch_by_challenge_id = {
+        dispatch.challenge_id: dispatch for dispatch in locked.dispatches
+    }
+    superseded_count = 0
+    for challenge in locked.challenges:
+        if challenge.purpose != expected_purpose.value:
+            raise OtpRepositoryStateError("OTP challenge purpose mismatch")
+        supersede_challenge(session, challenge=challenge, now=now)
+        append_challenge_event(
+            session,
+            challenge_id=challenge.id,
+            user_id=challenge.user_id,
+            action=OtpChallengeEventAction.SUPERSEDED,
+            occurred_at=now,
+        )
+        dispatch = dispatch_by_challenge_id.get(challenge.id)
+        if dispatch is not None and parse_dispatch_status(dispatch.status) in {
+            OtpDispatchStatus.PENDING,
+            OtpDispatchStatus.PREPARED,
+        }:
+            cancel_dispatch(session, dispatch=dispatch, now=now)
+        superseded_count += 1
+    return superseded_count
+
+
+def invalidate_registration_challenge_for_state_change(
+    session: Session,
+    *,
+    challenge: OtpChallenge,
+    dispatch: OtpDispatch | None,
+    now: datetime,
+) -> OtpChallenge:
+    _require_registration_challenge(challenge)
+    if dispatch is not None:
+        _require_dispatch_for_challenge(dispatch, challenge)
+    invalidated = invalidate_challenge(session, challenge=challenge, now=now)
+    if dispatch is not None and parse_dispatch_status(dispatch.status) in {
+        OtpDispatchStatus.PENDING,
+        OtpDispatchStatus.PREPARED,
+    }:
+        cancel_dispatch(session, dispatch=dispatch, now=now)
+    append_challenge_event(
+        session,
+        challenge_id=challenge.id,
+        user_id=challenge.user_id,
+        action=(OtpChallengeEventAction.INVALIDATED_BY_REGISTRATION_STATE_CHANGE),
+        occurred_at=now,
+    )
+    return invalidated
+
+
+def record_registration_failed_attempt(
+    session: Session,
+    *,
+    challenge: OtpChallenge,
+    now: datetime,
+    max_attempts: int,
+) -> OtpChallenge:
+    _require_registration_challenge(challenge)
+    updated = increment_challenge_failed_attempts(
+        session,
+        challenge=challenge,
+        now=now,
+        max_attempts=max_attempts,
+    )
+    append_challenge_event(
+        session,
+        challenge_id=challenge.id,
+        user_id=challenge.user_id,
+        action=OtpChallengeEventAction.VERIFY_FAILED,
+        occurred_at=now,
+    )
+    if parse_challenge_status(updated.status) is OtpChallengeStatus.BURNED:
+        append_challenge_event(
+            session,
+            challenge_id=challenge.id,
+            user_id=challenge.user_id,
+            action=OtpChallengeEventAction.BURNED,
+            occurred_at=now,
+        )
+    return updated
+
+
+def consume_registration_challenge(
+    session: Session,
+    *,
+    challenge: OtpChallenge,
+    now: datetime,
+) -> OtpChallenge:
+    _require_registration_challenge(challenge)
+    consumed = consume_challenge(session, challenge=challenge, now=now)
+    append_challenge_event(
+        session,
+        challenge_id=challenge.id,
+        user_id=challenge.user_id,
+        action=OtpChallengeEventAction.CONSUMED,
+        occurred_at=now,
+    )
+    return consumed
 
 
 def create_pending_dispatch(
@@ -717,6 +969,80 @@ def purge_terminal_otp_records(
     )
 
 
+def _lock_outstanding_challenge_set(
+    session: Session,
+    *,
+    user_id: UUID | None,
+    browser_binding_digest: OtpBrowserBindingDigest | None,
+    purpose: OtpPurpose,
+) -> OtpChallengeLockSet:
+    return _lock_outstanding_challenge_set_for_purposes(
+        session,
+        user_id=user_id,
+        browser_binding_digest=browser_binding_digest,
+        purposes=(purpose,),
+    )
+
+
+def _lock_outstanding_challenge_set_for_purposes(
+    session: Session,
+    *,
+    user_id: UUID | None,
+    browser_binding_digest: OtpBrowserBindingDigest | None,
+    purposes: tuple[OtpPurpose, ...],
+) -> OtpChallengeLockSet:
+    if user_id is None and browser_binding_digest is None:
+        raise ValueError("OTP lock authority requires a server selector")
+    selectors = []
+    if user_id is not None:
+        selectors.append(OtpChallenge.user_id == user_id)
+    if browser_binding_digest is not None:
+        selectors.append(
+            OtpChallenge.browser_binding_digest
+            == _browser_binding_value(browser_binding_digest)
+        )
+    selector = selectors[0] if len(selectors) == 1 else or_(*selectors)
+    challenge_ids = tuple(
+        session.scalars(
+            select(OtpChallenge.id)
+            .where(
+                selector,
+                OtpChallenge.purpose.in_(purpose.value for purpose in purposes),
+                OtpChallenge.status.in_(_OUTSTANDING_CHALLENGE_STATUSES),
+            )
+            .order_by(OtpChallenge.id.asc())
+        ).all()
+    )
+    if not challenge_ids:
+        return OtpChallengeLockSet(dispatches=(), challenges=())
+
+    dispatches = tuple(
+        session.scalars(
+            select(OtpDispatch)
+            .where(OtpDispatch.challenge_id.in_(challenge_ids))
+            .order_by(OtpDispatch.id.asc())
+            .with_for_update()
+        ).all()
+    )
+    challenges = tuple(
+        session.scalars(
+            select(OtpChallenge)
+            .where(
+                OtpChallenge.id.in_(challenge_ids),
+                selector,
+                OtpChallenge.purpose.in_(purpose.value for purpose in purposes),
+                OtpChallenge.status.in_(_OUTSTANDING_CHALLENGE_STATUSES),
+            )
+            .order_by(OtpChallenge.id.asc())
+            .with_for_update()
+        ).all()
+    )
+    return OtpChallengeLockSet(
+        dispatches=dispatches,
+        challenges=challenges,
+    )
+
+
 def _terminalize_outstanding_challenge(
     session: Session,
     *,
@@ -786,6 +1112,67 @@ def _validate_identity_snapshot(
         _validate_uuid(telegram_link_id, "OTP Telegram link id"),
         _as_utc(telegram_linked_at),
     )
+
+
+def _validate_registration_context(
+    *,
+    purpose: str,
+    user_id: UUID | None,
+    telegram_link_id: UUID | None,
+    telegram_linked_at: datetime | None,
+    customer_id: UUID | None,
+    registration_offer_acceptance_id: UUID | None,
+    customer_identity_revision: int | None,
+    customer_document_id: UUID | None,
+) -> tuple[UUID | None, UUID | None, int | None, UUID | None]:
+    context = (
+        customer_id,
+        registration_offer_acceptance_id,
+        customer_identity_revision,
+        customer_document_id,
+    )
+    if purpose == OtpPurpose.LOGIN.value:
+        if any(value is not None for value in context):
+            raise ValueError("LOGIN challenge cannot have registration context")
+        return None, None, None, None
+    if purpose != OtpPurpose.REGISTRATION.value:
+        raise ValueError("OTP challenge purpose is invalid")
+    if user_id is None or telegram_link_id is None or telegram_linked_at is None:
+        raise ValueError("REGISTRATION challenge requires a real identity snapshot")
+    if not isinstance(customer_identity_revision, int) or isinstance(
+        customer_identity_revision, bool
+    ):
+        raise ValueError("Registration identity revision must be positive")
+    if customer_identity_revision < 1:
+        raise ValueError("Registration identity revision must be positive")
+    return (
+        _validate_uuid(customer_id, "Registration customer id"),
+        _validate_uuid(
+            registration_offer_acceptance_id,
+            "Registration offer acceptance id",
+        ),
+        customer_identity_revision,
+        _validate_uuid(customer_document_id, "Registration customer document id"),
+    )
+
+
+def _require_typed_purpose(purpose: OtpPurpose) -> OtpPurpose:
+    if not isinstance(purpose, OtpPurpose):
+        raise TypeError("OTP purpose must be server-selected")
+    return purpose
+
+
+def _require_registration_challenge(challenge: OtpChallenge) -> None:
+    if challenge.purpose != OtpPurpose.REGISTRATION.value:
+        raise OtpRepositoryStateError("Registration OTP challenge is required")
+
+
+def _require_dispatch_for_challenge(
+    dispatch: OtpDispatch,
+    challenge: OtpChallenge,
+) -> None:
+    if dispatch.challenge_id != challenge.id:
+        raise OtpRepositoryStateError("OTP dispatch challenge mismatch")
 
 
 def _purpose_value(purpose: OtpPurpose | str) -> str:

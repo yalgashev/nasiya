@@ -474,7 +474,7 @@ def test_parallel_double_unlink_has_exactly_one_transition_and_event(
         setup_session.close()
 
     unlink_barrier = Barrier(2)
-    original_unlink = telegram_service.unlink_verified_private_chat
+    original_has_active_link = telegram_service.has_active_telegram_link
     sensitive_values = (
         raw_token,
         str(old_chat_id),
@@ -482,13 +482,13 @@ def test_parallel_double_unlink_has_exactly_one_transition_and_event(
         "+998900014101",
     )
 
-    def synchronized_unlink(
+    def synchronized_link_discovery(
         session: Session,
         current_user: User,
-        now: datetime,
-    ) -> TelegramLink | None:
+    ) -> bool:
+        result = original_has_active_link(session, current_user)
         unlink_barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
-        return original_unlink(session, current_user, now)
+        return result
 
     def worker(label: str) -> ParallelUnlinkOutcome:
         session = session_factory()
@@ -551,8 +551,8 @@ def test_parallel_double_unlink_has_exactly_one_transition_and_event(
 
     monkeypatch.setattr(
         telegram_service,
-        "unlink_verified_private_chat",
-        synchronized_unlink,
+        "has_active_telegram_link",
+        synchronized_link_discovery,
     )
 
     executor = ThreadPoolExecutor(max_workers=2)

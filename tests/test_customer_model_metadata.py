@@ -1,7 +1,14 @@
+from datetime import UTC, datetime
+from uuid import uuid4
+
 from sqlalchemy import CheckConstraint, DateTime, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 
-from app.customer.models import Customer
+from app.customer.models import (
+    CUSTOMER_ONBOARDING_STATUS_ACTIVE,
+    CUSTOMER_ONBOARDING_STATUS_DRAFT,
+    Customer,
+)
 from app.db import Base
 
 
@@ -9,7 +16,7 @@ def test_customers_table_is_registered_in_base_metadata() -> None:
     assert Base.metadata.tables["customers"] is Customer.__table__
 
 
-def test_customers_table_has_only_draft_foundation_columns() -> None:
+def test_customers_table_has_only_bounded_lifecycle_columns() -> None:
     columns = Customer.__table__.columns
 
     assert set(columns.keys()) == {
@@ -18,6 +25,7 @@ def test_customers_table_has_only_draft_foundation_columns() -> None:
         "onboarding_status",
         "created_at",
         "updated_at",
+        "activated_at",
     }
 
 
@@ -49,29 +57,52 @@ def test_customers_user_id_unique_constraint_is_named() -> None:
     assert unique_constraints["uq_customers_user_id"] == {"user_id"}
 
 
-def test_customers_onboarding_status_is_draft_only() -> None:
+def test_customers_onboarding_status_and_activation_checks_are_exact() -> None:
     check_constraints = {
         constraint.name: str(constraint.sqltext)
         for constraint in Customer.__table__.constraints
         if isinstance(constraint, CheckConstraint)
     }
 
-    assert (
-        check_constraints["ck_customers_onboarding_status_draft_only"]
-        == "onboarding_status = 'draft'"
-    )
+    assert check_constraints == {
+        "ck_customers_onboarding_status_allowed": (
+            "onboarding_status IN ('draft', 'active')"
+        ),
+        "ck_customers_activation_state_consistent": (
+            "(onboarding_status = 'draft' AND activated_at IS NULL) "
+            "OR (onboarding_status = 'active' AND activated_at IS NOT NULL)"
+        ),
+        "ck_customers_timestamp_order": (
+            "updated_at >= created_at "
+            "AND (activated_at IS NULL OR activated_at >= created_at) "
+            "AND (activated_at IS NULL OR updated_at >= activated_at)"
+        ),
+    }
+
+
+def test_customers_default_is_draft_and_status_vocabulary_is_exact() -> None:
+    status_column = Customer.__table__.columns["onboarding_status"]
+
+    assert status_column.default is not None
+    assert status_column.default.arg == CUSTOMER_ONBOARDING_STATUS_DRAFT
+    assert {
+        CUSTOMER_ONBOARDING_STATUS_DRAFT,
+        CUSTOMER_ONBOARDING_STATUS_ACTIVE,
+    } == {"draft", "active"}
 
 
 def test_customers_timestamps_are_timezone_aware() -> None:
     columns = Customer.__table__.columns
 
-    for column_name in ("created_at", "updated_at"):
+    for column_name in ("created_at", "updated_at", "activated_at"):
         assert isinstance(columns[column_name].type, DateTime)
         assert columns[column_name].type.timezone is True
-        assert columns[column_name].nullable is False
+    assert columns["created_at"].nullable is False
+    assert columns["updated_at"].nullable is False
+    assert columns["activated_at"].nullable is True
 
 
-def test_customers_table_has_no_pii_activation_or_shop_columns() -> None:
+def test_customers_table_has_no_pii_activation_detail_or_shop_columns() -> None:
     forbidden_column_markers = {
         "phone",
         "name",
@@ -85,6 +116,9 @@ def test_customers_table_has_no_pii_activation_or_shop_columns() -> None:
         "offer",
         "shop",
         "is_active",
+        "activation_method",
+        "activation_actor",
+        "otp",
     }
     customer_columns = {
         column_name.casefold() for column_name in Customer.__table__.columns.keys()
@@ -95,3 +129,18 @@ def test_customers_table_has_no_pii_activation_or_shop_columns() -> None:
         for column_name in customer_columns
         for marker in forbidden_column_markers
     )
+
+
+def test_customer_repr_redacts_identity_and_timestamp_values() -> None:
+    customer = Customer(
+        user_id=uuid4(),
+        onboarding_status=CUSTOMER_ONBOARDING_STATUS_ACTIVE,
+        activated_at=datetime.now(UTC),
+    )
+
+    rendered = repr(customer)
+
+    assert str(customer.user_id) not in rendered
+    assert customer.activated_at.isoformat() not in rendered
+    assert "onboarding_status='active'" in rendered
+    assert "activated_at=<set>" in rendered
