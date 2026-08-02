@@ -12,6 +12,9 @@ from sqlalchemy.orm import Session as DatabaseSession
 
 from app.auth.error_codes import ErrorCode, get_public_error_body
 from app.auth.models import User
+from app.customer.ports import CustomerLifecycleStatus
+from app.customer.repository import lock_existing_own_customer_for_update
+from app.customer_activation.contracts import decide_ordinary_telegram_unlink
 from app.otp.contracts import OtpPurpose
 from app.otp.issuance import invalidate_otp_challenges_for_link_change
 from app.otp.repository import (
@@ -19,6 +22,7 @@ from app.otp.repository import (
     lock_outstanding_challenge_set_by_user_for_purposes,
 )
 from app.settings import Settings
+from app.telegram import repository as telegram_repository
 from app.telegram.client_ip import ResolvedClientIp
 from app.telegram.events import append_telegram_link_event
 from app.telegram.inbound import VerifiedPrivateTelegramChatIdentity
@@ -27,13 +31,13 @@ from app.telegram.rate_limit import record_telegram_link_issuance_attempt
 from app.telegram.repository import (
     TelegramLinkTokenInsertConflict,
     delete_telegram_link_tokens_eligible_for_purge,
-    get_other_active_telegram_link_by_chat_identity_for_update,
     get_telegram_link_by_user_for_update,
     get_valid_telegram_link_token_for_consume_by_hash_for_update,
     has_active_telegram_link,
     invalidate_and_insert_telegram_link_token,
     invalidate_outstanding_telegram_link_tokens,
     link_verified_private_chat,
+    lock_telegram_link_change_set,
     relink_verified_private_chat,
     unlink_verified_private_chat,
 )
@@ -52,6 +56,21 @@ _EXPECTED_ACTIVE_CHAT_COLLISION_CONSTRAINTS: Final = frozenset(
 _EXPECTED_USER_LINK_COLLISION_CONSTRAINTS: Final = frozenset(
     {"uq_telegram_links_user_id"}
 )
+
+
+def get_other_active_telegram_link_by_chat_identity_for_update(
+    session: DatabaseSession,
+    current_user: User,
+    chat_identity: VerifiedPrivateTelegramChatIdentity,
+) -> TelegramLink | None:
+    """Compatibility seam retained for inherited fault-injection tests."""
+    return (
+        telegram_repository.get_other_active_telegram_link_by_chat_identity_for_update(
+            session,
+            current_user,
+            chat_identity,
+        )
+    )
 
 
 class TelegramLinkStatus(StrEnum):
@@ -290,17 +309,31 @@ def consume_start_token(
         token_user = _lock_active_user(session, user_id=token_user.id)
         if token_user is None:
             raise TelegramLinkTokenConsumeError()
-        existing_link = get_telegram_link_by_user_for_update(session, token_user)
-
-        if (
-            get_other_active_telegram_link_by_chat_identity_for_update(
-                session,
-                token_user,
-                chat_identity,
-            )
-            is not None
-        ):
+        locked_links = lock_telegram_link_change_set(
+            session,
+            token_user,
+            chat_identity,
+        )
+        existing_link = next(
+            (link for link in locked_links if link.user_id == token_user.id),
+            None,
+        )
+        conflicting_link = next(
+            (
+                link
+                for link in locked_links
+                if link.user_id != token_user.id
+                and link.telegram_chat_id == chat_identity.as_bigint()
+                and link.unlinked_at is None
+            ),
+            None,
+        )
+        if conflicting_link is not None:
             raise TelegramChatAlreadyLinkedError()
+        lock_existing_own_customer_for_update(
+            session,
+            actor_user_id=token_user.id,
+        )
 
         if _is_active_link(existing_link):
             if existing_link.telegram_chat_id == chat_identity.as_bigint():
@@ -381,14 +414,7 @@ def unlink(
     try:
         current_time = _as_utc(now)
         canonical_user = _get_canonical_current_user(session, current_user)
-        if not has_active_telegram_link(session, canonical_user):
-            raise TelegramLinkTokenIssueError(ErrorCode.TELEGRAM_NOT_LINKED)
         with session.begin_nested():
-            invalidated_token_count = invalidate_outstanding_telegram_link_tokens(
-                session,
-                canonical_user,
-                current_time,
-            )
             locked_otp = _lock_link_change_otp_state(
                 session,
                 user_id=canonical_user.id,
@@ -399,6 +425,31 @@ def unlink(
             )
             if canonical_user is None:
                 raise TelegramLinkTokenIssueError(ErrorCode.UNAUTHORIZED)
+            existing_link = get_telegram_link_by_user_for_update(
+                session,
+                canonical_user,
+            )
+            customer = lock_existing_own_customer_for_update(
+                session,
+                actor_user_id=canonical_user.id,
+            )
+            customer_status = (
+                CustomerLifecycleStatus(customer.onboarding_status)
+                if customer is not None
+                else None
+            )
+            unlink_decision = decide_ordinary_telegram_unlink(customer_status)
+            if not unlink_decision.mutation_allowed:
+                raise TelegramLinkTokenIssueError(
+                    ErrorCode.TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER
+                )
+            if not _is_active_link(existing_link):
+                raise TelegramLinkTokenIssueError(ErrorCode.TELEGRAM_NOT_LINKED)
+            invalidated_token_count = invalidate_outstanding_telegram_link_tokens(
+                session,
+                canonical_user,
+                current_time,
+            )
             link = unlink_verified_private_chat(session, canonical_user, current_time)
             if link is None:
                 raise TelegramLinkTokenIssueError(ErrorCode.TELEGRAM_NOT_LINKED)

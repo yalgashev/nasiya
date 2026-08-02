@@ -423,7 +423,7 @@ def test_corrected_lock_paths_are_static_forward_subsequences() -> None:
     ) < verify_source.index("_revalidate_current_login_target")
     assert "load_dispatch_by_challenge_for_update" not in invalidate_source
     assert consume_link_source.index("_lock_link_change_otp_state") < (
-        consume_link_source.index("get_telegram_link_by_user_for_update")
+        consume_link_source.index("lock_telegram_link_change_set")
     )
     assert unlink_source.index("_lock_link_change_otp_state") < unlink_source.index(
         "unlink_verified_private_chat"

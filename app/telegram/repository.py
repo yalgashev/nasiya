@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Final
 from uuid import UUID
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -83,6 +83,28 @@ def get_other_active_telegram_link_by_chat_identity_for_update(
         .with_for_update()
     )
     return session.scalar(statement)
+
+
+def lock_telegram_link_change_set(
+    session: Session,
+    current_user: User,
+    chat_identity: VerifiedPrivateTelegramChatIdentity,
+) -> tuple[TelegramLink, ...]:
+    statement = (
+        select(TelegramLink)
+        .where(
+            or_(
+                TelegramLink.user_id == current_user.id,
+                (
+                    (TelegramLink.telegram_chat_id == chat_identity.as_bigint())
+                    & TelegramLink.unlinked_at.is_(None)
+                ),
+            )
+        )
+        .order_by(TelegramLink.id.asc())
+        .with_for_update()
+    )
+    return tuple(session.scalars(statement).all())
 
 
 def link_verified_private_chat(
