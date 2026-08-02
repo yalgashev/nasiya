@@ -136,7 +136,7 @@ def test_otp_migration_database_constraints_indexes_and_forbidden_columns(
     test_database_engine: Engine,
 ) -> None:
     config = Config(str(PROJECT_ROOT / "alembic.ini"))
-    command.upgrade(config, M7_REVISION)
+    command.downgrade(config, M7_REVISION)
     inspector = inspect(test_database_engine)
 
     assert {

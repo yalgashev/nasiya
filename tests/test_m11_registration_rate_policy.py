@@ -11,11 +11,17 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.auth.error_codes import ErrorCode
 from app.auth.models import AuthRateLimit, User
-from app.auth.rate_limit import hash_rate_limit_key
+from app.auth.rate_limit import AuthRateLimiter, hash_rate_limit_key
+from app.customer_activation.contracts import (
+    CustomerActivationActor,
+    CustomerActivationBrowserContext,
+    RegistrationOtpCooldown,
+    RegistrationOtpPendingDelivery,
+)
 from app.customer_activation.rate_limit import (
     RegistrationIssuanceRateLimitPolicy,
     RegistrationRateLimitBucket,
@@ -23,8 +29,23 @@ from app.customer_activation.rate_limit import (
     RegistrationRateLimitScope,
     build_registration_rate_limit_buckets,
 )
+from app.customer_activation.service import (
+    AuthenticatedActivationContext,
+    request_new_registration_otp,
+    request_registration_otp,
+)
+from app.otp.contracts import OtpChallengeStatus, OtpPurpose
+from app.otp.models import OtpChallenge
+from app.otp.repository import create_pending_challenge
+from app.otp.web_presentation import OtpWebLanguage
 from app.settings import RegistrationOtpConfig, Settings
 from app.telegram.client_ip import ResolvedClientIp
+from tests.m11_seed import (
+    NOW,
+    REGISTRATION_DIGEST,
+    seed_registration_snapshot,
+    synthetic_identity_crypto_config,
+)
 
 _DATABASE_URL = "postgresql+psycopg://nasiya:pass@127.0.0.1:5432/nasiya"
 _RATE_KEY = "test-registration-rate-key-at-least-32-characters"
@@ -222,15 +243,97 @@ def test_registration_rate_check_and_record_exact_scopes_and_boundary(
                 select(AuthRateLimit).order_by(AuthRateLimit.scope)
             )
         )
+        still_blocked = RegistrationIssuanceRateLimitPolicy(
+            session=session,
+            settings=settings,
+        ).check_and_record(
+            current_user=current_user,
+            client_ip=ResolvedClientIp(_IP),
+            now=now + timedelta(seconds=899),
+        )
+        assert session.scalar(select(func.count()).select_from(User)) == 1
+
+    with Session(m2_test_database) as session, session.begin():
+        current_user = session.get(User, _USER_ID)
+        assert current_user is not None
+        reset = RegistrationIssuanceRateLimitPolicy(
+            session=session,
+            settings=settings,
+        ).check_and_record(
+            current_user=current_user,
+            client_ip=ResolvedClientIp(_IP),
+            now=now + timedelta(seconds=900),
+        )
+        reset_rows = tuple(
+            (row.scope, row.attempt_count, row.window_started_at)
+            for row in session.scalars(
+                select(AuthRateLimit).order_by(AuthRateLimit.scope)
+            )
+        )
 
     assert [outcome.allowed for outcome in outcomes] == [True, True, True, False]
     assert outcomes[-1].error_code is ErrorCode.RATE_LIMITED
     assert not preblocked.allowed
+    assert not still_blocked.allowed
+    assert reset.allowed
     assert before == after
     assert {scope for scope, _ in after} == {
         scope.value for scope in RegistrationRateLimitScope
     }
     assert {attempt_count for _, attempt_count in after} == {4}
+    assert {attempt_count for _, attempt_count, _ in reset_rows} == {1}
+    assert {started_at for _, _, started_at in reset_rows} == {
+        now + timedelta(seconds=900)
+    }
+
+
+@pytest.mark.integration
+def test_registration_ip_scope_allows_twenty_and_blocks_twenty_first(
+    m2_test_database: Engine,
+) -> None:
+    settings = _settings()
+    now = datetime(2026, 8, 2, 10, 15, tzinfo=UTC)
+    users = tuple(
+        User(
+            id=UUID(int=10_000 + offset),
+            phone=f"+99890200{offset:04d}",
+            password_hash="synthetic-password-hash",
+            is_active=True,
+        )
+        for offset in range(21)
+    )
+    with Session(m2_test_database) as session, session.begin():
+        session.add_all(users)
+        user_ids = tuple(user.id for user in users)
+
+    outcomes: list[bool] = []
+    for offset, user_id in enumerate(user_ids):
+        with Session(m2_test_database) as session, session.begin():
+            current_user = session.get(User, user_id)
+            assert current_user is not None
+            outcomes.append(
+                RegistrationIssuanceRateLimitPolicy(
+                    session=session,
+                    settings=settings,
+                )
+                .check_and_record(
+                    current_user=current_user,
+                    client_ip=ResolvedClientIp(_IP),
+                    now=now + timedelta(seconds=offset),
+                )
+                .allowed
+            )
+
+    with Session(m2_test_database) as session:
+        ip_row = session.scalar(
+            select(AuthRateLimit).where(
+                AuthRateLimit.scope == RegistrationRateLimitScope.IP.value
+            )
+        )
+
+    assert outcomes == ([True] * 20) + [False]
+    assert ip_row is not None
+    assert ip_row.attempt_count == 21
 
 
 @pytest.mark.integration
@@ -319,3 +422,102 @@ def test_registration_rate_persists_only_scoped_hmac_keys(
         )
         for bucket in expected_buckets
     }
+
+
+@pytest.mark.integration
+def test_registration_scopes_and_cooldown_are_isolated_from_login(
+    m2_test_database: Engine,
+) -> None:
+    settings = _settings()
+    factory = sessionmaker(bind=m2_test_database, expire_on_commit=False)
+    with Session(m2_test_database) as session, session.begin():
+        snapshot = seed_registration_snapshot(
+            session,
+            phone=_PHONE,
+        )
+        login_scope_keys = (
+            ("otp-login-issue:phone", f"otp-login-issue:phone:{_PHONE}"),
+            (
+                "otp-login-issue:user",
+                f"otp-login-issue:user:{snapshot.user_id}",
+            ),
+            ("otp-login-issue:ip", f"otp-login-issue:ip:{_IP}"),
+        )
+        login = create_pending_challenge(
+            session,
+            browser_binding_digest=REGISTRATION_DIGEST,
+            now=NOW,
+            purpose=OtpPurpose.LOGIN,
+            user_id=snapshot.user_id,
+            telegram_link_id=snapshot.telegram_link_id,
+            telegram_linked_at=snapshot.telegram_linked_at,
+        )
+        limiter = AuthRateLimiter(db=session, settings=settings)
+        for scope, raw_key in login_scope_keys:
+            assert limiter.record_failure(scope, raw_key, NOW, 6, 900).allowed
+        login_id = login.id
+
+    context = AuthenticatedActivationContext(
+        actor=CustomerActivationActor(snapshot.user_id),
+        browser=CustomerActivationBrowserContext(
+            current_session_id=_USER_ID,
+            browser_binding_digest=REGISTRATION_DIGEST,
+        ),
+        trusted_client_ip=ResolvedClientIp(_IP),
+        _canonical_account_phone=_PHONE,
+    )
+    initial = request_registration_otp(
+        factory,
+        context=context,
+        settings=settings,
+        identity_crypto_config=synthetic_identity_crypto_config(),
+        language=OtpWebLanguage.UZ_LATN,
+        now=NOW + timedelta(seconds=1),
+    )
+    before_boundary = request_new_registration_otp(
+        factory,
+        context=context,
+        settings=settings,
+        identity_crypto_config=synthetic_identity_crypto_config(),
+        language=OtpWebLanguage.UZ_LATN,
+        now=NOW + timedelta(seconds=60),
+    )
+    at_boundary = request_new_registration_otp(
+        factory,
+        context=context,
+        settings=settings,
+        identity_crypto_config=synthetic_identity_crypto_config(),
+        language=OtpWebLanguage.UZ_LATN,
+        now=NOW + timedelta(seconds=61),
+    )
+
+    with Session(m2_test_database) as session:
+        login_row = session.get(OtpChallenge, login_id)
+        login_rate_rows = tuple(
+            (row.scope, row.attempt_count, row.window_started_at)
+            for row in session.scalars(
+                select(AuthRateLimit)
+                .where(AuthRateLimit.scope.like("otp-login-%"))
+                .order_by(AuthRateLimit.scope)
+            )
+        )
+        registration_rows = tuple(
+            session.scalars(
+                select(OtpChallenge)
+                .where(OtpChallenge.purpose == OtpPurpose.REGISTRATION.value)
+                .order_by(OtpChallenge.created_at)
+            )
+        )
+
+    assert isinstance(initial, RegistrationOtpPendingDelivery)
+    assert isinstance(before_boundary, RegistrationOtpCooldown)
+    assert isinstance(at_boundary, RegistrationOtpPendingDelivery)
+    assert login_row is not None
+    assert login_row.status == OtpChallengeStatus.PENDING_DISPATCH.value
+    assert login_rate_rows == tuple(
+        (scope, 1, NOW) for scope, _ in sorted(login_scope_keys)
+    )
+    assert [row.status for row in registration_rows] == [
+        OtpChallengeStatus.SUPERSEDED.value,
+        OtpChallengeStatus.PENDING_DISPATCH.value,
+    ]

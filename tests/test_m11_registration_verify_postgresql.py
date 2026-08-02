@@ -493,6 +493,15 @@ def test_registration_candidate_resolves_by_browser_and_server_purpose_only(
 
 
 @pytest.mark.integration
+def test_verify_resolves_browser_registration_candidate_without_client_ids(
+    m2_test_database: Engine,
+) -> None:
+    test_registration_candidate_resolves_by_browser_and_server_purpose_only(
+        m2_test_database
+    )
+
+
+@pytest.mark.integration
 def test_missing_candidate_rechecks_server_owned_active_customer_as_completed(
     m2_test_database: Engine,
 ) -> None:
@@ -738,6 +747,117 @@ def test_live_snapshot_recheck_is_exact_and_runtime_lock_order_is_forward(
     assert positions == sorted(positions)
 
 
+def _mutate_registration_snapshot(
+    session: Session,
+    *,
+    snapshot: RegistrationReadinessSnapshot,
+    changed_part: str,
+) -> None:
+    if changed_part == "user":
+        user = session.get(User, snapshot.user_id)
+        assert user is not None
+        user.is_active = False
+        return
+    if changed_part == "link":
+        link = session.get(TelegramLink, snapshot.telegram_link_id)
+        assert link is not None
+        link.linked_at = link.linked_at + timedelta(seconds=1)
+        return
+    if changed_part == "customer_status":
+        customer = session.get(Customer, snapshot.customer_id)
+        assert customer is not None
+        customer.onboarding_status = "active"
+        customer.activated_at = _NOW
+        customer.updated_at = _NOW
+        return
+    if changed_part == "customer_binding":
+        replacement_user = User(
+            phone="+998900001498",
+            password_hash=None,
+            is_active=True,
+            created_at=SEED_NOW,
+            updated_at=SEED_NOW,
+        )
+        session.add(replacement_user)
+        session.flush()
+        customer = session.get(Customer, snapshot.customer_id)
+        assert customer is not None
+        customer.user_id = replacement_user.id
+        customer.updated_at = _NOW
+        return
+    if changed_part == "offer":
+        acceptance = session.get(
+            OfferAcceptance,
+            snapshot.registration_offer_acceptance_id,
+        )
+        assert acceptance is not None
+        version = session.get(OfferVersion, acceptance.offer_version_id)
+        assert version is not None
+        version.status = OfferStatus.APPROVED.value
+        version.current_by_user_id = None
+        version.current_at = None
+        return
+    if changed_part == "acceptance":
+        acceptance = session.get(
+            OfferAcceptance,
+            snapshot.registration_offer_acceptance_id,
+        )
+        assert acceptance is not None
+        acceptance.content_hash = "f" * 64
+        return
+    if changed_part == "identity":
+        identity = session.get(CustomerIdentity, snapshot.customer_id)
+        assert identity is not None
+        identity.revision += 1
+        identity.updated_at = _NOW
+        return
+    document = session.get(CustomerDocument, snapshot.customer_document_id)
+    assert document is not None
+    source_object = session.get(ObjectFile, document.object_file_id)
+    assert source_object is not None
+    if changed_part == "object":
+        source_object.status = ObjectFileStatus.DELETE_PENDING.value
+        source_object.updated_at = _NOW
+        return
+    if changed_part == "document":
+        replacement_object_id = uuid4()
+        replacement_object = ObjectFile(
+            id=replacement_object_id,
+            bucket=source_object.bucket,
+            object_key=f"v1/objects/{replacement_object_id.hex}.png",
+            content_type=source_object.content_type,
+            size_bytes=source_object.size_bytes,
+            checksum_sha256="e" * 64,
+            width_px=source_object.width_px,
+            height_px=source_object.height_px,
+            status=ObjectFileStatus.AVAILABLE.value,
+            created_by_user_id=snapshot.user_id,
+            created_at=_NOW,
+            updated_at=_NOW,
+            available_at=_NOW,
+        )
+        session.add(replacement_object)
+        session.flush()
+        replacement_id = uuid4()
+        document.status = "SUPERSEDED"
+        document.superseded_by_document_id = replacement_id
+        document.superseded_at = _NOW
+        session.flush()
+        session.add(
+            CustomerDocument(
+                id=replacement_id,
+                customer_id=snapshot.customer_id,
+                object_file_id=replacement_object.id,
+                submission_id=uuid4(),
+                status="CURRENT",
+                attached_by_user_id=snapshot.user_id,
+                attached_at=_NOW,
+            )
+        )
+        return
+    raise AssertionError("Unknown synthetic snapshot mutation")
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize(
     "changed_part,phone,expected",
@@ -753,8 +873,13 @@ def test_live_snapshot_recheck_is_exact_and_runtime_lock_order_is_forward(
             RegistrationSnapshotRecheckOutcome.LINK_CHANGED,
         ),
         (
-            "customer",
+            "customer_status",
             "+998900001355",
+            RegistrationSnapshotRecheckOutcome.REGISTRATION_STATE_CHANGED,
+        ),
+        (
+            "customer_binding",
+            "+998900001401",
             RegistrationSnapshotRecheckOutcome.REGISTRATION_STATE_CHANGED,
         ),
         (
@@ -763,8 +888,18 @@ def test_live_snapshot_recheck_is_exact_and_runtime_lock_order_is_forward(
             RegistrationSnapshotRecheckOutcome.REGISTRATION_STATE_CHANGED,
         ),
         (
+            "acceptance",
+            "+998900001402",
+            RegistrationSnapshotRecheckOutcome.REGISTRATION_STATE_CHANGED,
+        ),
+        (
             "identity",
             "+998900001357",
+            RegistrationSnapshotRecheckOutcome.REGISTRATION_STATE_CHANGED,
+        ),
+        (
+            "document",
+            "+998900001403",
             RegistrationSnapshotRecheckOutcome.REGISTRATION_STATE_CHANGED,
         ),
         (
@@ -787,38 +922,11 @@ def test_each_live_snapshot_gate_fails_closed_without_otp_mutation(
             snapshot=snapshot,
         )
         challenge_id = challenge.id
-        if changed_part == "user":
-            session.get(User, snapshot.user_id).is_active = False
-        elif changed_part == "link":
-            link = session.get(TelegramLink, snapshot.telegram_link_id)
-            assert link is not None
-            link.linked_at = link.linked_at + timedelta(seconds=1)
-        elif changed_part == "customer":
-            customer = session.get(Customer, snapshot.customer_id)
-            assert customer is not None
-            customer.onboarding_status = "active"
-            customer.activated_at = _NOW
-            customer.updated_at = _NOW
-        elif changed_part == "offer":
-            acceptance = session.get(
-                OfferAcceptance,
-                snapshot.registration_offer_acceptance_id,
-            )
-            assert acceptance is not None
-            acceptance.content_hash = "f" * 64
-        elif changed_part == "identity":
-            identity = session.get(CustomerIdentity, snapshot.customer_id)
-            assert identity is not None
-            identity.revision += 1
-            identity.updated_at = _NOW
-        elif changed_part == "object":
-            document = session.get(CustomerDocument, snapshot.customer_document_id)
-            assert document is not None
-            object_file = session.get(ObjectFile, document.object_file_id)
-            assert object_file is not None
-            object_file.status = ObjectFileStatus.DELETE_PENDING.value
-        else:
-            raise AssertionError("Unknown synthetic snapshot mutation")
+        _mutate_registration_snapshot(
+            session,
+            snapshot=snapshot,
+            changed_part=changed_part,
+        )
 
     with Session(m2_test_database) as session, session.begin():
         command = _verify_command(user_id=snapshot.user_id)
@@ -857,9 +965,44 @@ def test_each_live_snapshot_gate_fails_closed_without_otp_mutation(
             "+998900001360",
             "INVALIDATED_BY_REGISTRATION_STATE_CHANGE",
         ),
+        (
+            "user",
+            "+998900001404",
+            "INVALIDATED_BY_REGISTRATION_STATE_CHANGE",
+        ),
+        (
+            "customer_status",
+            "+998900001405",
+            "INVALIDATED_BY_REGISTRATION_STATE_CHANGE",
+        ),
+        (
+            "customer_binding",
+            "+998900001406",
+            "INVALIDATED_BY_REGISTRATION_STATE_CHANGE",
+        ),
+        (
+            "acceptance",
+            "+998900001407",
+            "INVALIDATED_BY_REGISTRATION_STATE_CHANGE",
+        ),
+        (
+            "identity",
+            "+998900001408",
+            "INVALIDATED_BY_REGISTRATION_STATE_CHANGE",
+        ),
+        (
+            "document",
+            "+998900001409",
+            "INVALIDATED_BY_REGISTRATION_STATE_CHANGE",
+        ),
+        (
+            "object",
+            "+998900001410",
+            "INVALIDATED_BY_REGISTRATION_STATE_CHANGE",
+        ),
     ],
 )
-def test_snapshot_mismatch_invalidates_once_without_attempt_or_activation(
+def test_snapshot_mismatch_invalidates_before_mac_without_attempt(
     m2_test_database: Engine,
     changed_part: str,
     phone: str,
@@ -872,17 +1015,11 @@ def test_snapshot_mismatch_invalidates_once_without_attempt_or_activation(
             snapshot=snapshot,
         )
         challenge_id = challenge.id
-        if changed_part == "link":
-            link = session.get(TelegramLink, snapshot.telegram_link_id)
-            assert link is not None
-            link.linked_at = link.linked_at + timedelta(seconds=1)
-        else:
-            acceptance = session.get(
-                OfferAcceptance,
-                snapshot.registration_offer_acceptance_id,
-            )
-            assert acceptance is not None
-            acceptance.content_hash = "f" * 64
+        _mutate_registration_snapshot(
+            session,
+            snapshot=snapshot,
+            changed_part=changed_part,
+        )
 
     command = _verify_command(user_id=snapshot.user_id)
     with Session(m2_test_database) as session, session.begin():
@@ -922,17 +1059,33 @@ def test_snapshot_mismatch_invalidates_once_without_attempt_or_activation(
     assert first == RegistrationOtpVerificationResult(
         RegistrationOtpVerificationOutcome.CUSTOMER_ACTIVATION_CHANGED
     )
-    assert second == RegistrationOtpVerificationResult(
-        RegistrationOtpVerificationOutcome.OTP_INVALID
+    expected_second = (
+        RegistrationOtpVerificationOutcome.ALREADY_ACTIVE
+        if changed_part == "customer_status"
+        else RegistrationOtpVerificationOutcome.OTP_INVALID
     )
+    assert second == RegistrationOtpVerificationResult(expected_second)
     assert stored_snapshot == (
         OtpChallengeStatus.INVALIDATED.value,
         0,
     )
     assert actions == (expected_action,)
-    assert customer_status == "draft"
+    assert customer_status == (
+        "active" if changed_part == "customer_status" else "draft"
+    )
     assert audit_count == session_count == 0
     assert challenge_count == 1
+    assert all(
+        marker not in repr(first)
+        for marker in (
+            changed_part,
+            str(snapshot.customer_id),
+            str(snapshot.registration_offer_acceptance_id),
+            str(snapshot.customer_document_id),
+            "revision",
+            "object_file",
+        )
+    )
 
 
 @pytest.mark.integration
@@ -1036,7 +1189,7 @@ def test_correct_code_is_ready_only_after_snapshot_recheck_and_has_no_mutation(
 
 
 @pytest.mark.integration
-def test_five_wrong_codes_increment_safely_then_burn_once(
+def test_wrong_registration_otp_increments_and_fifth_attempt_burns(
     m2_test_database: Engine,
 ) -> None:
     with Session(m2_test_database) as session, session.begin():
@@ -1204,7 +1357,7 @@ def test_parallel_wrong_and_correct_code_serialize_deterministically(
 
 
 @pytest.mark.integration
-def test_correct_code_atomically_consumes_activates_and_audits_exact_payload(
+def test_correct_registration_otp_atomically_activates_and_rotates(
     m2_test_database: Engine,
 ) -> None:
     assert Shop.__tablename__ == "shops"
@@ -1507,7 +1660,7 @@ def test_cookie_preparation_failure_before_commit_rolls_back_rotation_and_activa
 
 
 @pytest.mark.integration
-def test_sequential_activation_replay_is_already_active_exact_noop(
+def test_replay_and_already_active_are_zero_write_noop_success(
     m2_test_database: Engine,
 ) -> None:
     with Session(m2_test_database) as session, session.begin():
@@ -1592,7 +1745,7 @@ def test_sequential_activation_replay_is_already_active_exact_noop(
 
 
 @pytest.mark.integration
-def test_parallel_correct_verify_has_one_activation_and_idempotent_loser(
+def test_parallel_correct_verify_has_one_activation_winner(
     m2_test_database: Engine,
 ) -> None:
     with Session(m2_test_database) as session, session.begin():

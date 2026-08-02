@@ -1,7 +1,10 @@
+import logging
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.engine import Engine
 
+import tests.test_m11_registration_verify_postgresql as verify_tests
 from app.auth.sessions import RawSessionToken
 from app.auth.user_agent import MAX_USER_AGENT_LENGTH
 from app.customer_activation.contracts import (
@@ -71,10 +74,19 @@ def test_safe_device_metadata_is_bounded() -> None:
     assert metadata.user_agent == "x" * MAX_USER_AGENT_LENGTH
 
 
-def test_session_rotation_secrets_are_redacted_at_every_contract_layer() -> None:
+def test_session_rotation_secrets_are_redacted_at_every_contract_layer(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     rotation = build_rotation()
     prepared = PreparedCustomerActivation(_rotation=rotation)
     committed = mark_customer_activation_committed(prepared)
+    with caplog.at_level(logging.INFO):
+        logging.getLogger("tests.m11.activation-secrets").info(
+            "activation contracts %r %r %r",
+            rotation,
+            prepared,
+            committed,
+        )
 
     rendered = " ".join(
         (
@@ -83,6 +95,7 @@ def test_session_rotation_secrets_are_redacted_at_every_contract_layer() -> None
             repr(prepared),
             repr(committed),
             str(rotation._replacement_secrets.csrf_secret),
+            caplog.text,
         )
     )
     for secret in (OLD_TOKEN, NEW_TOKEN, OLD_CSRF, NEW_CSRF):
@@ -121,3 +134,19 @@ def test_rotation_rejects_same_session_identity() -> None:
                 csrf_secret=ActivationCsrfSecret(NEW_CSRF),
             ),
         )
+
+
+def test_parallel_correct_verify_has_one_activation_winner(
+    m2_test_database: Engine,
+) -> None:
+    verify_tests.test_parallel_correct_verify_has_one_activation_winner(
+        m2_test_database
+    )
+
+
+def test_replay_and_already_active_are_zero_write_noop_success(
+    m2_test_database: Engine,
+) -> None:
+    verify_tests.test_replay_and_already_active_are_zero_write_noop_success(
+        m2_test_database
+    )

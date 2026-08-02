@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 
+import app.customer_activation.router as activation_router_module
 from app.audit.contracts import (
     CUSTOMER_ACTIVATION_FROM_STATUS,
     CUSTOMER_ACTIVATION_METHOD,
@@ -176,7 +177,7 @@ def test_readiness_and_completed_presentations_are_pii_free() -> None:
     assert not hasattr(ready, "document_id")
 
 
-def test_uz_latn_and_ru_copy_contracts_have_exact_key_parity() -> None:
+def test_activation_copy_has_matching_uz_latn_and_ru_keys_with_fallback() -> None:
     uz_copy = get_customer_activation_copy(OtpWebLanguage.UZ_LATN)
     ru_copy = get_customer_activation_copy(OtpWebLanguage.RU)
 
@@ -271,7 +272,7 @@ def test_web_and_telegram_registration_copy_are_semantically_consistent() -> Non
         )
 
 
-def test_activation_template_has_no_xss_escape_hatch_or_inline_execution_sink() -> None:
+def test_activation_templates_autoescape_and_csp_forbid_inline_code() -> None:
     source = ACTIVATION_TEMPLATE.read_text(encoding="utf-8")
     normalized = source.casefold()
 
@@ -286,6 +287,37 @@ def test_activation_template_has_no_xss_escape_hatch_or_inline_execution_sink() 
         f" on{event}=" not in normalized
         for event in ("click", "submit", "load", "error", "input", "change")
     )
+
+
+def test_activation_prg_urls_flash_and_headers_are_no_store_and_secret_free() -> None:
+    forbidden_values = (
+        "004271",
+        "+998900001488",
+        "12345678901234",
+        "SYNTHETIC-DOCUMENT-488",
+        str(uuid4()),
+        "synthetic-session-cookie-secret",
+    )
+    responses = [
+        activation_router_module._activation_redirect(),
+        activation_router_module._activation_redirect(notice="otp-pending"),
+        *(
+            activation_router_module._activation_redirect(error_code=error_code)
+            for error_code in CUSTOMER_ACTIVATION_PUBLIC_ERROR_CODES
+        ),
+    ]
+
+    for response in responses:
+        rendered = " ".join(
+            (
+                response.headers["location"],
+                " ".join(f"{key}: {value}" for key, value in response.headers.items()),
+            )
+        )
+        assert response.status_code == 303
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["location"].startswith("/customer/activation")
+        assert all(value not in rendered for value in forbidden_values)
 
 
 def test_activation_csp_remains_exact_self_only_policy() -> None:

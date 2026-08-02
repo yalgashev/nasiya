@@ -9,6 +9,7 @@ from sqlalchemy.engine import Engine
 from app.auth.deps import validate_csrf
 from app.auth.router import router as auth_router
 from app.customer.router import router as customer_router
+from app.customer_activation.router import validate_activation_csrf
 from app.customer_identity.router import upload_document
 from app.main import create_app
 
@@ -22,6 +23,10 @@ EXPECTED_ALL_CUSTOMER_ROUTES = {
     **EXPECTED_CUSTOMER_ROUTES,
     "/customer/identity": {"GET", "POST"},
     "/customer/identity/document": {"GET", "POST"},
+    "/customer/activation": {"GET"},
+    "/customer/activation/otp/request": {"POST"},
+    "/customer/activation/otp/verify": {"POST"},
+    "/customer/activation/otp/new-code": {"POST"},
 }
 
 
@@ -113,7 +118,12 @@ def test_customer_routes_forbid_external_ids_and_scope_drift() -> None:
     all_route_paths = {route.path_format for route in iter_api_routes(application)}
     assert "/register" not in all_route_paths
     assert "/auth/register" not in all_route_paths
-    assert not any("activation" in path for path in all_route_paths)
+    assert {path for path in all_route_paths if "activation" in path} == {
+        "/customer/activation",
+        "/customer/activation/otp/request",
+        "/customer/activation/otp/verify",
+        "/customer/activation/otp/new-code",
+    }
 
     get_customer_routes = {
         route.path_format for route in customer_routes if route.methods == {"GET"}
@@ -123,6 +133,7 @@ def test_customer_routes_forbid_external_ids_and_scope_drift() -> None:
         "/customer/profile",
         "/customer/identity",
         "/customer/identity/document",
+        "/customer/activation",
     }
     assert "/customer/onboarding/start" not in get_customer_routes
 
@@ -133,12 +144,15 @@ def test_customer_routes_forbid_external_ids_and_scope_drift() -> None:
         "/customer/onboarding/start",
         "/customer/identity",
         "/customer/identity/document",
+        "/customer/activation/otp/request",
+        "/customer/activation/otp/verify",
+        "/customer/activation/otp/new-code",
     }
     for route in customer_unsafe_routes:
         if route.endpoint is upload_document:
             continue
         assert any(
-            dependency.call is validate_csrf
+            dependency.call in {validate_csrf, validate_activation_csrf}
             for dependency in route.dependant.dependencies
         )
 

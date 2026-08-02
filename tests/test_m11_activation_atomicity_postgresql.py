@@ -1,18 +1,20 @@
 from datetime import UTC, datetime, timedelta
 from inspect import getsource
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 import app.auth.sessions as auth_sessions_module
 import app.customer_activation.repository as activation_repository_module
+import app.customer_activation.service as activation_service_module
 import app.otp.issuance as otp_issuance_module
 import app.otp.repository as otp_repository_module
 import app.otp.verification as otp_verification_module
 import app.telegram.service as telegram_service_module
+from app.audit.models import AuditLog
 from app.auth.models import Session as AuthSession
 from app.auth.models import User
 from app.auth.sessions import RawSessionToken, create_authenticated_session
@@ -32,14 +34,37 @@ from app.customer.repository import (
     lock_existing_own_customer_for_update,
     transition_existing_own_customer_draft_to_active,
 )
-from app.customer_activation.contracts import mark_customer_activation_committed
+from app.customer_activation.contracts import (
+    CustomerActivationActor,
+    CustomerActivationBrowserContext,
+    PreparedCustomerActivation,
+    RegistrationOtpVerificationOutcome,
+    RegistrationOtpVerificationResult,
+    VerifyRegistrationOtp,
+    mark_customer_activation_committed,
+)
 from app.customer_activation.repository import (
     CurrentSessionRotationConflict,
     SqlAlchemyCurrentSessionRotation,
 )
+from app.customer_activation.service import verify_and_activate_registration_customer
 from app.db import create_database_session_factory
+from app.otp.code import OtpCode
+from app.otp.contracts import OtpChallengeStatus, OtpPurpose
+from app.otp.crypto import compute_otp_code_mac
+from app.otp.models import OtpChallenge, OtpChallengeEvent
+from app.otp.repository import (
+    activate_challenge,
+    create_pending_dispatch,
+    create_pending_registration_challenge,
+)
 from app.settings import Settings
 from app.shop.models import Shop
+from tests.m11_seed import (
+    REGISTRATION_DIGEST,
+    seed_registration_snapshot,
+    synthetic_identity_crypto_config,
+)
 
 NOW = datetime(2026, 8, 2, 11, 0, tzinfo=UTC)
 
@@ -63,8 +88,97 @@ def add_user_and_customer(
     return user, customer
 
 
+def _activation_settings(engine: Engine) -> Settings:
+    return Settings(
+        _env_file=None,
+        app_environment="testing",
+        debug=False,
+        database_url=engine.url.render_as_string(hide_password=False),
+        session_cookie_secure=False,
+        rate_limit_hmac_key="m11-atomicity-rate-key-at-least-32-characters",
+        otp_hmac_key="m11-atomicity-otp-key-at-least-32-characters",
+    )
+
+
+def _seed_activation_attempt(
+    session: Session,
+    *,
+    settings: Settings,
+    phone: str,
+) -> tuple[VerifyRegistrationOtp, UUID, UUID, UUID]:
+    snapshot = seed_registration_snapshot(session, phone=phone)
+    challenge = create_pending_registration_challenge(
+        session,
+        snapshot=snapshot,
+        now=NOW,
+    )
+    create_pending_dispatch(
+        session,
+        challenge_id=challenge.id,
+        locale="uz-Latn",
+        now=NOW,
+    )
+    activate_challenge(
+        session,
+        challenge=challenge,
+        code_mac=compute_otp_code_mac(
+            otp_hmac_key=settings.require_otp_hmac_key(),
+            challenge_id=challenge.id,
+            user_id=snapshot.user_id,
+            purpose=OtpPurpose.REGISTRATION,
+            code=OtpCode("004271"),
+        ),
+        activated_at=NOW,
+        expires_at=NOW + timedelta(hours=3),
+    )
+    current = create_authenticated_session(
+        session,
+        snapshot.user_id,
+        "synthetic-atomicity-browser",
+        NOW,
+        settings=settings,
+    )
+    session.flush()
+    command = VerifyRegistrationOtp(
+        actor=CustomerActivationActor(snapshot.user_id),
+        browser=CustomerActivationBrowserContext(
+            current_session_id=current.session.id,
+            browser_binding_digest=REGISTRATION_DIGEST,
+        ),
+        candidate_code="004271",
+        now=NOW + timedelta(hours=2),
+    )
+    return command, challenge.id, snapshot.customer_id, current.session.id
+
+
+def _activation_persistence_state(
+    session: Session,
+    *,
+    challenge_id: UUID,
+    customer_id: UUID,
+    current_session_id: UUID,
+) -> tuple[object, ...]:
+    challenge = session.get(OtpChallenge, challenge_id)
+    customer = session.get(Customer, customer_id)
+    current = session.get(AuthSession, current_session_id)
+    assert challenge is not None
+    assert customer is not None
+    assert current is not None
+    return (
+        challenge.status,
+        challenge.consumed_at,
+        challenge.failed_attempts,
+        customer.onboarding_status,
+        customer.activated_at,
+        session.scalar(select(func.count()).select_from(OtpChallengeEvent)),
+        session.scalar(select(func.count()).select_from(AuditLog)),
+        session.scalar(select(func.count()).select_from(AuthSession)),
+        current.revoked_at,
+    )
+
+
 @pytest.mark.integration
-def test_rotation_is_current_only_preserves_safe_context_and_is_commit_composable(
+def test_rotation_is_current_only_and_preserves_shop_and_other_sessions(
     m2_test_database: Engine,
 ) -> None:
     session_factory = create_database_session_factory(m2_test_database)
@@ -215,6 +329,304 @@ def test_rotation_expected_token_conflict_keeps_outer_session_usable(
         stored = session.get(AuthSession, current_id)
         assert stored is not None and stored.revoked_at is None
         assert session.scalar(select(func.count()).select_from(AuthSession)) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("failure_stage", "phone"),
+    (
+        ("consume_flush", "+998900001411"),
+        ("otp_event", "+998900001412"),
+        ("customer_transition", "+998900001413"),
+        ("central_audit", "+998900001414"),
+        ("session_replacement", "+998900001415"),
+    ),
+)
+def test_activation_write_fault_matrix_rolls_back_every_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    m2_test_database: Engine,
+    failure_stage: str,
+    phone: str,
+) -> None:
+    settings = _activation_settings(m2_test_database)
+    with Session(m2_test_database) as session, session.begin():
+        command, challenge_id, customer_id, current_session_id = (
+            _seed_activation_attempt(session, settings=settings, phone=phone)
+        )
+
+    def fail_after_consume(
+        session: Session,
+        **kwargs: object,
+    ) -> object:
+        original_consume(session, **kwargs)
+        session.flush()
+        raise RuntimeError("synthetic activation boundary failure")
+
+    def fail_after_transition(
+        session: Session,
+        **kwargs: object,
+    ) -> object:
+        original_transition(session, **kwargs)
+        session.flush()
+        raise RuntimeError("synthetic activation boundary failure")
+
+    def fail_write(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("synthetic activation boundary failure")
+
+    original_consume = activation_service_module.consume_registration_challenge
+    original_transition = (
+        activation_service_module.transition_existing_own_customer_draft_to_active
+    )
+    if failure_stage == "consume_flush":
+        monkeypatch.setattr(
+            activation_service_module,
+            "consume_registration_challenge",
+            fail_after_consume,
+        )
+    elif failure_stage == "otp_event":
+        monkeypatch.setattr(
+            otp_repository_module,
+            "append_challenge_event",
+            fail_write,
+        )
+    elif failure_stage == "customer_transition":
+        monkeypatch.setattr(
+            activation_service_module,
+            "transition_existing_own_customer_draft_to_active",
+            fail_after_transition,
+        )
+    elif failure_stage == "central_audit":
+        monkeypatch.setattr(
+            activation_service_module,
+            "append_audit_event",
+            fail_write,
+        )
+    else:
+        monkeypatch.setattr(
+            SqlAlchemyCurrentSessionRotation,
+            "replace_current_authenticated_session",
+            fail_write,
+        )
+
+    writer = Session(m2_test_database)
+    try:
+        with pytest.raises(
+            RuntimeError,
+            match="synthetic activation boundary failure",
+        ):
+            with writer.begin():
+                verify_and_activate_registration_customer(
+                    writer,
+                    command=command,
+                    settings=settings,
+                    identity_crypto_config=synthetic_identity_crypto_config(),
+                )
+        assert writer.scalar(select(1)) == 1
+    finally:
+        writer.close()
+
+    with Session(m2_test_database) as session:
+        state = _activation_persistence_state(
+            session,
+            challenge_id=challenge_id,
+            customer_id=customer_id,
+            current_session_id=current_session_id,
+        )
+
+    assert state == (
+        OtpChallengeStatus.ACTIVE.value,
+        None,
+        0,
+        CUSTOMER_ONBOARDING_STATUS_DRAFT,
+        None,
+        0,
+        0,
+        1,
+        None,
+    )
+
+
+def test_central_audit_failure_rolls_back_consume_activation_and_rotation(
+    monkeypatch: pytest.MonkeyPatch,
+    m2_test_database: Engine,
+) -> None:
+    with monkeypatch.context() as scoped:
+        test_activation_write_fault_matrix_rolls_back_every_boundary(
+            scoped,
+            m2_test_database,
+            "central_audit",
+            "+998900001426",
+        )
+
+
+def test_otp_event_failure_rolls_back_activation_audit_and_rotation(
+    monkeypatch: pytest.MonkeyPatch,
+    m2_test_database: Engine,
+) -> None:
+    with monkeypatch.context() as scoped:
+        test_activation_write_fault_matrix_rolls_back_every_boundary(
+            scoped,
+            m2_test_database,
+            "otp_event",
+            "+998900001427",
+        )
+
+
+@pytest.mark.parametrize("failure_boundary", ("session", "commit"))
+def test_session_or_cookie_failure_rolls_back_and_releases_no_cookie(
+    failure_boundary: str,
+    monkeypatch: pytest.MonkeyPatch,
+    m2_test_database: Engine,
+) -> None:
+    if failure_boundary == "session":
+        with monkeypatch.context() as scoped:
+            test_activation_write_fault_matrix_rolls_back_every_boundary(
+                scoped,
+                m2_test_database,
+                "session_replacement",
+                "+998900001428",
+            )
+    else:
+        test_transaction_commit_failure_keeps_activation_uncommitted_and_cookie_sealed(
+            m2_test_database
+        )
+
+
+@pytest.mark.integration
+def test_transaction_commit_failure_keeps_activation_uncommitted_and_cookie_sealed(
+    m2_test_database: Engine,
+) -> None:
+    settings = _activation_settings(m2_test_database)
+    with Session(m2_test_database) as session, session.begin():
+        command, challenge_id, customer_id, current_session_id = (
+            _seed_activation_attempt(
+                session,
+                settings=settings,
+                phone="+998900001416",
+            )
+        )
+
+    writer = Session(m2_test_database)
+    prepared: PreparedCustomerActivation | None = None
+
+    def fail_commit(_session: Session) -> None:
+        if _session.in_nested_transaction():
+            return
+        raise RuntimeError("synthetic activation commit failure")
+
+    event.listen(writer, "before_commit", fail_commit)
+    try:
+        with pytest.raises(RuntimeError, match="synthetic activation commit failure"):
+            with writer.begin():
+                result = verify_and_activate_registration_customer(
+                    writer,
+                    command=command,
+                    settings=settings,
+                    identity_crypto_config=synthetic_identity_crypto_config(),
+                )
+                assert isinstance(result, PreparedCustomerActivation)
+                prepared = result
+        assert writer.scalar(select(1)) == 1
+    finally:
+        event.remove(writer, "before_commit", fail_commit)
+        writer.close()
+
+    assert prepared is not None
+    assert not hasattr(prepared, "release_cookie_token")
+    with Session(m2_test_database) as session:
+        state = _activation_persistence_state(
+            session,
+            challenge_id=challenge_id,
+            customer_id=customer_id,
+            current_session_id=current_session_id,
+        )
+    assert state == (
+        OtpChallengeStatus.ACTIVE.value,
+        None,
+        0,
+        CUSTOMER_ONBOARDING_STATUS_DRAFT,
+        None,
+        0,
+        0,
+        1,
+        None,
+    )
+
+
+@pytest.mark.integration
+def test_post_commit_response_failure_replay_is_zero_write_already_active(
+    m2_test_database: Engine,
+) -> None:
+    settings = _activation_settings(m2_test_database)
+    with Session(m2_test_database) as session, session.begin():
+        command, challenge_id, customer_id, current_session_id = (
+            _seed_activation_attempt(
+                session,
+                settings=settings,
+                phone="+998900001417",
+            )
+        )
+
+    with Session(m2_test_database) as session, session.begin():
+        prepared = verify_and_activate_registration_customer(
+            session,
+            command=command,
+            settings=settings,
+            identity_crypto_config=synthetic_identity_crypto_config(),
+        )
+        assert isinstance(prepared, PreparedCustomerActivation)
+    committed = mark_customer_activation_committed(prepared)
+
+    with pytest.raises(RuntimeError, match="synthetic response preparation failure"):
+        _ = committed
+        raise RuntimeError("synthetic response preparation failure")
+
+    with Session(m2_test_database) as session:
+        replacement_session_id = session.scalar(
+            select(AuthSession.id).where(
+                AuthSession.id != current_session_id,
+                AuthSession.revoked_at.is_(None),
+            )
+        )
+    assert replacement_session_id is not None
+    replay_command = VerifyRegistrationOtp(
+        actor=command.actor,
+        browser=CustomerActivationBrowserContext(
+            current_session_id=replacement_session_id,
+            browser_binding_digest=REGISTRATION_DIGEST,
+        ),
+        candidate_code="004271",
+        now=command.now + timedelta(minutes=1),
+    )
+    with Session(m2_test_database) as session, session.begin():
+        replay = verify_and_activate_registration_customer(
+            session,
+            command=replay_command,
+            settings=settings,
+            identity_crypto_config=synthetic_identity_crypto_config(),
+        )
+    assert replay == RegistrationOtpVerificationResult(
+        RegistrationOtpVerificationOutcome.ALREADY_ACTIVE
+    )
+
+    with Session(m2_test_database) as session:
+        state = _activation_persistence_state(
+            session,
+            challenge_id=challenge_id,
+            customer_id=customer_id,
+            current_session_id=current_session_id,
+        )
+    assert state == (
+        OtpChallengeStatus.CONSUMED.value,
+        command.now,
+        0,
+        CUSTOMER_ONBOARDING_STATUS_ACTIVE,
+        command.now,
+        1,
+        1,
+        2,
+        command.now,
+    )
 
 
 @pytest.mark.integration

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -31,10 +33,19 @@ from app.customer_activation.contracts import (
     RegistrationOtpVerificationResult,
 )
 from app.main import create_app
+from app.otp.code import OtpCode
+from app.otp.contracts import OtpPurpose
 from app.otp.models import OtpChallenge, OtpDispatch
+from app.otp.provider import (
+    OtpDeliverySendStatus,
+    TelegramOtpProvider,
+    TelegramOtpTarget,
+)
 from app.settings import Settings
 from app.shop.enums import ShopRole
 from app.shop.models import Shop, ShopStaff
+from app.telegram.bot_api import TelegramApiError, TelegramApiErrorCode
+from app.telegram.inbound import VerifiedPrivateTelegramChatIdentity
 
 _NOW = datetime(2026, 8, 2, 15, 0, tzinfo=UTC)
 _OTP_KEY = SecretStr("synthetic-activation-csrf-otp-key-at-least-32-characters")
@@ -444,7 +455,7 @@ def test_anonymous_activation_attempts_never_reach_domain_service(
 
 
 @pytest.mark.integration
-def test_activation_get_does_not_echo_untrusted_forbidden_value_canaries(
+def test_registration_forbidden_values_never_reach_db_audit_log_error_html_url_or_repr(
     caplog: pytest.LogCaptureFixture,
     m2_test_database: Engine,
 ) -> None:
@@ -482,11 +493,22 @@ def test_activation_get_does_not_echo_untrusted_forbidden_value_canaries(
         )
 
     application.state.database_engine.dispose()
+    with Session(m2_test_database) as session:
+        persistence_repr = repr(
+            (
+                tuple(session.scalars(select(User))),
+                tuple(session.scalars(select(AuthRateLimit))),
+                tuple(session.scalars(select(OtpChallenge))),
+                tuple(session.scalars(select(OtpDispatch))),
+                tuple(session.scalars(select(AuditLog))),
+            )
+        )
     rendered = " ".join(
         (
             response.text,
             " ".join(f"{key}: {value}" for key, value in response.headers.items()),
             " ".join(record.getMessage() for record in caplog.records),
+            persistence_repr,
         )
     )
 
@@ -499,3 +521,54 @@ def test_activation_get_does_not_echo_untrusted_forbidden_value_canaries(
     )
     assert all(value not in rendered for value in forbidden_values)
     assert "<script" not in response.text.casefold()
+
+
+class _FailingTelegramTransport:
+    async def send_message(
+        self,
+        *,
+        chat_id: VerifiedPrivateTelegramChatIdentity,
+        text: str,
+        timeout_seconds: int,
+    ) -> None:
+        _ = (chat_id, text, timeout_seconds)
+        raise TelegramApiError(TelegramApiErrorCode.TRANSIENT_NETWORK)
+
+
+def test_web_never_calls_telegram_and_dispatcher_never_leaks_transport_values(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    customer_activation_source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(Path("app/customer_activation").glob("*.py"))
+    )
+    for forbidden_transport_call in (
+        "TelegramOtpProvider",
+        "TelegramBotApiClient",
+        ".send_otp(",
+        ".send_message(",
+    ):
+        assert forbidden_transport_call not in customer_activation_source
+
+    raw_code = "271828"
+    raw_chat = "99890001489"
+    provider = TelegramOtpProvider(
+        bot_api_client=_FailingTelegramTransport(),  # type: ignore[arg-type]
+        send_timeout_seconds=5,
+    )
+    result = asyncio.run(
+        provider.send_otp(
+            target=TelegramOtpTarget(
+                chat_identity=VerifiedPrivateTelegramChatIdentity(int(raw_chat))
+            ),
+            code=OtpCode(raw_code),
+            locale="uz-Latn",
+            ttl_seconds=180,
+            purpose=OtpPurpose.REGISTRATION,
+        )
+    )
+    rendered = " ".join((repr(result), caplog.text))
+
+    assert result.status is OtpDeliverySendStatus.UNKNOWN
+    assert raw_code not in rendered
+    assert raw_chat not in rendered

@@ -1,6 +1,8 @@
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import UTC, datetime
+from inspect import getsource
 from pathlib import Path
 from threading import Barrier
 from uuid import uuid4
@@ -13,6 +15,8 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+import app.customer_activation.service as activation_service_module
+import app.otp.repository as otp_repository_module
 from alembic import command
 from app.audit.models import AuditLog
 from app.auth.models import Session as AuthSession
@@ -50,6 +54,40 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 M10_REVISION = "b0c1d2e3f4a5"
 M11_REVISION = "c1d2e3f4a5b6"
 NOW = datetime(2026, 8, 2, 10, 0, tzinfo=UTC)
+GLOBAL_REGISTRATION_LOCK_ORDER = (
+    "OtpDispatch",
+    "OtpChallenge",
+    "User",
+    "TelegramLink",
+    "Customer",
+    "OfferVersion",
+    "OfferAcceptance",
+    "CustomerIdentity",
+    "ObjectFile",
+    "CustomerDocument",
+    "AuthSession",
+)
+
+
+def test_m10_baseline_and_protected_source_pins_are_exact() -> None:
+    tt_bytes = (PROJECT_ROOT / "docs/tt_nasiya_web_v1.md").read_bytes()
+    git_blob = f"blob {len(tt_bytes)}\0".encode() + tt_bytes
+    scope_source = (PROJECT_ROOT / "docs/m11_scope_contract.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert hashlib.sha1(git_blob).hexdigest() == (
+        "d77c0f0f330a1330155a4aee3c46b05d97cf5561"
+    )
+    for pinned_evidence in (
+        "b79250858a3f6a63908a288f891d5dad1126dd48",
+        "30705134413",
+        "2735 passed",
+        "8/8",
+        "48de725166daaa07e2a0998bca1e907caedc6050cd3ad8740b8a34d3d79ce8e0",
+        "08668a326d682a175cc62366b1ca7092963f02457c3cb6f876cfab08f812a526",
+    ):
+        assert pinned_evidence in scope_source
 
 
 def _config() -> Config:
@@ -117,6 +155,81 @@ def test_m11_migration_is_single_linear_zero_table_child() -> None:
         "op.create_index",
     ):
         assert forbidden not in source
+
+
+def test_global_registration_lock_order_is_static_and_workaround_free() -> None:
+    otp_lock_source = getsource(
+        otp_repository_module._lock_outstanding_challenge_set_for_purposes
+    )
+    issue_source = getsource(activation_service_module._issue_registration_otp)
+    verify_source = getsource(
+        activation_service_module.recheck_registration_activation_snapshot
+    )
+    activation_source = getsource(
+        activation_service_module.verify_and_activate_registration_customer
+    )
+    document_source = getsource(
+        SqlAlchemyCustomerDocumentReadiness.lock_current_available_document
+    )
+    inspected = "\n".join(
+        (
+            otp_lock_source,
+            issue_source,
+            verify_source,
+            activation_source,
+            document_source,
+        )
+    )
+
+    assert GLOBAL_REGISTRATION_LOCK_ORDER == (
+        "OtpDispatch",
+        "OtpChallenge",
+        "User",
+        "TelegramLink",
+        "Customer",
+        "OfferVersion",
+        "OfferAcceptance",
+        "CustomerIdentity",
+        "ObjectFile",
+        "CustomerDocument",
+        "AuthSession",
+    )
+    assert otp_lock_source.index("select(OtpDispatch)") < otp_lock_source.index(
+        "select(OtpChallenge)"
+    )
+    assert (
+        issue_source.index("lock_outstanding_challenge_set_by_user")
+        < (issue_source.index("session.get(User"))
+        < issue_source.index("get_telegram_link_by_user_for_update")
+        < (issue_source.index("lock_existing_own_customer_for_update"))
+        < issue_source.index("select_current_registration_acceptance")
+        < (issue_source.index("SqlAlchemyCustomerIdentityReadiness"))
+        < issue_source.index("SqlAlchemyCustomerDocumentReadiness")
+    )
+    assert (
+        verify_source.index("session.get(User")
+        < verify_source.index("session.get(\n        TelegramLink")
+        < verify_source.index("lock_existing_own_customer_for_update")
+        < (verify_source.index("select_current_registration_acceptance"))
+        < verify_source.index("SqlAlchemyCustomerIdentityReadiness")
+        < (verify_source.index("SqlAlchemyCustomerDocumentReadiness"))
+    )
+    assert document_source.index("self._session.get(\n            ObjectFile") < (
+        document_source.index("select(CustomerDocument)")
+    )
+    assert activation_source.index("append_audit_event") < activation_source.index(
+        "SqlAlchemyCurrentSessionRotation"
+    )
+    assert all(
+        marker not in inspected
+        for marker in (
+            "sleep(",
+            "pg_advisory",
+            "pg_try_advisory",
+            "retry",
+            "lock_timeout",
+        )
+    )
 
 
 @pytest.mark.integration

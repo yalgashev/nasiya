@@ -60,6 +60,7 @@ from app.otp.repository import (
 from app.otp.web_presentation import OtpWebLanguage
 from app.settings import Settings
 from app.storage.models import ObjectFile, ObjectFileStatus
+from app.telegram.bot_api import TelegramBotApiClient
 from app.telegram.client_ip import ResolvedClientIp
 from app.telegram.models import TelegramLink
 from tests.m11_seed import (
@@ -150,7 +151,7 @@ def create_registration_with_dispatch(
     return challenge, dispatch
 
 
-def test_registration_create_lock_and_same_purpose_supersede_are_isolated(
+def test_login_and_registration_coexist_without_cross_purpose_supersession(
     m2_test_database: Engine,
 ) -> None:
     with Session(m2_test_database) as session, session.begin():
@@ -395,7 +396,7 @@ def test_runtime_lock_trace_is_dispatch_then_challenge(
     assert dispatch_position < challenge_position
 
 
-def test_registration_issue_creates_one_exact_durable_snapshot(
+def test_registration_issue_atomically_creates_snapshot_dispatch_and_event(
     m2_test_database: Engine,
 ) -> None:
     with Session(m2_test_database) as session, session.begin():
@@ -547,45 +548,72 @@ def test_registration_issue_runtime_lock_order_is_forward(
 @pytest.mark.parametrize(
     ("case", "expected_error"),
     (
-        ("inactive_user", RegistrationPrerequisiteError.CUSTOMER_DRAFT_REQUIRED),
-        ("active_customer", None),
-        ("no_link", RegistrationPrerequisiteError.TELEGRAM_NOT_LINKED),
-        ("no_current_offer", RegistrationPrerequisiteError.OFFER_UNAVAILABLE),
-        (
+        pytest.param(
+            "inactive_user",
+            RegistrationPrerequisiteError.CUSTOMER_DRAFT_REQUIRED,
+            id="T-M11-014-user-inactive",
+        ),
+        pytest.param("active_customer", None, id="T-M11-014-customer-active"),
+        pytest.param(
+            "no_link",
+            RegistrationPrerequisiteError.TELEGRAM_NOT_LINKED,
+            id="T-M11-014-link-missing",
+        ),
+        pytest.param(
+            "no_current_offer",
+            RegistrationPrerequisiteError.OFFER_UNAVAILABLE,
+            id="T-M11-014-offer-unavailable",
+        ),
+        pytest.param(
             "no_exact_acceptance",
             RegistrationPrerequisiteError.REGISTRATION_OFFER_NOT_ACCEPTED,
+            id="T-M11-014-acceptance-missing",
         ),
-        (
+        pytest.param(
             "missing_identity",
             RegistrationPrerequisiteError.CUSTOMER_IDENTITY_UNAVAILABLE,
+            id="T-M11-014-identity-missing",
         ),
-        (
+        pytest.param(
             "tampered_identity",
             RegistrationPrerequisiteError.CUSTOMER_IDENTITY_UNAVAILABLE,
+            id="T-M11-014-identity-tampered",
         ),
-        (
+        pytest.param(
             "key_unavailable_identity",
             RegistrationPrerequisiteError.CUSTOMER_IDENTITY_UNAVAILABLE,
+            id="T-M11-014-identity-key-unavailable",
         ),
-        (
+        pytest.param(
             "missing_document",
             RegistrationPrerequisiteError.CUSTOMER_DOCUMENT_UNAVAILABLE,
+            id="T-M11-014-document-missing",
         ),
-        (
+        pytest.param(
             "non_current_document",
             RegistrationPrerequisiteError.CUSTOMER_DOCUMENT_UNAVAILABLE,
+            id="T-M11-014-document-non-current",
         ),
-        (
+        pytest.param(
             "non_available_object",
             RegistrationPrerequisiteError.CUSTOMER_DOCUMENT_UNAVAILABLE,
+            id="T-M11-014-object-non-available",
         ),
     ),
 )
 def test_registration_issue_failure_matrix_is_zero_capability(
+    monkeypatch: pytest.MonkeyPatch,
     m2_test_database: Engine,
     case: str,
     expected_error: RegistrationPrerequisiteError | None,
 ) -> None:
+    provider_calls: list[object] = []
+
+    async def provider_canary(*args: object, **kwargs: object) -> object:
+        provider_calls.append((args, kwargs))
+        raise AssertionError("Issue failure reached Telegram network boundary")
+
+    monkeypatch.setattr(TelegramBotApiClient, "send_message", provider_canary)
     with Session(m2_test_database) as session:
         transaction = session.begin()
         try:
@@ -717,6 +745,7 @@ def test_registration_issue_failure_matrix_is_zero_capability(
         ):
             assert forbidden not in rendered
     assert counts == (0, 0, 0, 0, 0)
+    assert provider_calls == []
     assert "TelegramBotApiClient" not in getsource(issue_registration_otp)
 
 
@@ -966,7 +995,7 @@ def test_concurrent_registration_issue_has_one_durable_winner(
     assert event_challenge_ids == challenge_ids
 
 
-def test_new_registration_code_cooldown_boundary_and_revalidation(
+def test_new_code_cooldown_and_supersession_are_registration_local(
     m2_test_database: Engine,
 ) -> None:
     factory = sessionmaker(bind=m2_test_database, expire_on_commit=False)
@@ -1170,3 +1199,72 @@ def test_concurrent_new_code_and_issue_converge_to_one_capability(
 
     with Session(m2_test_database) as session:
         assert capability_counts(session) == (1, 1, 1, 0, 0)
+
+
+def test_concurrent_multi_browser_issue_is_user_purpose_capped(
+    monkeypatch: pytest.MonkeyPatch,
+    m2_test_database: Engine,
+) -> None:
+    with Session(m2_test_database) as session, session.begin():
+        snapshot = seed_registration_snapshot(
+            session,
+            phone="+998900001399",
+        )
+    first_context = activation_context(snapshot)
+    second_context = AuthenticatedActivationContext(
+        actor=CustomerActivationActor(snapshot.user_id),
+        browser=CustomerActivationBrowserContext(
+            current_session_id=UUID("44444444-4444-4444-8444-444444444444"),
+            browser_binding_digest=OtpBrowserBindingDigest("d" * 64),
+        ),
+        trusted_client_ip=ResolvedClientIp("203.0.113.42"),
+        _canonical_account_phone="+998900001399",
+    )
+    original_lock = activation_service.lock_outstanding_challenge_set_by_user
+    discovered = Barrier(2)
+
+    def synchronized_lock(*args: object, **kwargs: object) -> object:
+        locked = original_lock(*args, **kwargs)
+        discovered.wait(timeout=5)
+        return locked
+
+    monkeypatch.setattr(
+        activation_service,
+        "lock_outstanding_challenge_set_by_user",
+        synchronized_lock,
+    )
+
+    def issue(context: AuthenticatedActivationContext) -> object:
+        with Session(m2_test_database) as session, session.begin():
+            return issue_registration_otp(
+                session,
+                context=context,
+                identity_crypto_config=synthetic_identity_crypto_config(),
+                language=OtpWebLanguage.UZ_LATN,
+                now=NOW + timedelta(seconds=1),
+            )
+
+    executor = ThreadPoolExecutor(max_workers=2)
+    try:
+        futures = (
+            executor.submit(issue, first_context),
+            executor.submit(issue, second_context),
+        )
+        completed, pending = wait(futures, timeout=10)
+        assert not pending
+        assert all(
+            isinstance(future.result(), RegistrationOtpPendingDelivery)
+            for future in completed
+        )
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    with Session(m2_test_database) as session:
+        assert capability_counts(session) == (1, 1, 1, 0, 0)
+        challenge = session.scalar(select(OtpChallenge))
+
+    assert challenge is not None
+    assert challenge.browser_binding_digest in {
+        REGISTRATION_DIGEST.as_stored_value(),
+        second_context.browser.browser_binding_digest.as_stored_value(),
+    }

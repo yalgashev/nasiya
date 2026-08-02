@@ -144,7 +144,7 @@ def test_readiness_snapshot_requires_uuid_aware_time_revision_and_digest() -> No
         IdentityRevision(0)
 
 
-def test_readiness_snapshot_default_repr_redacts_every_sensitive_reference() -> None:
+def test_readiness_snapshot_contains_only_exact_redacted_evidence() -> None:
     rendered = repr(_snapshot())
 
     for forbidden in (
@@ -578,15 +578,38 @@ def test_readiness_active_customer_is_terminal(
         customer.updated_at = activation_time
 
     with Session(m2_test_database) as session:
+        before = tuple(
+            session.scalar(select(func.count()).select_from(model))
+            for model in (
+                Customer,
+                OtpChallenge,
+                OtpDispatch,
+                OtpChallengeEvent,
+                AuditLog,
+                AuthRateLimit,
+                AuthSession,
+            )
+        )
         readiness = get_registration_readiness(
             session,
             context=_activation_context(snapshot),
             identity_crypto_config=synthetic_identity_crypto_config(),
         )
-        customer_count = session.scalar(select(func.count()).select_from(Customer))
+        after = tuple(
+            session.scalar(select(func.count()).select_from(model))
+            for model in (
+                Customer,
+                OtpChallenge,
+                OtpDispatch,
+                OtpChallengeEvent,
+                AuditLog,
+                AuthRateLimit,
+                AuthSession,
+            )
+        )
 
     assert readiness.state is RegistrationReadinessState.ACTIVE
-    assert customer_count == 1
+    assert before == after == (1, 0, 0, 0, 0, 0, 0)
 
 
 @pytest.mark.integration

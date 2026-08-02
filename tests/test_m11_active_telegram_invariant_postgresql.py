@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from threading import Event
 from uuid import UUID
 
@@ -70,6 +71,7 @@ from tests.m11_seed import (
 )
 
 _ = Shop
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize(
@@ -132,6 +134,36 @@ def test_telegram_contracts_reject_untyped_state_and_outcome() -> None:
         decide_ordinary_telegram_unlink("active")  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="relink outcome"):
         ProtectedActiveTelegramRelinkResult(outcome="RELINKED")  # type: ignore[arg-type]
+
+
+def test_supported_link_mutation_entries_use_service_guards() -> None:
+    app_sources = {
+        path: path.read_text(encoding="utf-8")
+        for path in (PROJECT_ROOT / "app").rglob("*.py")
+    }
+    auth_router_source = app_sources[PROJECT_ROOT / "app" / "auth" / "router.py"]
+    update_source = app_sources[
+        PROJECT_ROOT / "app" / "telegram" / "update_processing.py"
+    ]
+
+    assert auth_router_source.count('@router.post("/telegram/unlink"') == 1
+    assert auth_router_source.count('@router.post("/telegram/relink-token"') == 1
+    assert "unlink_telegram(db, user, now)" in auth_router_source
+    assert "consume_start_token(" in update_source
+    assert (
+        sum(
+            source.count("unlink_verified_private_chat")
+            for source in app_sources.values()
+        )
+        == 3
+    )
+    assert (
+        sum(
+            source.count("relink_verified_private_chat")
+            for source in app_sources.values()
+        )
+        == 3
+    )
 
 
 _NOW = datetime(2026, 8, 2, 12, 30, tzinfo=UTC)
@@ -239,6 +271,68 @@ def _verify_command(
         candidate_code="004271",
         now=_NOW,
     )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("customer_state", ("missing", "draft"))
+def test_no_customer_and_draft_unlink_keep_inherited_database_behavior(
+    m2_test_database: Engine,
+    customer_state: str,
+) -> None:
+    with Session(m2_test_database) as session, session.begin():
+        if customer_state == "draft":
+            snapshot = seed_registration_snapshot(
+                session,
+                phone="+998900001419",
+            )
+            user = session.get(User, snapshot.user_id)
+            assert user is not None
+            customer_id = snapshot.customer_id
+            link_id = snapshot.telegram_link_id
+        else:
+            user = User(
+                phone="+998900001418",
+                is_active=True,
+                created_at=SEED_NOW,
+                updated_at=SEED_NOW,
+            )
+            session.add(user)
+            session.flush()
+            link = TelegramLink(
+                user_id=user.id,
+                telegram_chat_id=9_980_001_418,
+                linked_at=SEED_NOW,
+                updated_at=SEED_NOW,
+            )
+            session.add(link)
+            session.flush()
+            customer_id = None
+            link_id = link.id
+
+        result = unlink(session, user, _NOW)
+        assert result.outcome is TelegramLinkOutcome.UNLINKED
+
+    with Session(m2_test_database) as session:
+        stored_link = session.get(TelegramLink, link_id)
+        customer = (
+            session.get(Customer, customer_id) if customer_id is not None else None
+        )
+        link_event_count = session.scalar(
+            select(func.count()).select_from(TelegramLinkEvent)
+        )
+        challenge_count = session.scalar(select(func.count()).select_from(OtpChallenge))
+
+    assert stored_link is not None
+    assert stored_link.telegram_chat_id is None
+    assert stored_link.unlinked_at == _NOW
+    assert link_event_count == 1
+    assert challenge_count == 0
+    if customer_state == "draft":
+        assert customer is not None
+        assert customer.onboarding_status == CustomerLifecycleStatus.DRAFT.value
+        assert customer.activated_at is None
+    else:
+        assert customer is None
 
 
 @pytest.mark.integration
@@ -781,3 +875,30 @@ def test_relink_first_invalidates_old_registration_challenge_before_verify(
     assert registration.status == OtpChallengeStatus.INVALIDATED.value
     assert dispatch_statuses == (OtpDispatchStatus.CANCELLED.value,)
     assert current_session.revoked_at is None
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ("activation-first", "unlink-first", "relink-first"),
+)
+def test_activation_unlink_and_relink_barriers_never_leave_active_unlinked(
+    scenario: str,
+    monkeypatch: pytest.MonkeyPatch,
+    m2_test_database: Engine,
+) -> None:
+    with monkeypatch.context() as scoped:
+        if scenario == "activation-first":
+            test_activation_first_then_unlink_is_denied_and_keeps_active_link(
+                scoped,
+                m2_test_database,
+            )
+        elif scenario == "unlink-first":
+            test_unlink_first_then_verify_never_activates_unlinked_customer(
+                scoped,
+                m2_test_database,
+            )
+        else:
+            test_relink_first_invalidates_old_registration_challenge_before_verify(
+                scoped,
+                m2_test_database,
+            )

@@ -19,6 +19,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 import app.customer_activation.router as activation_router_module
+import tests.test_m11_sensitive_data_leakage as leakage_tests
 from app.audit.models import AuditLog
 from app.auth.deps import CurrentSessionContext, CurrentSessionStatus
 from app.auth.models import AuthRateLimit, User
@@ -1240,3 +1241,41 @@ def _iter_api_routes(routes: list[object]) -> Iterator[APIRoute]:
         included_router = getattr(route, "original_router", None)
         if included_router is not None:
             yield from _iter_api_routes(included_router.routes)
+
+
+def test_activation_routes_ignore_forged_authority_identifiers(
+    monkeypatch: pytest.MonkeyPatch,
+    m2_test_database: Engine,
+) -> None:
+    for route_function in (
+        activation_page,
+        request_registration_otp,
+        verify_registration_otp,
+        request_new_registration_otp_code,
+    ):
+        test_activation_route_signatures_have_no_client_authority(route_function)
+    test_verify_post_rejects_forged_authority_fields_before_service(
+        monkeypatch,
+        m2_test_database,
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "/customer/activation/otp/request",
+        "/customer/activation/otp/verify",
+        "/customer/activation/otp/new-code",
+    ),
+)
+def test_activation_posts_require_session_bound_csrf_before_any_write(
+    path: str,
+    monkeypatch: pytest.MonkeyPatch,
+    m2_test_database: Engine,
+) -> None:
+    leakage_tests.test_activation_post_csrf_matrix_is_prg_no_store_and_zero_domain_mutation(
+        path,
+        "wrong",
+        monkeypatch,
+        m2_test_database,
+    )
