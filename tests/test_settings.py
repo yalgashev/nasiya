@@ -5,6 +5,7 @@ from app.main import create_app
 from app.settings import (
     ClientIpMode,
     OtpHmacKeySettingsError,
+    RegistrationOtpConfig,
     Settings,
     TelegramWorkerCredentials,
     TelegramWorkerSettingsError,
@@ -44,6 +45,13 @@ SETTINGS_ENV_KEYS = (
     "OTP_LOGIN_RATE_LIMIT_PHONE_ATTEMPTS",
     "OTP_LOGIN_RATE_LIMIT_USER_ATTEMPTS",
     "OTP_LOGIN_RATE_LIMIT_IP_ATTEMPTS",
+    "OTP_REGISTRATION_TTL_SECONDS",
+    "OTP_REGISTRATION_MAX_VERIFY_ATTEMPTS",
+    "OTP_REGISTRATION_RESEND_COOLDOWN_SECONDS",
+    "OTP_REGISTRATION_RATE_LIMIT_WINDOW_SECONDS",
+    "OTP_REGISTRATION_RATE_LIMIT_PHONE_ATTEMPTS",
+    "OTP_REGISTRATION_RATE_LIMIT_USER_ATTEMPTS",
+    "OTP_REGISTRATION_RATE_LIMIT_IP_ATTEMPTS",
     "OTP_DISPATCH_POLL_SECONDS",
     "OTP_DISPATCH_BATCH_SIZE",
     "OTP_DISPATCH_CLAIM_STALE_SECONDS",
@@ -115,6 +123,7 @@ def test_settings_created_with_required_values() -> None:
     assert settings.otp_login_rate_limit_phone_attempts == 3
     assert settings.otp_login_rate_limit_user_attempts == 3
     assert settings.otp_login_rate_limit_ip_attempts == 20
+    assert settings.require_registration_otp_config() == RegistrationOtpConfig()
     assert settings.otp_dispatch_poll_seconds == 1
     assert settings.otp_dispatch_batch_size == 20
     assert settings.otp_dispatch_claim_stale_seconds == 60

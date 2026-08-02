@@ -6,6 +6,7 @@ from typing import Final
 
 class OtpPurpose(StrEnum):
     LOGIN = "LOGIN"
+    REGISTRATION = "REGISTRATION"
 
 
 class OtpChallengeStatus(StrEnum):
@@ -37,6 +38,9 @@ class OtpChallengeEventAction(StrEnum):
     EXPIRED = "EXPIRED"
     BURNED = "BURNED"
     INVALIDATED_BY_LINK_CHANGE = "INVALIDATED_BY_LINK_CHANGE"
+    INVALIDATED_BY_REGISTRATION_STATE_CHANGE = (
+        "INVALIDATED_BY_REGISTRATION_STATE_CHANGE"
+    )
 
 
 class OtpInternalOutcome(StrEnum):

@@ -133,8 +133,8 @@ def _canonical_otp_code_mac_input(
         raise ValueError("OTP challenge id must be a UUID")
     if not isinstance(user_id, UUID):
         raise ValueError("OTP user id must be a UUID")
-    if purpose is not OtpPurpose.LOGIN:
-        raise ValueError("OTP purpose must be LOGIN")
+    if not isinstance(purpose, OtpPurpose):
+        raise ValueError("OTP purpose must be typed")
     if not isinstance(code, OtpCode):
         raise ValueError("OTP code is required")
     return _canonical_bytes(

@@ -58,6 +58,46 @@ class OtpHmacKeySettingsError(RuntimeError):
         super().__init__("OTP HMAC key is not configured")
 
 
+@dataclass(frozen=True, repr=False)
+class RegistrationOtpConfig:
+    ttl_seconds: int = 180
+    max_verify_attempts: int = 5
+    resend_cooldown_seconds: int = 60
+    rate_limit_window_seconds: int = 900
+    rate_limit_phone_attempts: int = 3
+    rate_limit_user_attempts: int = 3
+    rate_limit_ip_attempts: int = 20
+
+    def __post_init__(self) -> None:
+        if not 60 <= self.ttl_seconds <= 600:
+            raise ValueError("Registration OTP TTL is invalid")
+        if not 1 <= self.max_verify_attempts <= 10:
+            raise ValueError("Registration OTP attempt limit is invalid")
+        if not 0 < self.resend_cooldown_seconds < self.ttl_seconds:
+            raise ValueError("Registration OTP cooldown is invalid")
+        if self.rate_limit_window_seconds <= 0:
+            raise ValueError("Registration OTP rate window is invalid")
+        if (
+            min(
+                self.rate_limit_phone_attempts,
+                self.rate_limit_user_attempts,
+                self.rate_limit_ip_attempts,
+            )
+            <= 0
+        ):
+            raise ValueError("Registration OTP rate limit is invalid")
+
+    def __repr__(self) -> str:
+        return (
+            "RegistrationOtpConfig("
+            f"ttl_seconds={self.ttl_seconds!r}, "
+            f"max_verify_attempts={self.max_verify_attempts!r}, "
+            f"resend_cooldown_seconds={self.resend_cooldown_seconds!r}, "
+            f"rate_limit_window_seconds={self.rate_limit_window_seconds!r}, "
+            "rate_limit_attempts=<configured>)"
+        )
+
+
 class ObjectStorageSettingsError(RuntimeError):
     def __init__(self) -> None:
         super().__init__("Object storage configuration is unavailable")
@@ -101,6 +141,13 @@ class Settings(BaseSettings):
     otp_login_rate_limit_phone_attempts: int = Field(default=3, gt=0)
     otp_login_rate_limit_user_attempts: int = Field(default=3, gt=0)
     otp_login_rate_limit_ip_attempts: int = Field(default=20, gt=0)
+    otp_registration_ttl_seconds: int = Field(default=180, ge=60, le=600)
+    otp_registration_max_verify_attempts: int = Field(default=5, ge=1, le=10)
+    otp_registration_resend_cooldown_seconds: int = Field(default=60, gt=0)
+    otp_registration_rate_limit_window_seconds: int = Field(default=900, gt=0)
+    otp_registration_rate_limit_phone_attempts: int = Field(default=3, gt=0)
+    otp_registration_rate_limit_user_attempts: int = Field(default=3, gt=0)
+    otp_registration_rate_limit_ip_attempts: int = Field(default=20, gt=0)
     otp_dispatch_poll_seconds: int = Field(default=1, gt=0)
     otp_dispatch_batch_size: int = Field(default=20, ge=1, le=100)
     otp_dispatch_claim_stale_seconds: int = Field(default=60, gt=0)
@@ -405,6 +452,13 @@ class Settings(BaseSettings):
             )
         if self.otp_login_resend_cooldown_seconds >= self.otp_login_ttl_seconds:
             raise ValueError("otp_login_resend_cooldown_seconds must be below OTP TTL")
+        if (
+            self.otp_registration_resend_cooldown_seconds
+            >= self.otp_registration_ttl_seconds
+        ):
+            raise ValueError(
+                "otp_registration_resend_cooldown_seconds must be below OTP TTL"
+            )
         if self.otp_dispatch_stale_seconds <= self.otp_dispatch_heartbeat_seconds:
             raise ValueError(
                 "otp_dispatch_stale_seconds must be greater than "
@@ -456,6 +510,17 @@ class Settings(BaseSettings):
         if self.otp_hmac_key is None:
             raise OtpHmacKeySettingsError()
         return self.otp_hmac_key
+
+    def require_registration_otp_config(self) -> RegistrationOtpConfig:
+        return RegistrationOtpConfig(
+            ttl_seconds=self.otp_registration_ttl_seconds,
+            max_verify_attempts=self.otp_registration_max_verify_attempts,
+            resend_cooldown_seconds=(self.otp_registration_resend_cooldown_seconds),
+            rate_limit_window_seconds=(self.otp_registration_rate_limit_window_seconds),
+            rate_limit_phone_attempts=(self.otp_registration_rate_limit_phone_attempts),
+            rate_limit_user_attempts=(self.otp_registration_rate_limit_user_attempts),
+            rate_limit_ip_attempts=self.otp_registration_rate_limit_ip_attempts,
+        )
 
     def require_object_storage_config(self) -> StorageConfig:
         required_values = (

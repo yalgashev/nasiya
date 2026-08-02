@@ -7,7 +7,13 @@ from datetime import UTC, datetime
 from typing import Final
 from uuid import UUID
 
-from app.audit.contracts import AuditEvent, AuditEventType
+from app.audit.contracts import (
+    CUSTOMER_ACTIVATION_FROM_STATUS,
+    CUSTOMER_ACTIVATION_METHOD,
+    CUSTOMER_ACTIVATION_TO_STATUS,
+    AuditEvent,
+    AuditEventType,
+)
 from app.customer_document.contracts import CustomerDocumentStatus
 from app.customer_identity.contracts import CustomerDocumentType
 from app.offers.enums import OfferLanguage, OfferPurpose, OfferStatus
@@ -219,6 +225,26 @@ def _customer_document_access_granted_payload(
     return {"ttl_seconds": ttl_seconds}
 
 
+def _customer_activated_payload(metadata: Mapping[str, object]) -> AuditPayload:
+    values = _required(
+        metadata,
+        "from_status",
+        "to_status",
+        "activation_method",
+    )
+    if values["from_status"] != CUSTOMER_ACTIVATION_FROM_STATUS:
+        raise ValueError("Audit activation source status is invalid")
+    if values["to_status"] != CUSTOMER_ACTIVATION_TO_STATUS:
+        raise ValueError("Audit activation target status is invalid")
+    if values["activation_method"] != CUSTOMER_ACTIVATION_METHOD:
+        raise ValueError("Audit activation method is invalid")
+    return {
+        "from_status": CUSTOMER_ACTIVATION_FROM_STATUS,
+        "to_status": CUSTOMER_ACTIVATION_TO_STATUS,
+        "activation_method": CUSTOMER_ACTIVATION_METHOD,
+    }
+
+
 _PAYLOAD_BUILDERS: Final[
     Mapping[AuditEventType, Callable[[Mapping[str, object]], AuditPayload]]
 ] = {
@@ -237,6 +263,7 @@ _PAYLOAD_BUILDERS: Final[
     AuditEventType.CUSTOMER_DOCUMENT_ACCESS_GRANTED: (
         _customer_document_access_granted_payload
     ),
+    AuditEventType.CUSTOMER_ACTIVATED: _customer_activated_payload,
 }
 
 

@@ -17,12 +17,28 @@ from app.otp.contracts import (
 )
 
 
-def test_otp_purpose_is_login_only() -> None:
-    assert {purpose.value for purpose in OtpPurpose} == {"LOGIN"}
+def test_otp_purposes_are_exact_uppercase_and_parseable() -> None:
+    assert tuple(purpose.value for purpose in OtpPurpose) == (
+        "LOGIN",
+        "REGISTRATION",
+    )
     assert parse_otp_purpose("LOGIN") is OtpPurpose.LOGIN
+    assert parse_otp_purpose("REGISTRATION") is OtpPurpose.REGISTRATION
 
-    with pytest.raises(ValueError, match="Unknown OTP purpose"):
-        parse_otp_purpose("STEP_UP")
+    for rejected in ("login", "registration", "STEP_UP"):
+        with pytest.raises(ValueError, match="Unknown OTP purpose"):
+            parse_otp_purpose(rejected)
+
+
+def test_login_and_registration_purposes_are_distinct_typed_keys() -> None:
+    purpose_state = {
+        OtpPurpose.LOGIN: "login-state",
+        OtpPurpose.REGISTRATION: "registration-state",
+    }
+
+    assert purpose_state[OtpPurpose.LOGIN] == "login-state"
+    assert purpose_state[OtpPurpose.REGISTRATION] == "registration-state"
+    assert OtpPurpose.LOGIN is not OtpPurpose.REGISTRATION
 
 
 def test_challenge_statuses_are_closed() -> None:
@@ -69,8 +85,13 @@ def test_event_actions_are_closed() -> None:
         "EXPIRED",
         "BURNED",
         "INVALIDATED_BY_LINK_CHANGE",
+        "INVALIDATED_BY_REGISTRATION_STATE_CHANGE",
     }
     assert parse_event_action("ISSUED") is OtpChallengeEventAction.ISSUED
+    assert (
+        parse_event_action("INVALIDATED_BY_REGISTRATION_STATE_CHANGE")
+        is OtpChallengeEventAction.INVALIDATED_BY_REGISTRATION_STATE_CHANGE
+    )
 
     with pytest.raises(ValueError, match="Unknown OTP event action"):
         parse_event_action("RAW_CODE_STORED")

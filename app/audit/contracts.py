@@ -21,6 +21,7 @@ class AuditEventType(StrEnum):
     CUSTOMER_DOCUMENT_ATTACHED = "customer.document_attached"
     CUSTOMER_DOCUMENT_SUPERSEDED = "customer.document_superseded"
     CUSTOMER_DOCUMENT_ACCESS_GRANTED = "customer.document_access_granted"
+    CUSTOMER_ACTIVATED = "customer.activated"
 
 
 class AuditObjectType(StrEnum):
@@ -30,6 +31,7 @@ class AuditObjectType(StrEnum):
     OFFER_ACCEPTANCE = "offer_acceptance"
     CUSTOMER_IDENTITY = "customer_identity"
     CUSTOMER_DOCUMENT = "customer_document"
+    CUSTOMER = "customer"
 
 
 class AuditActorKind(StrEnum):
@@ -54,8 +56,29 @@ _EVENT_OBJECT_TYPES: Final[Mapping[AuditEventType, AuditObjectType]] = MappingPr
         AuditEventType.CUSTOMER_DOCUMENT_ACCESS_GRANTED: (
             AuditObjectType.CUSTOMER_DOCUMENT
         ),
+        AuditEventType.CUSTOMER_ACTIVATED: AuditObjectType.CUSTOMER,
     }
 )
+
+CUSTOMER_ACTIVATION_FROM_STATUS: Final = "draft"
+CUSTOMER_ACTIVATION_TO_STATUS: Final = "active"
+CUSTOMER_ACTIVATION_METHOD: Final = "TELEGRAM_REGISTRATION_OTP"
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerActivatedAuditPayload:
+    from_status: str = field(default=CUSTOMER_ACTIVATION_FROM_STATUS, init=False)
+    to_status: str = field(default=CUSTOMER_ACTIVATION_TO_STATUS, init=False)
+    activation_method: str = field(default=CUSTOMER_ACTIVATION_METHOD, init=False)
+
+    def as_candidate_metadata(self) -> Mapping[str, object]:
+        return MappingProxyType(
+            {
+                "from_status": self.from_status,
+                "to_status": self.to_status,
+                "activation_method": self.activation_method,
+            }
+        )
 
 
 @dataclass(frozen=True, slots=True, repr=False)

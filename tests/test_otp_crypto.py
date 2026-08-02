@@ -30,6 +30,9 @@ CSRF_SECRET = "test-csrf-secret-for-browser-binding"
 OTHER_CSRF_SECRET = "other-csrf-secret-for-browser-binding"
 RAW_CODE = "004271"
 GOLDEN_MAC = "30806ab6408768b3c0785d1ba75304185c8eea7f30013104424c524e85669057"
+REGISTRATION_GOLDEN_MAC = (
+    "24efd786378b6d7734a4d57e9324cecc9579bcdd749791960d4ae5d6fbcccdce"
+)
 GOLDEN_BINDING_DIGEST = (
     "e38ce00462277dd8bfd2c2301dd54b03e5b797ab38dd1cfa309aaed4a3fa6922"
 )
@@ -45,6 +48,41 @@ def test_otp_code_mac_matches_golden_vector() -> None:
     )
 
     assert mac.as_stored_value() == GOLDEN_MAC
+
+
+def test_registration_otp_code_mac_is_purpose_domain_separated() -> None:
+    registration_mac = compute_otp_code_mac(
+        otp_hmac_key=OTP_HMAC_KEY,
+        challenge_id=CHALLENGE_ID,
+        user_id=USER_ID,
+        purpose=OtpPurpose.REGISTRATION,
+        code=OtpCode(RAW_CODE),
+    )
+
+    assert registration_mac.as_stored_value() == REGISTRATION_GOLDEN_MAC
+    assert registration_mac.as_stored_value() != GOLDEN_MAC
+    assert (
+        verify_otp_code_mac(
+            otp_hmac_key=OTP_HMAC_KEY,
+            challenge_id=CHALLENGE_ID,
+            user_id=USER_ID,
+            purpose=OtpPurpose.REGISTRATION,
+            code=OtpCode(RAW_CODE),
+            stored_mac=GOLDEN_MAC,
+        )
+        is False
+    )
+    assert (
+        verify_otp_code_mac(
+            otp_hmac_key=OTP_HMAC_KEY,
+            challenge_id=CHALLENGE_ID,
+            user_id=USER_ID,
+            purpose=OtpPurpose.LOGIN,
+            code=OtpCode(RAW_CODE),
+            stored_mac=registration_mac,
+        )
+        is False
+    )
 
 
 def test_otp_code_mac_verification_uses_compare_digest(monkeypatch) -> None:
@@ -106,12 +144,21 @@ def test_malformed_stored_mac_is_safe_failure(stored_mac: str) -> None:
 
 
 def test_otp_code_mac_rejects_client_purpose_strings() -> None:
-    with pytest.raises(ValueError, match="OTP purpose must be LOGIN"):
+    with pytest.raises(ValueError, match="OTP purpose must be typed"):
         compute_otp_code_mac(
             otp_hmac_key=OTP_HMAC_KEY,
             challenge_id=CHALLENGE_ID,
             user_id=USER_ID,
             purpose="LOGIN",  # type: ignore[arg-type]
+            code=OtpCode(RAW_CODE),
+        )
+
+    with pytest.raises(ValueError, match="OTP purpose must be typed"):
+        compute_otp_code_mac(
+            otp_hmac_key=OTP_HMAC_KEY,
+            challenge_id=CHALLENGE_ID,
+            user_id=USER_ID,
+            purpose="REGISTRATION",  # type: ignore[arg-type]
             code=OtpCode(RAW_CODE),
         )
 

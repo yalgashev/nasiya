@@ -36,6 +36,10 @@ class ErrorCode(StrEnum):
     CUSTOMER_DOCUMENT_CHANGED = "CUSTOMER_DOCUMENT_CHANGED"
     CUSTOMER_IDENTITY_UNAVAILABLE = "CUSTOMER_IDENTITY_UNAVAILABLE"
     CUSTOMER_DOCUMENT_UNAVAILABLE = "CUSTOMER_DOCUMENT_UNAVAILABLE"
+    OTP_INVALID = "OTP_INVALID"
+    REGISTRATION_OFFER_NOT_ACCEPTED = "REGISTRATION_OFFER_NOT_ACCEPTED"
+    CUSTOMER_ACTIVATION_CHANGED = "CUSTOMER_ACTIVATION_CHANGED"
+    TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER = "TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER"
 
 
 @dataclass(frozen=True)
@@ -191,6 +195,26 @@ ERROR_CATALOG: Final[Mapping[ErrorCode, ErrorDefinition]] = MappingProxyType(
             code=ErrorCode.CUSTOMER_DOCUMENT_UNAVAILABLE,
             user_message="Hujjat hozir mavjud emas.",
             http_status=HTTPStatus.SERVICE_UNAVAILABLE,
+        ),
+        ErrorCode.OTP_INVALID: ErrorDefinition(
+            code=ErrorCode.OTP_INVALID,
+            user_message="Kod noto'g'ri yoki muddati tugagan.",
+            http_status=HTTPStatus.UNPROCESSABLE_ENTITY,
+        ),
+        ErrorCode.REGISTRATION_OFFER_NOT_ACCEPTED: ErrorDefinition(
+            code=ErrorCode.REGISTRATION_OFFER_NOT_ACCEPTED,
+            user_message="Joriy ro'yxatdan o'tish taklifini qabul qiling.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.CUSTOMER_ACTIVATION_CHANGED: ErrorDefinition(
+            code=ErrorCode.CUSTOMER_ACTIVATION_CHANGED,
+            user_message="Faollashtirish ma'lumotlari o'zgargan. Yangi kod so'rang.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER: ErrorDefinition(
+            code=ErrorCode.TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER,
+            user_message="Faol mijoz uchun Telegram bog'lanishi saqlanishi kerak.",
+            http_status=HTTPStatus.CONFLICT,
         ),
     }
 )

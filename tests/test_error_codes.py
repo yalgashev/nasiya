@@ -43,8 +43,12 @@ def test_error_catalog_contains_only_stable_codes() -> None:
         ErrorCode.CUSTOMER_DOCUMENT_CHANGED,
         ErrorCode.CUSTOMER_IDENTITY_UNAVAILABLE,
         ErrorCode.CUSTOMER_DOCUMENT_UNAVAILABLE,
+        ErrorCode.OTP_INVALID,
+        ErrorCode.REGISTRATION_OFFER_NOT_ACCEPTED,
+        ErrorCode.CUSTOMER_ACTIVATION_CHANGED,
+        ErrorCode.TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER,
     }
-    assert len(ERROR_CATALOG) == 29
+    assert len(ERROR_CATALOG) == 33
 
 
 def test_error_code_values_are_stable() -> None:
@@ -78,6 +82,10 @@ def test_error_code_values_are_stable() -> None:
         "CUSTOMER_DOCUMENT_CHANGED",
         "CUSTOMER_IDENTITY_UNAVAILABLE",
         "CUSTOMER_DOCUMENT_UNAVAILABLE",
+        "OTP_INVALID",
+        "REGISTRATION_OFFER_NOT_ACCEPTED",
+        "CUSTOMER_ACTIVATION_CHANGED",
+        "TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER",
     ]
 
 
@@ -113,6 +121,10 @@ def test_error_code_values_are_stable() -> None:
         (ErrorCode.CUSTOMER_DOCUMENT_CHANGED, 409),
         (ErrorCode.CUSTOMER_IDENTITY_UNAVAILABLE, 503),
         (ErrorCode.CUSTOMER_DOCUMENT_UNAVAILABLE, 503),
+        (ErrorCode.OTP_INVALID, 422),
+        (ErrorCode.REGISTRATION_OFFER_NOT_ACCEPTED, 409),
+        (ErrorCode.CUSTOMER_ACTIVATION_CHANGED, 409),
+        (ErrorCode.TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER, 409),
     ],
 )
 def test_error_http_status_mapping_is_stable(
@@ -205,6 +217,19 @@ def test_error_http_status_mapping_is_stable(
         (
             ErrorCode.CUSTOMER_DOCUMENT_UNAVAILABLE,
             "Hujjat hozir mavjud emas.",
+        ),
+        (ErrorCode.OTP_INVALID, "Kod noto'g'ri yoki muddati tugagan."),
+        (
+            ErrorCode.REGISTRATION_OFFER_NOT_ACCEPTED,
+            "Joriy ro'yxatdan o'tish taklifini qabul qiling.",
+        ),
+        (
+            ErrorCode.CUSTOMER_ACTIVATION_CHANGED,
+            "Faollashtirish ma'lumotlari o'zgargan. Yangi kod so'rang.",
+        ),
+        (
+            ErrorCode.TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER,
+            "Faol mijoz uchun Telegram bog'lanishi saqlanishi kerak.",
         ),
     ],
 )
