@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
+from sqlalchemy.orm import Session
+
+from app.auth.error_codes import ErrorCode
 from app.auth.models import User
 from app.auth.phone import PhoneNormalizationError, normalize_uzbekistan_phone
-from app.settings import RegistrationOtpConfig
+from app.auth.rate_limit import AuthRateLimiter, RateLimitResult
+from app.settings import RegistrationOtpConfig, Settings
 from app.telegram.client_ip import ResolvedClientIp
 
 
@@ -53,6 +58,65 @@ class RegistrationRateLimitBucket:
         )
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class RegistrationRateLimitResult:
+    allowed: bool
+    error_code: ErrorCode | None = None
+
+    def __post_init__(self) -> None:
+        if self.allowed and self.error_code is not None:
+            raise ValueError("Allowed registration rate result has an error")
+        if not self.allowed and self.error_code is not ErrorCode.RATE_LIMITED:
+            raise ValueError("Blocked registration rate result is invalid")
+
+    def __repr__(self) -> str:
+        return (
+            "RegistrationRateLimitResult("
+            f"allowed={self.allowed!r}, error_code={self.error_code!r})"
+        )
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class RegistrationIssuanceRateLimitPolicy:
+    session: Session = field(repr=False)
+    settings: Settings = field(repr=False)
+
+    def check_and_record(
+        self,
+        *,
+        current_user: User,
+        client_ip: ResolvedClientIp,
+        now: datetime,
+    ) -> RegistrationRateLimitResult:
+        buckets = build_registration_rate_limit_buckets(
+            current_user=current_user,
+            client_ip=client_ip,
+            config=self.settings.require_registration_otp_config(),
+        )
+        limiter = AuthRateLimiter(db=self.session, settings=self.settings)
+        checked = tuple(
+            limiter.check(
+                *bucket.as_limiter_arguments()[:2],
+                now,
+                _existing_limiter_threshold(bucket.limit),
+                bucket.window_seconds,
+            )
+            for bucket in buckets
+        )
+        if _any_blocked(checked):
+            return _blocked()
+        recorded = tuple(
+            limiter.record_failure(
+                *bucket.as_limiter_arguments()[:2],
+                now,
+                _existing_limiter_threshold(bucket.limit),
+                bucket.window_seconds,
+            )
+            for bucket in buckets
+        )
+        return _blocked() if _any_blocked(recorded) else _allowed()
+
+
 def build_registration_rate_limit_buckets(
     *,
     current_user: User,
@@ -92,4 +156,23 @@ def build_registration_rate_limit_buckets(
             limit=config.rate_limit_ip_attempts,
             window_seconds=window,
         ),
+    )
+
+
+def _existing_limiter_threshold(allowed_attempts: int) -> int:
+    return allowed_attempts + 1
+
+
+def _any_blocked(results: tuple[RateLimitResult, ...]) -> bool:
+    return any(not result.allowed for result in results)
+
+
+def _allowed() -> RegistrationRateLimitResult:
+    return RegistrationRateLimitResult(allowed=True)
+
+
+def _blocked() -> RegistrationRateLimitResult:
+    return RegistrationRateLimitResult(
+        allowed=False,
+        error_code=ErrorCode.RATE_LIMITED,
     )

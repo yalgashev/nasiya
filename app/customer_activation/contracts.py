@@ -114,6 +114,44 @@ class RegistrationPrerequisiteError(StrEnum):
     CUSTOMER_DOCUMENT_UNAVAILABLE = "CUSTOMER_DOCUMENT_UNAVAILABLE"
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class CurrentRegistrationAcceptanceSelection:
+    _acceptance_id: UUID | None = field(default=None, repr=False)
+    error: RegistrationPrerequisiteError | None = None
+
+    def __post_init__(self) -> None:
+        selected = self._acceptance_id is not None
+        failed = self.error is not None
+        if selected == failed:
+            raise ValueError("Registration acceptance selection is invalid")
+        if selected:
+            _require_uuid(
+                self._acceptance_id,
+                field_name="registration_offer_acceptance_id",
+            )
+        elif self.error not in {
+            RegistrationPrerequisiteError.OFFER_UNAVAILABLE,
+            RegistrationPrerequisiteError.REGISTRATION_OFFER_NOT_ACCEPTED,
+        }:
+            raise ValueError("Registration acceptance selection error is invalid")
+
+    @property
+    def succeeded(self) -> bool:
+        return self._acceptance_id is not None
+
+    def acceptance_id_for_snapshot(self) -> UUID:
+        if self._acceptance_id is None:
+            raise ValueError("Registration acceptance was not selected")
+        return self._acceptance_id
+
+    def __repr__(self) -> str:
+        return (
+            "CurrentRegistrationAcceptanceSelection("
+            f"selected={self.succeeded!r}, error={self.error!r}, "
+            "acceptance_id=<redacted>)"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class RegistrationOtpPendingDelivery:
     pass

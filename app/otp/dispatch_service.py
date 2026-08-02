@@ -9,6 +9,8 @@ from pydantic import SecretStr
 from sqlalchemy.orm import Session
 
 from app.auth.models import User
+from app.customer.models import CUSTOMER_ONBOARDING_STATUS_DRAFT
+from app.customer.repository import lock_existing_own_customer_for_update
 from app.otp.code import OtpCode, generate_otp_code
 from app.otp.contracts import (
     OtpChallengeEventAction,
@@ -16,6 +18,7 @@ from app.otp.contracts import (
     OtpDeliveryFailureCode,
     OtpDispatchStatus,
     OtpPurpose,
+    parse_otp_purpose,
 )
 from app.otp.crypto import compute_otp_code_mac
 from app.otp.models import OtpChallenge, OtpDispatch
@@ -31,6 +34,7 @@ from app.otp.repository import (
     claim_next_pending_dispatch_for_update,
     expire_challenge,
     invalidate_challenge,
+    invalidate_registration_challenge_for_state_change,
     load_challenge_by_id_for_update,
     load_stale_prepared_dispatches_for_update,
     mark_dispatch_failed,
@@ -51,13 +55,15 @@ class PreparedOtpDispatch:
     code: OtpCode
     locale: str
     ttl_seconds: int
+    purpose: OtpPurpose = OtpPurpose.LOGIN
 
     def __repr__(self) -> str:
         return (
             "PreparedOtpDispatch("
             "dispatch_id=<redacted>, challenge_id=<redacted>, "
             "target=<TelegramOtpTarget>, code=<OtpCode>, "
-            f"locale={self.locale!r}, ttl_seconds={self.ttl_seconds!r})"
+            f"locale={self.locale!r}, ttl_seconds={self.ttl_seconds!r}, "
+            f"purpose={self.purpose.value!r})"
         )
 
 
@@ -68,6 +74,7 @@ def prepare_next_otp_dispatch(
     now: datetime,
     ttl_seconds: int,
     claim_stale_seconds: int,
+    registration_ttl_seconds: int | None = None,
     code_generator: Callable[[int], int] | None = None,
 ) -> PreparedOtpDispatch | None:
     current_time = _as_utc(now)
@@ -104,12 +111,18 @@ def prepare_next_otp_dispatch(
     if target is None:
         return None
 
+    purpose = parse_otp_purpose(challenge.purpose)
+    purpose_ttl_seconds = _purpose_ttl_seconds(
+        purpose=purpose,
+        login_ttl_seconds=ttl_seconds,
+        registration_ttl_seconds=registration_ttl_seconds,
+    )
     code = generate_otp_code(number_generator=code_generator)
     code_mac = compute_otp_code_mac(
         otp_hmac_key=otp_hmac_key,
         challenge_id=challenge.id,
         user_id=challenge.user_id,
-        purpose=OtpPurpose.LOGIN,
+        purpose=purpose,
         code=code,
     )
     activate_challenge(
@@ -117,7 +130,7 @@ def prepare_next_otp_dispatch(
         challenge=challenge,
         code_mac=code_mac,
         activated_at=current_time,
-        expires_at=current_time + timedelta(seconds=ttl_seconds),
+        expires_at=current_time + timedelta(seconds=purpose_ttl_seconds),
     )
     mark_dispatch_prepared(
         session,
@@ -138,7 +151,8 @@ def prepare_next_otp_dispatch(
         target=target,
         code=code,
         locale=dispatch.locale,
-        ttl_seconds=ttl_seconds,
+        ttl_seconds=purpose_ttl_seconds,
+        purpose=purpose,
     )
 
 
@@ -152,6 +166,12 @@ def record_otp_delivery_result(
     current_time = _as_utc(now)
     dispatch = session.get(OtpDispatch, dispatch_id, with_for_update=True)
     if dispatch is None or dispatch.status != OtpDispatchStatus.PREPARED.value:
+        return False
+    challenge = load_challenge_by_id_for_update(
+        session,
+        challenge_id=dispatch.challenge_id,
+    )
+    if challenge is None:
         return False
 
     if result.status is OtpDeliverySendStatus.SENT:
@@ -184,7 +204,7 @@ def record_otp_delivery_result(
         challenge_id=dispatch.challenge_id,
         action=OtpChallengeEventAction.DISPATCH_RESULT,
         occurred_at=current_time,
-        user_id=_dispatch_challenge_user_id(session, dispatch),
+        user_id=challenge.user_id,
         safe_code=safe_code,
     )
     return True
@@ -205,6 +225,12 @@ def recover_stale_prepared_dispatches(
         limit=limit,
     )
     for dispatch in dispatches:
+        challenge = load_challenge_by_id_for_update(
+            session,
+            challenge_id=dispatch.challenge_id,
+        )
+        if challenge is None:
+            continue
         mark_stale_prepared_dispatch_unknown(
             session,
             dispatch=dispatch,
@@ -215,6 +241,7 @@ def recover_stale_prepared_dispatches(
             challenge_id=dispatch.challenge_id,
             action=OtpChallengeEventAction.DISPATCH_RESULT,
             occurred_at=current_time,
+            user_id=challenge.user_id,
             safe_code="OTP_DISPATCH_STALE_PREPARED",
         )
     return len(dispatches)
@@ -260,6 +287,7 @@ def _validate_challenge_target(
         user is None
         or not user.is_active
         or link is None
+        or link.user_id != user.id
         or link.telegram_chat_id is None
         or link.unlinked_at is not None
         or link.linked_at != challenge.telegram_linked_at
@@ -276,9 +304,41 @@ def _validate_challenge_target(
         )
         return None
 
+    if challenge.purpose == OtpPurpose.REGISTRATION.value:
+        customer = lock_existing_own_customer_for_update(
+            session,
+            actor_user_id=user.id,
+        )
+        if (
+            customer is None
+            or customer.id != challenge.customer_id
+            or customer.onboarding_status != CUSTOMER_ONBOARDING_STATUS_DRAFT
+        ):
+            invalidate_registration_challenge_for_state_change(
+                session,
+                challenge=challenge,
+                dispatch=dispatch,
+                now=now,
+            )
+            return None
+
     return TelegramOtpTarget(
         chat_identity=VerifiedPrivateTelegramChatIdentity(link.telegram_chat_id)
     )
+
+
+def _purpose_ttl_seconds(
+    *,
+    purpose: OtpPurpose,
+    login_ttl_seconds: int,
+    registration_ttl_seconds: int | None,
+) -> int:
+    selected = (
+        login_ttl_seconds if purpose is OtpPurpose.LOGIN else registration_ttl_seconds
+    )
+    if not isinstance(selected, int) or isinstance(selected, bool) or selected <= 0:
+        raise ValueError("OTP dispatch TTL is invalid")
+    return selected
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -294,18 +354,12 @@ def _safe_result_code(
 ) -> str:
     if isinstance(failure_code, OtpDeliveryFailureCode):
         return failure_code.value
+    safe_default = (
+        default.value if isinstance(default, OtpDeliveryFailureCode) else default
+    )
     if failure_code is None:
-        if isinstance(default, OtpDeliveryFailureCode):
-            return default.value
-        return default
-    return failure_code
-
-
-def _dispatch_challenge_user_id(
-    session: Session,
-    dispatch: OtpDispatch,
-) -> UUID | None:
-    challenge = session.get(OtpChallenge, dispatch.challenge_id)
-    if challenge is None:
-        return None
-    return challenge.user_id
+        return safe_default
+    try:
+        return OtpDeliveryFailureCode(failure_code).value
+    except ValueError:
+        return safe_default

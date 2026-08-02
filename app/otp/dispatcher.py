@@ -435,6 +435,9 @@ def _prepare_next_item(
             otp_hmac_key=otp_hmac_key,
             now=now,
             ttl_seconds=settings.otp_login_ttl_seconds,
+            registration_ttl_seconds=(
+                settings.require_registration_otp_config().ttl_seconds
+            ),
             claim_stale_seconds=settings.otp_dispatch_claim_stale_seconds,
         )
 
@@ -452,6 +455,7 @@ async def _send_prepared_otp(
                 code=prepared.code,
                 locale=prepared.locale,
                 ttl_seconds=prepared.ttl_seconds,
+                purpose=prepared.purpose,
             ),
             shutdown=shutdown,
         )

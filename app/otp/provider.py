@@ -5,8 +5,8 @@ from enum import StrEnum
 from typing import Protocol
 
 from app.otp.code import OtpCode
-from app.otp.contracts import OtpDeliveryFailureCode
-from app.otp.message import format_login_otp_message
+from app.otp.contracts import OtpDeliveryFailureCode, OtpPurpose
+from app.otp.message import prepare_otp_telegram_message
 from app.telegram.bot_api import (
     TelegramApiError,
     TelegramApiErrorCode,
@@ -49,6 +49,7 @@ class OtpDeliveryProvider(Protocol):
         code: OtpCode,
         locale: str,
         ttl_seconds: int,
+        purpose: OtpPurpose = OtpPurpose.LOGIN,
     ) -> OtpDeliverySendResult:
         pass
 
@@ -65,14 +66,16 @@ class TelegramOtpProvider:
         code: OtpCode,
         locale: str,
         ttl_seconds: int,
+        purpose: OtpPurpose = OtpPurpose.LOGIN,
     ) -> OtpDeliverySendResult:
         if self.send_timeout_seconds < 1:
             raise ValueError("OTP send timeout must be positive")
-        message = format_login_otp_message(
+        message = prepare_otp_telegram_message(
+            purpose=purpose,
             code=code,
             ttl_seconds=ttl_seconds,
             locale=locale,
-        )
+        ).as_send_text()
         try:
             await self.bot_api_client.send_message(
                 chat_id=target.chat_identity,

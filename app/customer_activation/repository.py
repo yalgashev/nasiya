@@ -14,7 +14,9 @@ from app.customer_activation.contracts import (
     ActivationSafeDeviceMetadata,
     ActivationSessionRotation,
     ActivationSessionSecrets,
+    CurrentRegistrationAcceptanceSelection,
     PreparedCustomerActivation,
+    RegistrationPrerequisiteError,
 )
 from app.customer_activation.ports import (
     CurrentSessionRotationPort,
@@ -56,6 +58,16 @@ class SqlAlchemyRegistrationOfferReadiness(RegistrationOfferReadinessPort):
         *,
         actor_user_id: UUID,
     ) -> UUID | None:
+        selection = self.select_earliest_exact_current_acceptance(
+            actor_user_id=actor_user_id,
+        )
+        return selection.acceptance_id_for_snapshot() if selection.succeeded else None
+
+    def select_earliest_exact_current_acceptance(
+        self,
+        *,
+        actor_user_id: UUID,
+    ) -> CurrentRegistrationAcceptanceSelection:
         versions = SqlAlchemyOfferVersionRepository(
             self._session
         ).lock_versions_for_purpose(purpose=OfferPurpose.REGISTRATION)
@@ -63,14 +75,22 @@ class SqlAlchemyRegistrationOfferReadiness(RegistrationOfferReadinessPort):
             version for version in versions if version.status is OfferStatus.CURRENT
         )
         if len(current) != 1:
-            return None
+            return CurrentRegistrationAcceptanceSelection(
+                error=RegistrationPrerequisiteError.OFFER_UNAVAILABLE,
+            )
         acceptance = SqlAlchemyOfferAcceptanceRepository(
             self._session
         ).lock_earliest_exact_current_registration_acceptance(
             user_id=actor_user_id,
             current_version=current[0],
         )
-        return None if acceptance is None else acceptance.id
+        if acceptance is None:
+            return CurrentRegistrationAcceptanceSelection(
+                error=(RegistrationPrerequisiteError.REGISTRATION_OFFER_NOT_ACCEPTED),
+            )
+        return CurrentRegistrationAcceptanceSelection(
+            _acceptance_id=acceptance.id,
+        )
 
 
 class SqlAlchemyCustomerIdentityReadiness(CustomerIdentityReadinessPort):

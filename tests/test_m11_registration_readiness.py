@@ -5,10 +5,19 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy import event, func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from app.audit.models import AuditLog
+from app.auth.models import AuthRateLimit, User
+from app.auth.models import Session as AuthSession
+from app.customer.models import Customer
 from app.customer_activation.contracts import (
+    CurrentRegistrationAcceptanceSelection,
+    CustomerActivationActor,
+    CustomerActivationBrowserContext,
+    RegistrationPrerequisiteError,
     RegistrationReadinessComponent,
     RegistrationReadinessComponentStatus,
     RegistrationReadinessComponentView,
@@ -21,10 +30,21 @@ from app.customer_activation.repository import (
     SqlAlchemyCustomerIdentityReadiness,
     SqlAlchemyRegistrationOfferReadiness,
 )
+from app.customer_activation.service import (
+    AuthenticatedActivationContext,
+    get_registration_readiness,
+    select_current_registration_acceptance,
+)
+from app.customer_document.models import CustomerDocument
 from app.customer_identity.contracts import IdentityRevision
-from app.offers.enums import OfferLanguage, OfferPurpose
-from app.offers.models import OfferAcceptance, OfferText
+from app.customer_identity.models import CustomerIdentity
+from app.offers.enums import OfferLanguage, OfferPurpose, OfferStatus
+from app.offers.models import OfferAcceptance, OfferText, OfferVersion
 from app.otp.crypto import OtpBrowserBindingDigest
+from app.otp.models import OtpChallenge, OtpChallengeEvent, OtpDispatch
+from app.storage.models import ObjectFile, ObjectFileStatus
+from app.telegram.client_ip import ResolvedClientIp
+from app.telegram.models import TelegramLink
 from tests.m11_seed import (
     NOW,
     seed_registration_snapshot,
@@ -69,6 +89,20 @@ def _components(
             ),
         )
         for component in RegistrationReadinessComponent
+    )
+
+
+def _activation_context(
+    snapshot: RegistrationReadinessSnapshot,
+) -> AuthenticatedActivationContext:
+    return AuthenticatedActivationContext(
+        actor=CustomerActivationActor(snapshot.user_id),
+        browser=CustomerActivationBrowserContext(
+            current_session_id=UUID("66666666-6666-4666-8666-666666666666"),
+            browser_binding_digest=snapshot.browser_binding_digest,
+        ),
+        trusted_client_ip=ResolvedClientIp("203.0.113.38"),
+        _canonical_account_phone="+998900001328",
     )
 
 
@@ -284,3 +318,305 @@ def test_readiness_adapters_reject_cross_user_or_inexact_evidence(
             ).lock_current_available_document(customer_id=uuid4())
             is None
         )
+
+
+@pytest.mark.integration
+def test_current_acceptance_selects_earliest_accepted_at_then_id(
+    m2_test_database: Engine,
+) -> None:
+    with Session(m2_test_database) as session, session.begin():
+        snapshot = seed_registration_snapshot(
+            session,
+            phone="+998900001330",
+        )
+        current_acceptance = session.get(
+            OfferAcceptance,
+            snapshot.registration_offer_acceptance_id,
+        )
+        assert current_acceptance is not None
+        second_text = OfferText(
+            offer_version_id=current_acceptance.offer_version_id,
+            language=OfferLanguage.RU.value,
+            title="Synthetic registration offer RU",
+            body="Synthetic registration offer body RU",
+            content_hash="d" * 64,
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        session.add(second_text)
+        session.flush()
+        lower_id = UUID("00000000-0000-4000-8000-000000000001")
+        tied = OfferAcceptance(
+            id=lower_id,
+            user_id=snapshot.user_id,
+            offer_version_id=current_acceptance.offer_version_id,
+            offer_text_id=second_text.id,
+            purpose=OfferPurpose.REGISTRATION.value,
+            language=OfferLanguage.RU.value,
+            version_number=current_acceptance.version_number,
+            content_hash=second_text.content_hash,
+            accepted_at=current_acceptance.accepted_at,
+            user_agent=None,
+        )
+        session.add(tied)
+        session.flush()
+
+        selection = select_current_registration_acceptance(
+            session,
+            actor=CustomerActivationActor(snapshot.user_id),
+        )
+
+        assert isinstance(selection, CurrentRegistrationAcceptanceSelection)
+        assert selection.succeeded
+        assert selection.error is None
+        assert selection.acceptance_id_for_snapshot() == lower_id
+        assert str(lower_id) not in repr(selection)
+
+
+@pytest.mark.integration
+def test_current_acceptance_distinguishes_safe_unavailable_states(
+    m2_test_database: Engine,
+) -> None:
+    with Session(m2_test_database) as session, session.begin():
+        snapshot = seed_registration_snapshot(
+            session,
+            phone="+998900001331",
+        )
+        current_acceptance = session.get(
+            OfferAcceptance,
+            snapshot.registration_offer_acceptance_id,
+        )
+        assert current_acceptance is not None
+        session.delete(current_acceptance)
+        session.flush()
+        not_accepted = select_current_registration_acceptance(
+            session,
+            actor=CustomerActivationActor(snapshot.user_id),
+        )
+        current_version = session.get(
+            OfferVersion,
+            current_acceptance.offer_version_id,
+        )
+        assert current_version is not None
+        current_version.status = OfferStatus.APPROVED.value
+        current_version.current_by_user_id = None
+        current_version.current_at = None
+        session.flush()
+        unavailable = select_current_registration_acceptance(
+            session,
+            actor=CustomerActivationActor(snapshot.user_id),
+        )
+
+        assert not_accepted.error is (
+            RegistrationPrerequisiteError.REGISTRATION_OFFER_NOT_ACCEPTED
+        )
+        assert unavailable.error is RegistrationPrerequisiteError.OFFER_UNAVAILABLE
+        assert not not_accepted.succeeded
+        assert not unavailable.succeeded
+        with pytest.raises(ValueError, match="was not selected"):
+            not_accepted.acceptance_id_for_snapshot()
+
+
+@pytest.mark.integration
+def test_readiness_get_is_complete_and_zero_side_effect(
+    m2_test_database: Engine,
+) -> None:
+    with Session(m2_test_database) as session, session.begin():
+        snapshot = seed_registration_snapshot(
+            session,
+            phone="+998900001328",
+        )
+    statements: list[str] = []
+
+    def capture_statement(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        statements.append(" ".join(statement.split()))
+
+    event.listen(m2_test_database, "before_cursor_execute", capture_statement)
+    try:
+        with Session(m2_test_database) as session:
+            before = tuple(
+                session.scalar(select(func.count()).select_from(model))
+                for model in (
+                    Customer,
+                    OtpChallenge,
+                    OtpDispatch,
+                    OtpChallengeEvent,
+                    AuditLog,
+                    AuthRateLimit,
+                    AuthSession,
+                )
+            )
+            statements.clear()
+            readiness = get_registration_readiness(
+                session,
+                context=_activation_context(snapshot),
+                identity_crypto_config=synthetic_identity_crypto_config(),
+            )
+            readiness_statements = tuple(statements)
+            after = tuple(
+                session.scalar(select(func.count()).select_from(model))
+                for model in (
+                    Customer,
+                    OtpChallenge,
+                    OtpDispatch,
+                    OtpChallengeEvent,
+                    AuditLog,
+                    AuthRateLimit,
+                    AuthSession,
+                )
+            )
+    finally:
+        event.remove(m2_test_database, "before_cursor_execute", capture_statement)
+
+    assert readiness.state is RegistrationReadinessState.READY_FOR_OTP
+    assert all(
+        component.status is RegistrationReadinessComponentStatus.COMPLETE
+        for component in readiness.components
+    )
+    assert before == after
+    assert all("FOR UPDATE" not in statement for statement in readiness_statements)
+    assert all(
+        not statement.startswith(("INSERT ", "UPDATE ", "DELETE "))
+        for statement in readiness_statements
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("missing_component", "mutation"),
+    (
+        (
+            RegistrationReadinessComponent.TELEGRAM_LINK,
+            "telegram_link",
+        ),
+        (
+            RegistrationReadinessComponent.OFFER_ACCEPTANCE,
+            "offer_acceptance",
+        ),
+        (
+            RegistrationReadinessComponent.CUSTOMER_IDENTITY,
+            "identity",
+        ),
+        (
+            RegistrationReadinessComponent.CUSTOMER_DOCUMENT,
+            "document",
+        ),
+    ),
+)
+def test_each_missing_readiness_gate_is_safe_and_side_effect_free(
+    m2_test_database: Engine,
+    missing_component: RegistrationReadinessComponent,
+    mutation: str,
+) -> None:
+    with Session(m2_test_database) as session, session.begin():
+        snapshot = seed_registration_snapshot(
+            session,
+            phone="+998900001328",
+        )
+        if mutation == "telegram_link":
+            link = session.get(TelegramLink, snapshot.telegram_link_id)
+            assert link is not None
+            link.telegram_chat_id = None
+            link.unlinked_at = NOW
+            link.updated_at = NOW
+        elif mutation == "offer_acceptance":
+            acceptance = session.get(
+                OfferAcceptance,
+                snapshot.registration_offer_acceptance_id,
+            )
+            assert acceptance is not None
+            session.delete(acceptance)
+        elif mutation == "identity":
+            identity = session.get(CustomerIdentity, snapshot.customer_id)
+            assert identity is not None
+            session.delete(identity)
+        else:
+            document = session.get(CustomerDocument, snapshot.customer_document_id)
+            assert document is not None
+            object_file = session.get(ObjectFile, document.object_file_id)
+            assert object_file is not None
+            object_file.status = ObjectFileStatus.DELETE_PENDING.value
+
+    with Session(m2_test_database) as session:
+        readiness = get_registration_readiness(
+            session,
+            context=_activation_context(snapshot),
+            identity_crypto_config=synthetic_identity_crypto_config(),
+        )
+
+    status_by_component = {
+        component.component: component.status for component in readiness.components
+    }
+    assert readiness.state is RegistrationReadinessState.INCOMPLETE
+    assert (
+        status_by_component[missing_component]
+        is RegistrationReadinessComponentStatus.INCOMPLETE
+    )
+
+
+@pytest.mark.integration
+def test_readiness_active_customer_is_terminal(
+    m2_test_database: Engine,
+) -> None:
+    with Session(m2_test_database) as session, session.begin():
+        snapshot = seed_registration_snapshot(
+            session,
+            phone="+998900001328",
+        )
+        customer = session.get(Customer, snapshot.customer_id)
+        assert customer is not None
+        activation_time = NOW + timedelta(seconds=1)
+        customer.onboarding_status = "active"
+        customer.activated_at = activation_time
+        customer.updated_at = activation_time
+
+    with Session(m2_test_database) as session:
+        readiness = get_registration_readiness(
+            session,
+            context=_activation_context(snapshot),
+            identity_crypto_config=synthetic_identity_crypto_config(),
+        )
+        customer_count = session.scalar(select(func.count()).select_from(Customer))
+
+    assert readiness.state is RegistrationReadinessState.ACTIVE
+    assert customer_count == 1
+
+
+@pytest.mark.integration
+def test_readiness_missing_customer_never_creates_one(
+    m2_test_database: Engine,
+) -> None:
+    phone = "+998900001329"
+    with Session(m2_test_database) as session, session.begin():
+        user = User(phone=phone, is_active=True)
+        session.add(user)
+        session.flush()
+        user_id = user.id
+    context = AuthenticatedActivationContext(
+        actor=CustomerActivationActor(user_id),
+        browser=CustomerActivationBrowserContext(
+            current_session_id=UUID("77777777-7777-4777-8777-777777777777"),
+            browser_binding_digest=OtpBrowserBindingDigest("7" * 64),
+        ),
+        trusted_client_ip=ResolvedClientIp("203.0.113.39"),
+        _canonical_account_phone=phone,
+    )
+
+    with Session(m2_test_database) as session:
+        before = session.scalar(select(func.count()).select_from(Customer))
+        readiness = get_registration_readiness(
+            session,
+            context=context,
+            identity_crypto_config=synthetic_identity_crypto_config(),
+        )
+        after = session.scalar(select(func.count()).select_from(Customer))
+
+    assert readiness.state is RegistrationReadinessState.INCOMPLETE
+    assert before == after == 0

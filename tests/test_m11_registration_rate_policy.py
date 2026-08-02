@@ -1,15 +1,25 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import FrozenInstanceError
+from datetime import UTC, datetime, timedelta
 from inspect import signature
+from threading import Barrier
 from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import func, select
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
 
-from app.auth.models import User
+from app.auth.error_codes import ErrorCode
+from app.auth.models import AuthRateLimit, User
+from app.auth.rate_limit import hash_rate_limit_key
 from app.customer_activation.rate_limit import (
+    RegistrationIssuanceRateLimitPolicy,
     RegistrationRateLimitBucket,
+    RegistrationRateLimitResult,
     RegistrationRateLimitScope,
     build_registration_rate_limit_buckets,
 )
@@ -161,3 +171,151 @@ def test_registration_rate_bucket_rejects_untyped_scope_without_echo() -> None:
             limit=3,
             window_seconds=900,
         )
+
+
+@pytest.mark.integration
+def test_registration_rate_check_and_record_exact_scopes_and_boundary(
+    m2_test_database: Engine,
+) -> None:
+    settings = _settings()
+    now = datetime(2026, 8, 2, 10, 0, tzinfo=UTC)
+    with Session(m2_test_database) as session, session.begin():
+        user = _user()
+        session.add(user)
+
+    outcomes: list[RegistrationRateLimitResult] = []
+    for offset in range(4):
+        with Session(m2_test_database) as session, session.begin():
+            current_user = session.get(User, _USER_ID)
+            assert current_user is not None
+            outcomes.append(
+                RegistrationIssuanceRateLimitPolicy(
+                    session=session,
+                    settings=settings,
+                ).check_and_record(
+                    current_user=current_user,
+                    client_ip=ResolvedClientIp(_IP),
+                    now=now + timedelta(seconds=offset),
+                )
+            )
+
+    with Session(m2_test_database) as session, session.begin():
+        before = tuple(
+            (row.scope, row.attempt_count)
+            for row in session.scalars(
+                select(AuthRateLimit).order_by(AuthRateLimit.scope)
+            )
+        )
+        current_user = session.get(User, _USER_ID)
+        assert current_user is not None
+        preblocked = RegistrationIssuanceRateLimitPolicy(
+            session=session,
+            settings=settings,
+        ).check_and_record(
+            current_user=current_user,
+            client_ip=ResolvedClientIp(_IP),
+            now=now + timedelta(seconds=5),
+        )
+        after = tuple(
+            (row.scope, row.attempt_count)
+            for row in session.scalars(
+                select(AuthRateLimit).order_by(AuthRateLimit.scope)
+            )
+        )
+
+    assert [outcome.allowed for outcome in outcomes] == [True, True, True, False]
+    assert outcomes[-1].error_code is ErrorCode.RATE_LIMITED
+    assert not preblocked.allowed
+    assert before == after
+    assert {scope for scope, _ in after} == {
+        scope.value for scope in RegistrationRateLimitScope
+    }
+    assert {attempt_count for _, attempt_count in after} == {4}
+
+
+@pytest.mark.integration
+def test_registration_rate_concurrent_cap_is_deterministic(
+    m2_test_database: Engine,
+) -> None:
+    settings = _settings()
+    now = datetime(2026, 8, 2, 10, 30, tzinfo=UTC)
+    with Session(m2_test_database) as session, session.begin():
+        session.add(_user())
+    start = Barrier(5)
+
+    def attempt() -> bool:
+        with Session(m2_test_database) as session, session.begin():
+            current_user = session.get(User, _USER_ID)
+            assert current_user is not None
+            start.wait(timeout=5)
+            return (
+                RegistrationIssuanceRateLimitPolicy(
+                    session=session,
+                    settings=settings,
+                )
+                .check_and_record(
+                    current_user=current_user,
+                    client_ip=ResolvedClientIp(_IP),
+                    now=now,
+                )
+                .allowed
+            )
+
+    executor = ThreadPoolExecutor(max_workers=5)
+    try:
+        futures = [executor.submit(attempt) for _ in range(5)]
+        completed, pending = wait(futures, timeout=10)
+        assert not pending
+        outcomes = [future.result() for future in completed]
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    assert outcomes.count(True) == 3
+    assert outcomes.count(False) == 2
+    with Session(m2_test_database) as session:
+        rows = tuple(session.scalars(select(AuthRateLimit)))
+        assert len(rows) == 3
+        assert {row.attempt_count for row in rows} == {5}
+
+
+@pytest.mark.integration
+def test_registration_rate_persists_only_scoped_hmac_keys(
+    m2_test_database: Engine,
+) -> None:
+    settings = _settings()
+    now = datetime(2026, 8, 2, 11, 0, tzinfo=UTC)
+    with Session(m2_test_database) as session, session.begin():
+        user = _user()
+        session.add(user)
+        session.flush()
+        result = RegistrationIssuanceRateLimitPolicy(
+            session=session,
+            settings=settings,
+        ).check_and_record(
+            current_user=user,
+            client_ip=ResolvedClientIp(_IP),
+            now=now,
+        )
+
+    with Session(m2_test_database) as session:
+        rows = tuple(session.scalars(select(AuthRateLimit)))
+        stored = " ".join(f"{row.scope} {row.key_hash}" for row in rows)
+        count = session.scalar(select(func.count()).select_from(AuthRateLimit))
+
+    assert result.allowed
+    assert count == 3
+    assert _PHONE not in stored
+    assert str(_USER_ID) not in stored
+    assert _IP not in stored
+    expected_buckets = build_registration_rate_limit_buckets(
+        current_user=_user(),
+        client_ip=ResolvedClientIp(_IP),
+        config=settings.require_registration_otp_config(),
+    )
+    assert {(row.scope, row.key_hash) for row in rows} == {
+        (
+            bucket.scope.value,
+            hash_rate_limit_key(settings, bucket.as_limiter_arguments()[1]),
+        )
+        for bucket in expected_buckets
+    }
