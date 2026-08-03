@@ -38,12 +38,14 @@ def add_link(
     telegram_chat_id: int | None,
     linked_at: datetime,
     unlinked_at: datetime | None = None,
+    phone_verified_at: datetime | None = None,
 ) -> TelegramLink:
     link = TelegramLink(
         user_id=user.id,
         telegram_chat_id=telegram_chat_id,
         linked_at=linked_at,
         unlinked_at=unlinked_at,
+        phone_verified_at=phone_verified_at,
         updated_at=linked_at if unlinked_at is None else unlinked_at,
     )
     session.add(link)
@@ -234,3 +236,59 @@ def test_parent_user_delete_is_restricted_when_link_exists(
 
     assert db_session.get(User, user.id) is not None
     assert db_session.get(TelegramLink, link.id) is not None
+
+
+@pytest.mark.integration
+def test_exact_link_generation_phone_verification_is_accepted(
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 8, 2, 10, 50, tzinfo=UTC)
+    user = add_user(db_session, "+998900001012")
+
+    link = add_link(
+        db_session,
+        user,
+        telegram_chat_id=1_001_013,
+        linked_at=now,
+        phone_verified_at=now,
+    )
+
+    assert link.phone_verified_at == link.linked_at
+    assert link.unlinked_at is None
+
+
+@pytest.mark.integration
+def test_phone_verification_must_equal_link_generation(
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 8, 2, 10, 55, tzinfo=UTC)
+    user = add_user(db_session, "+998900001013")
+
+    with pytest.raises(IntegrityError):
+        with db_session.begin_nested():
+            add_link(
+                db_session,
+                user,
+                telegram_chat_id=1_001_014,
+                linked_at=now,
+                phone_verified_at=now + timedelta(microseconds=1),
+            )
+
+
+@pytest.mark.integration
+def test_unlinked_tombstone_cannot_remain_phone_verified(
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 8, 2, 11, 0, tzinfo=UTC)
+    user = add_user(db_session, "+998900001014")
+
+    with pytest.raises(IntegrityError):
+        with db_session.begin_nested():
+            add_link(
+                db_session,
+                user,
+                telegram_chat_id=None,
+                linked_at=now,
+                unlinked_at=now + timedelta(minutes=1),
+                phone_verified_at=now,
+            )

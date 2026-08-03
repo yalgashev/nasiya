@@ -9,12 +9,15 @@ import pytest
 
 import app.telegram.inbound as inbound_module
 import app.telegram.service as telegram_service
+from app.auth.phone import PhoneNormalizationError, normalize_uzbekistan_phone
 from app.telegram.inbound import (
     FakeVerifiedPrivateTelegramAdapter,
+    SensitiveTelegramContactPhone,
+    TelegramUserIdentity,
     VerifiedPrivateTelegramChatIdentity,
 )
 from app.telegram.models import TelegramLink, TelegramLinkEvent, TelegramLinkToken
-from app.telegram.service import issue_link_token
+from app.telegram.service import issue_link_token_after_rate_limit
 
 POSTGRES_BIGINT_MAX = 2**63 - 1
 
@@ -110,6 +113,91 @@ def test_verified_private_chat_identity_has_narrow_explicit_accessor() -> None:
     assert not hasattr(identity, "json")
 
 
+@pytest.mark.parametrize("user_id", [1, 42, POSTGRES_BIGINT_MAX])
+def test_telegram_user_identity_is_positive_bigint_and_redacted(
+    user_id: int,
+    caplog,
+) -> None:
+    identity = TelegramUserIdentity(user_id)
+
+    with caplog.at_level(logging.INFO):
+        logging.getLogger("tests.telegram_inbound_boundary").info(
+            "sender %s %r", identity, identity
+        )
+
+    assert identity.as_bigint() == user_id
+    assert str(user_id) not in str(identity)
+    assert str(user_id) not in repr(identity)
+    assert str(user_id) not in " ".join(
+        record.getMessage() for record in caplog.records
+    )
+    assert not is_dataclass(identity)
+    assert not hasattr(identity, "__dict__")
+
+
+@pytest.mark.parametrize("raw_value", [0, -1, POSTGRES_BIGINT_MAX + 1, True, "1"])
+def test_telegram_user_identity_rejects_invalid_values_without_echo(
+    raw_value: object,
+) -> None:
+    with pytest.raises(ValueError) as exc_info:
+        TelegramUserIdentity(raw_value)  # type: ignore[arg-type]
+
+    assert str(raw_value) not in str(exc_info.value)
+
+
+def test_sensitive_contact_phone_is_bounded_operation_local_and_redacted(
+    caplog,
+) -> None:
+    raw_phone = "+998 90 123 45 67"
+    phone = SensitiveTelegramContactPhone(raw_phone)
+
+    with caplog.at_level(logging.INFO):
+        logging.getLogger("tests.telegram_inbound_boundary").info(
+            "contact %s %r", phone, phone
+        )
+
+    assert phone.as_normalization_input() == raw_phone
+    assert raw_phone not in str(phone)
+    assert raw_phone not in repr(phone)
+    assert raw_phone not in caplog.text
+    assert not is_dataclass(phone)
+    assert not hasattr(phone, "__dict__")
+    assert not hasattr(phone, "value")
+    assert not hasattr(phone, "raw")
+
+
+@pytest.mark.parametrize("raw_phone", ["", " ", "x" * 65, None, 998901234567])
+def test_sensitive_contact_phone_rejects_invalid_values_without_echo(
+    raw_phone: object,
+) -> None:
+    with pytest.raises(ValueError) as exc_info:
+        SensitiveTelegramContactPhone(raw_phone)  # type: ignore[arg-type]
+
+    if isinstance(raw_phone, str) and raw_phone.strip():
+        assert raw_phone not in str(exc_info.value)
+    elif not isinstance(raw_phone, str):
+        assert str(raw_phone) not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "raw_phone",
+    [
+        "+998٩٠١٢٣٤٥٦٧",
+        "+998９０１２３４５６７",
+    ],
+)
+def test_contact_phone_canonicalization_rejects_non_ascii_decimal_digits(
+    raw_phone: str,
+) -> None:
+    contact_phone = SensitiveTelegramContactPhone(raw_phone)
+
+    with pytest.raises(PhoneNormalizationError) as exc_info:
+        normalize_uzbekistan_phone(contact_phone.as_normalization_input())
+
+    assert raw_phone not in str(exc_info.value)
+    assert raw_phone not in repr(contact_phone)
+
+
 def test_fake_verified_private_adapter_explicitly_creates_typed_identity(
     caplog,
 ) -> None:
@@ -195,7 +283,7 @@ def test_group_channel_or_metadata_payloads_never_become_verified_identity(
 
 
 def test_domain_issue_service_accepts_no_raw_telegram_transport_identity() -> None:
-    parameters = signature(issue_link_token).parameters
+    parameters = signature(issue_link_token_after_rate_limit).parameters
 
     for forbidden_parameter in (
         "chat_id",

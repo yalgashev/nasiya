@@ -25,7 +25,7 @@ PRE_M8_IMMUTABLE_SHA256 = {
         "569c54c67f33925714039bf3312ce47dd6b0f6b4d39d1cf1756408fbd2f00aab"
     ),
     "app/telegram/worker.py": (
-        "ebe1a1dbceb3a428437fed8d5760082b0b140f06a98860b2db0262633c4e49f5"
+        "98e247e04a64e7098af7b1231e371b043db0626557229a5a8c5156b20da88543"
     ),
     "app/otp/dispatcher.py": (
         "8cbc524e325d569520bb7feca595d4e870988407a47abd6807b5167af78cf599"

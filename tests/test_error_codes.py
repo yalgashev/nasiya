@@ -21,6 +21,9 @@ def test_error_catalog_contains_only_stable_codes() -> None:
         ErrorCode.VALIDATION_ERROR,
         ErrorCode.TELEGRAM_ALREADY_LINKED,
         ErrorCode.TELEGRAM_NOT_LINKED,
+        ErrorCode.TELEGRAM_CONTACT_REQUIRED,
+        ErrorCode.TELEGRAM_PHONE_MISMATCH,
+        ErrorCode.TELEGRAM_PHONE_NOT_VERIFIED,
         ErrorCode.TELEGRAM_CHAT_ALREADY_LINKED,
         ErrorCode.LINK_TOKEN_INVALID,
         ErrorCode.FORBIDDEN,
@@ -48,7 +51,7 @@ def test_error_catalog_contains_only_stable_codes() -> None:
         ErrorCode.CUSTOMER_ACTIVATION_CHANGED,
         ErrorCode.TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER,
     }
-    assert len(ERROR_CATALOG) == 33
+    assert len(ERROR_CATALOG) == 36
 
 
 def test_error_code_values_are_stable() -> None:
@@ -60,6 +63,9 @@ def test_error_code_values_are_stable() -> None:
         "VALIDATION_ERROR",
         "TELEGRAM_ALREADY_LINKED",
         "TELEGRAM_NOT_LINKED",
+        "TELEGRAM_CONTACT_REQUIRED",
+        "TELEGRAM_PHONE_MISMATCH",
+        "TELEGRAM_PHONE_NOT_VERIFIED",
         "TELEGRAM_CHAT_ALREADY_LINKED",
         "LINK_TOKEN_INVALID",
         "FORBIDDEN",
@@ -99,6 +105,9 @@ def test_error_code_values_are_stable() -> None:
         (ErrorCode.VALIDATION_ERROR, 422),
         (ErrorCode.TELEGRAM_ALREADY_LINKED, 409),
         (ErrorCode.TELEGRAM_NOT_LINKED, 409),
+        (ErrorCode.TELEGRAM_CONTACT_REQUIRED, 409),
+        (ErrorCode.TELEGRAM_PHONE_MISMATCH, 409),
+        (ErrorCode.TELEGRAM_PHONE_NOT_VERIFIED, 409),
         (ErrorCode.TELEGRAM_CHAT_ALREADY_LINKED, 409),
         (ErrorCode.LINK_TOKEN_INVALID, 422),
         (ErrorCode.FORBIDDEN, 403),
@@ -156,6 +165,18 @@ def test_error_http_status_mapping_is_stable(
         (
             ErrorCode.TELEGRAM_NOT_LINKED,
             "Telegram akkauntingiz bog'lanmagan.",
+        ),
+        (
+            ErrorCode.TELEGRAM_CONTACT_REQUIRED,
+            "Telegram orqali o'zingizning kontaktingizni yuboring.",
+        ),
+        (
+            ErrorCode.TELEGRAM_PHONE_MISMATCH,
+            "Telegram kontaktini tasdiqlab bo'lmadi.",
+        ),
+        (
+            ErrorCode.TELEGRAM_PHONE_NOT_VERIFIED,
+            "Telegram kontaktingizni tasdiqlang.",
         ),
         (
             ErrorCode.TELEGRAM_CHAT_ALREADY_LINKED,

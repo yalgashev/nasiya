@@ -15,7 +15,7 @@ from app.auth.models import AuthRateLimit, User
 from app.db import create_database_session_factory
 from app.main import create_app
 from app.otp.contracts import OtpInternalOutcome
-from app.otp.issuance import request_login_otp
+from app.otp.issuance import coordinate_login_otp_request
 from app.otp.models import OtpChallenge, OtpDispatch
 from app.security_headers import AUTH_NO_STORE_CACHE_CONTROL, CONTENT_SECURITY_POLICY
 from app.settings import Settings
@@ -97,6 +97,7 @@ def add_user(
         else None,
         linked_at=NOW,
         unlinked_at=None if linked else NOW,
+        phone_verified_at=NOW if linked else None,
         updated_at=NOW,
     )
     session.add(link)
@@ -229,8 +230,8 @@ def test_unknown_service_path_invokes_dummy_work_and_records_phone_ip_limits(
     settings = make_settings(m2_test_database)
     dummy_calls = []
 
-    result = request_login_otp(
-        db_session,
+    result = coordinate_login_otp_request(
+        create_database_session_factory(m2_test_database),
         settings,
         phone_input="+998900009998",
         browser_binding_digest="9" * 64,

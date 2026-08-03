@@ -105,14 +105,31 @@ from tests.m11_seed import (
 )
 from tests.m11_seed import (
     REGISTRATION_DIGEST,
-    seed_registration_snapshot,
     synthetic_identity_crypto_config,
+)
+from tests.m11_seed import (
+    seed_registration_snapshot as _seed_registration_snapshot,
 )
 from tests.storage_fake import FakeObjectStorageService
 
 _USER_ID = UUID("11111111-1111-4111-8111-111111111111")
 _SESSION_ID = UUID("22222222-2222-4222-8222-222222222222")
 _DIGEST = "c" * 64
+
+
+def seed_registration_snapshot(
+    session: Session,
+    *,
+    phone: str,
+) -> RegistrationReadinessSnapshot:
+    snapshot = _seed_registration_snapshot(session, phone=phone)
+    link = session.get(TelegramLink, snapshot.telegram_link_id)
+    assert link is not None
+    link.phone_verified_at = link.linked_at
+    session.flush()
+    return snapshot
+
+
 _NOW = datetime(2026, 8, 2, 12, 30, tzinfo=UTC)
 _OTP_HMAC_KEY = SecretStr("m11-synthetic-registration-otp-hmac-key")
 _RATE_HMAC_KEY = "m11-synthetic-rate-limit-key-at-least-32-characters"
@@ -761,7 +778,28 @@ def _mutate_registration_snapshot(
     if changed_part == "link":
         link = session.get(TelegramLink, snapshot.telegram_link_id)
         assert link is not None
-        link.linked_at = link.linked_at + timedelta(seconds=1)
+        changed_at = link.linked_at + timedelta(seconds=1)
+        link.linked_at = changed_at
+        link.phone_verified_at = changed_at
+        return
+    if changed_part == "link_unverified":
+        link = session.get(TelegramLink, snapshot.telegram_link_id)
+        assert link is not None
+        link.phone_verified_at = None
+        return
+    if changed_part == "link_owner":
+        other_user = User(
+            phone="+998900001499",
+            password_hash=None,
+            is_active=True,
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+        session.add(other_user)
+        session.flush()
+        link = session.get(TelegramLink, snapshot.telegram_link_id)
+        assert link is not None
+        link.user_id = other_user.id
         return
     if changed_part == "customer_status":
         customer = session.get(Customer, snapshot.customer_id)
@@ -873,6 +911,16 @@ def _mutate_registration_snapshot(
             RegistrationSnapshotRecheckOutcome.LINK_CHANGED,
         ),
         (
+            "link_unverified",
+            "+998900001499",
+            RegistrationSnapshotRecheckOutcome.LINK_CHANGED,
+        ),
+        (
+            "link_owner",
+            "+998900001501",
+            RegistrationSnapshotRecheckOutcome.LINK_CHANGED,
+        ),
+        (
             "customer_status",
             "+998900001355",
             RegistrationSnapshotRecheckOutcome.REGISTRATION_STATE_CHANGED,
@@ -958,6 +1006,16 @@ def test_each_live_snapshot_gate_fails_closed_without_otp_mutation(
         (
             "link",
             "+998900001359",
+            "INVALIDATED_BY_LINK_CHANGE",
+        ),
+        (
+            "link_unverified",
+            "+998900001500",
+            "INVALIDATED_BY_LINK_CHANGE",
+        ),
+        (
+            "link_owner",
+            "+998900001502",
             "INVALIDATED_BY_LINK_CHANGE",
         ),
         (
@@ -1089,6 +1147,178 @@ def test_snapshot_mismatch_invalidates_before_mac_without_attempt(
 
 
 @pytest.mark.integration
+def test_full_registration_verify_cross_owner_has_exact_zero_activation_lifecycle(
+    m2_test_database: Engine,
+) -> None:
+    with Session(m2_test_database) as session, session.begin():
+        snapshot = seed_registration_snapshot(
+            session,
+            phone="+998900001503",
+        )
+        challenge, dispatch = _create_active_registration_candidate(
+            session,
+            snapshot=snapshot,
+        )
+        current = create_authenticated_session(
+            session,
+            snapshot.user_id,
+            "synthetic-cross-owner-browser",
+            SEED_NOW,
+            settings=_settings(m2_test_database),
+        )
+        _mutate_registration_snapshot(
+            session,
+            snapshot=snapshot,
+            changed_part="link_owner",
+        )
+        session.flush()
+        link = session.get(TelegramLink, snapshot.telegram_link_id)
+        customer = session.get(Customer, snapshot.customer_id)
+        assert link is not None
+        assert customer is not None
+        challenge_id = challenge.id
+        dispatch_id = dispatch.id
+        current_session_id = current.session.id
+        expected_code_mac = challenge.code_mac
+        expected_link = (
+            link.user_id,
+            link.telegram_chat_id,
+            link.linked_at,
+            link.phone_verified_at,
+            link.unlinked_at,
+            link.updated_at,
+        )
+        expected_customer = (
+            customer.onboarding_status,
+            customer.activated_at,
+            customer.updated_at,
+        )
+        expected_session = (
+            current.session.user_id,
+            current.session.active_shop_id,
+            current.session.token_hash,
+            current.session.csrf_secret,
+            current.session.user_agent,
+            current.session.created_at,
+            current.session.last_seen_at,
+            current.session.expires_at,
+            current.session.revoked_at,
+        )
+
+    with Session(m2_test_database) as session, session.begin():
+        result = verify_and_activate_registration_customer(
+            session,
+            command=_verify_command(
+                user_id=snapshot.user_id,
+                current_session_id=current_session_id,
+            ),
+            settings=_settings(m2_test_database),
+            identity_crypto_config=synthetic_identity_crypto_config(),
+        )
+
+    with Session(m2_test_database) as session:
+        stored = session.get(OtpChallenge, challenge_id)
+        stored_dispatch = session.get(OtpDispatch, dispatch_id)
+        link = session.get(TelegramLink, snapshot.telegram_link_id)
+        customer = session.get(Customer, snapshot.customer_id)
+        current_session = session.get(AuthSession, current_session_id)
+        events = tuple(
+            session.scalars(
+                select(OtpChallengeEvent)
+                .where(OtpChallengeEvent.challenge_id == challenge_id)
+                .order_by(
+                    OtpChallengeEvent.occurred_at.asc(),
+                    OtpChallengeEvent.id.asc(),
+                )
+            )
+        )
+        audit_count = session.scalar(select(func.count()).select_from(AuditLog))
+        session_count = session.scalar(select(func.count()).select_from(AuthSession))
+        assert stored is not None
+        assert stored_dispatch is not None
+        assert link is not None
+        assert customer is not None
+        assert current_session is not None
+
+    assert result == RegistrationOtpVerificationResult(
+        RegistrationOtpVerificationOutcome.CUSTOMER_ACTIVATION_CHANGED
+    )
+    assert (
+        stored.status,
+        stored.failed_attempts,
+        stored.code_mac,
+        stored.activated_at,
+        stored.expires_at,
+        stored.consumed_at,
+        stored.terminal_at,
+        stored.updated_at,
+    ) == (
+        OtpChallengeStatus.INVALIDATED.value,
+        0,
+        expected_code_mac,
+        SEED_NOW + timedelta(seconds=1),
+        _NOW + timedelta(minutes=3),
+        None,
+        _NOW,
+        _NOW,
+    )
+    assert (
+        stored_dispatch.status,
+        stored_dispatch.claimed_at,
+        stored_dispatch.prepared_at,
+        stored_dispatch.sent_at,
+        stored_dispatch.terminal_at,
+        stored_dispatch.failure_code,
+        stored_dispatch.updated_at,
+    ) == (
+        "CANCELLED",
+        None,
+        None,
+        None,
+        _NOW,
+        None,
+        _NOW,
+    )
+    assert [(event.action, event.safe_code, event.occurred_at) for event in events] == [
+        (
+            OtpChallengeEventAction.INVALIDATED_BY_LINK_CHANGE.value,
+            None,
+            _NOW,
+        )
+    ]
+    assert (
+        link.user_id,
+        link.telegram_chat_id,
+        link.linked_at,
+        link.phone_verified_at,
+        link.unlinked_at,
+        link.updated_at,
+    ) == expected_link
+    assert (
+        (
+            customer.onboarding_status,
+            customer.activated_at,
+            customer.updated_at,
+        )
+        == expected_customer
+        == ("draft", None, SEED_NOW)
+    )
+    assert (
+        current_session.user_id,
+        current_session.active_shop_id,
+        current_session.token_hash,
+        current_session.csrf_secret,
+        current_session.user_agent,
+        current_session.created_at,
+        current_session.last_seen_at,
+        current_session.expires_at,
+        current_session.revoked_at,
+    ) == expected_session
+    assert audit_count == 0
+    assert session_count == 1
+
+
+@pytest.mark.integration
 def test_parallel_snapshot_mismatch_has_one_invalidation_event(
     m2_test_database: Engine,
 ) -> None:
@@ -1104,7 +1334,9 @@ def test_parallel_snapshot_mismatch_has_one_invalidation_event(
         challenge_id = challenge.id
         link = session.get(TelegramLink, snapshot.telegram_link_id)
         assert link is not None
-        link.linked_at = link.linked_at + timedelta(seconds=1)
+        changed_at = link.linked_at + timedelta(seconds=1)
+        link.linked_at = changed_at
+        link.phone_verified_at = changed_at
 
     start = Barrier(2)
 

@@ -1,3 +1,4 @@
+import ast
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -12,6 +13,7 @@ from sqlalchemy.orm import Session
 
 import app.customer_activation.service as activation_service_module
 import app.telegram.service as telegram_service_module
+from app.audit.models import AuditLog
 from app.auth.error_codes import ErrorCode
 from app.auth.models import Session as AuthSession
 from app.auth.models import User
@@ -27,20 +29,35 @@ from app.customer_activation.contracts import (
     ProtectedActiveTelegramRelinkResult,
     ProtectedTelegramRelinkLinkDisposition,
     ProtectedTelegramRelinkOutcome,
+    RegistrationOtpPendingDelivery,
+    RegistrationOtpPrerequisiteFailed,
     RegistrationOtpVerificationOutcome,
     RegistrationOtpVerificationResult,
+    RegistrationPrerequisiteError,
+    RegistrationReadinessComponent,
+    RegistrationReadinessComponentStatus,
+    RegistrationReadinessSnapshot,
+    RegistrationReadinessState,
     VerifyRegistrationOtp,
     decide_ordinary_telegram_unlink,
 )
-from app.customer_activation.service import verify_and_activate_registration_customer
+from app.customer_activation.service import (
+    get_registration_readiness,
+    issue_registration_otp,
+    verify_and_activate_registration_customer,
+)
 from app.otp.code import OtpCode
 from app.otp.contracts import (
     OtpChallengeEventAction,
     OtpChallengeStatus,
     OtpDispatchStatus,
+    OtpInternalOutcome,
+    OtpPublicOutcome,
     OtpPurpose,
+    map_internal_outcome_to_public,
 )
 from app.otp.crypto import OtpBrowserBindingDigest, compute_otp_code_mac
+from app.otp.issuance import issue_login_otp_in_transaction
 from app.otp.models import OtpChallenge, OtpChallengeEvent, OtpDispatch
 from app.otp.repository import (
     activate_challenge,
@@ -48,17 +65,22 @@ from app.otp.repository import (
     create_pending_dispatch,
     create_pending_registration_challenge,
 )
+from app.otp.web_presentation import OtpWebLanguage
 from app.settings import Settings
 from app.shop.models import Shop
 from app.telegram.client_ip import ResolvedClientIp
-from app.telegram.inbound import VerifiedPrivateTelegramChatIdentity
+from app.telegram.inbound import (
+    SensitiveTelegramContactPhone,
+    TelegramUserIdentity,
+    VerifiedPrivateTelegramChatIdentity,
+)
 from app.telegram.models import TelegramLink, TelegramLinkEvent, TelegramLinkToken
 from app.telegram.service import (
     TelegramChatAlreadyLinkedError,
     TelegramLinkOutcome,
     TelegramLinkTokenIssueError,
+    bind_start_token_for_contact,
     consume_start_token,
-    issue_relink_token,
     unlink,
 )
 from tests.m11_seed import (
@@ -66,8 +88,13 @@ from tests.m11_seed import (
 )
 from tests.m11_seed import (
     REGISTRATION_DIGEST,
-    seed_registration_snapshot,
     synthetic_identity_crypto_config,
+)
+from tests.m11_seed import (
+    seed_registration_snapshot as _seed_registration_snapshot,
+)
+from tests.telegram_issue_helpers import (
+    issue_relink_token_in_one_test_transaction as issue_relink_token,
 )
 
 _ = Shop
@@ -150,26 +177,149 @@ def test_supported_link_mutation_entries_use_service_guards() -> None:
     assert auth_router_source.count('@router.post("/telegram/relink-token"') == 1
     assert "unlink_telegram(db, user, now)" in auth_router_source
     assert "consume_start_token(" in update_source
+    telegram_repository_source = app_sources[
+        PROJECT_ROOT / "app" / "telegram" / "repository.py"
+    ]
+    telegram_service_source = app_sources[
+        PROJECT_ROOT / "app" / "telegram" / "service.py"
+    ]
     assert (
-        sum(
-            source.count("unlink_verified_private_chat")
-            for source in app_sources.values()
+        telegram_repository_source.count("def unlink_verified_private_chat(")
+        == telegram_repository_source.count(
+            "def unlink_verified_private_chat_from_prelocked_state("
         )
-        == 3
+        == 1
     )
     assert (
-        sum(
-            source.count("relink_verified_private_chat")
-            for source in app_sources.values()
+        telegram_repository_source.count("def link_unverified_private_chat(")
+        == telegram_repository_source.count(
+            "def link_unverified_private_chat_from_prelocked_state("
         )
-        == 3
+        == 1
     )
+    assert (
+        telegram_repository_source.count("def relink_unverified_private_chat(")
+        == telegram_repository_source.count(
+            "def relink_unverified_private_chat_from_prelocked_state("
+        )
+        == 1
+    )
+    assert "def link_verified_private_chat(" not in telegram_repository_source
+    assert "def link_verified_private_chat_from_prelocked_state(" not in (
+        telegram_repository_source
+    )
+    assert "def relink_verified_private_chat(" not in telegram_repository_source
+    assert "def relink_verified_private_chat_from_prelocked_state(" not in (
+        telegram_repository_source
+    )
+    assert "unlink_verified_private_chat(" not in telegram_service_source
+    assert "link_unverified_private_chat(" not in telegram_service_source
+    assert "relink_unverified_private_chat(" not in telegram_service_source
+    assert (
+        telegram_service_source.count(
+            "unlink_verified_private_chat_from_prelocked_state"
+        )
+        == 2
+    )
+    assert (
+        telegram_service_source.count(
+            "relink_phone_verified_private_chat_from_prelocked_state"
+        )
+        == 2
+    )
+
+
+def test_every_otp_link_policy_call_supplies_server_derived_owner() -> None:
+    policy_calls: list[ast.Call] = []
+    for relative_path in (
+        "otp/issuance.py",
+        "otp/verification.py",
+        "otp/dispatch_service.py",
+        "customer_activation/service.py",
+    ):
+        source = (PROJECT_ROOT / "app" / relative_path).read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(source)):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "is_otp_eligible_telegram_link"
+            ):
+                policy_calls.append(node)
+
+    assert len(policy_calls) == 7
+    for call in policy_calls:
+        owner_keywords = [
+            keyword for keyword in call.keywords if keyword.arg == "expected_user_id"
+        ]
+        assert len(owner_keywords) == 1
+        assert isinstance(owner_keywords[0].value, ast.Attribute)
+        assert owner_keywords[0].value.attr == "id"
 
 
 _NOW = datetime(2026, 8, 2, 12, 30, tzinfo=UTC)
 _OTP_HMAC_KEY = SecretStr("m11-synthetic-registration-otp-hmac-key")
 _RATE_HMAC_KEY = "m11-synthetic-rate-limit-key-at-least-32-characters"
 _LOGIN_DIGEST = OtpBrowserBindingDigest("b" * 64)
+
+
+def seed_registration_snapshot(
+    session: Session,
+    *,
+    phone: str,
+) -> RegistrationReadinessSnapshot:
+    snapshot = _seed_registration_snapshot(session, phone=phone)
+    link = session.get(TelegramLink, snapshot.telegram_link_id)
+    assert link is not None
+    link.phone_verified_at = link.linked_at
+    session.flush()
+    return snapshot
+
+
+def _activation_context(
+    *,
+    snapshot: RegistrationReadinessSnapshot,
+    phone: str,
+    current_session_id: UUID | None = None,
+) -> activation_service_module.AuthenticatedActivationContext:
+    return activation_service_module.AuthenticatedActivationContext(
+        actor=CustomerActivationActor(snapshot.user_id),
+        browser=CustomerActivationBrowserContext(
+            current_session_id=current_session_id or snapshot.user_id,
+            browser_binding_digest=REGISTRATION_DIGEST,
+        ),
+        trusted_client_ip=ResolvedClientIp("203.0.113.190"),
+        _canonical_account_phone=phone,
+    )
+
+
+def _consume_matching_contact(
+    session: Session,
+    *,
+    raw_token,
+    chat_id: int,
+    phone: str,
+    now: datetime,
+):
+    chat_identity = VerifiedPrivateTelegramChatIdentity(chat_id)
+    sender_identity = TelegramUserIdentity(chat_id + 1_000_000_000)
+    binding_key = SecretStr(_RATE_HMAC_KEY)
+    bind_start_token_for_contact(
+        session,
+        raw_token,
+        chat_identity,
+        sender_identity,
+        rate_limit_hmac_key=binding_key,
+        now=now,
+    )
+    return consume_start_token(
+        session,
+        chat_identity,
+        sender_identity,
+        sender_identity,
+        SensitiveTelegramContactPhone(phone),
+        rate_limit_hmac_key=binding_key,
+        now=now,
+    )
 
 
 def _settings(engine: Engine) -> Settings:
@@ -271,6 +421,221 @@ def _verify_command(
         candidate_code="004271",
         now=_NOW,
     )
+
+
+@pytest.mark.integration
+def test_legacy_unverified_link_cannot_issue_login_otp(
+    m2_test_database: Engine,
+) -> None:
+    phone = "+998900001390"
+    with Session(m2_test_database) as session, session.begin():
+        snapshot = seed_registration_snapshot(session, phone=phone)
+        link = session.get(TelegramLink, snapshot.telegram_link_id)
+        assert link is not None
+        link.phone_verified_at = None
+        link_id = link.id
+
+    with Session(m2_test_database) as session, session.begin():
+        result = issue_login_otp_in_transaction(
+            session,
+            _settings(m2_test_database),
+            phone_input=phone,
+            browser_binding_digest=_LOGIN_DIGEST,
+            locale="uz-Latn",
+            now=_NOW,
+        )
+
+    with Session(m2_test_database) as session:
+        link = session.get(TelegramLink, link_id)
+        otp_counts = tuple(
+            session.scalar(select(func.count()).select_from(model)) or 0
+            for model in (OtpChallenge, OtpDispatch, OtpChallengeEvent)
+        )
+
+    assert result.outcome is OtpInternalOutcome.TELEGRAM_PHONE_NOT_VERIFIED
+    assert map_internal_outcome_to_public(result.outcome) is (
+        OtpPublicOutcome.GENERIC_ACCEPTED
+    )
+    assert otp_counts == (0, 0, 0)
+    assert link is not None
+    assert link.telegram_chat_id is not None
+    assert link.unlinked_at is None
+    assert link.phone_verified_at is None
+
+
+@pytest.mark.integration
+def test_legacy_unverified_link_cannot_issue_registration_otp_or_activate(
+    m2_test_database: Engine,
+) -> None:
+    phone = "+998900001391"
+    with Session(m2_test_database) as session, session.begin():
+        snapshot = seed_registration_snapshot(session, phone=phone)
+        challenge = create_pending_registration_challenge(
+            session,
+            snapshot=snapshot,
+            now=SEED_NOW,
+        )
+        dispatch = _activate_otp(
+            session,
+            challenge=challenge,
+            purpose=OtpPurpose.REGISTRATION,
+            code="004271",
+        )
+        current = create_authenticated_session(
+            session,
+            snapshot.user_id,
+            "synthetic-legacy-verification-browser",
+            SEED_NOW,
+            settings=_settings(m2_test_database),
+        )
+        link = session.get(TelegramLink, snapshot.telegram_link_id)
+        assert link is not None
+        link.phone_verified_at = None
+        challenge_id = challenge.id
+        dispatch_id = dispatch.id
+        current_session_id = current.session.id
+        link_id = link.id
+
+    context = _activation_context(
+        snapshot=snapshot,
+        phone=phone,
+        current_session_id=current_session_id,
+    )
+    with Session(m2_test_database) as session, session.begin():
+        issue_result = issue_registration_otp(
+            session,
+            context=context,
+            identity_crypto_config=synthetic_identity_crypto_config(),
+            language=OtpWebLanguage.UZ_LATN,
+            now=_NOW,
+        )
+
+    with Session(m2_test_database) as session, session.begin():
+        verify_result = verify_and_activate_registration_customer(
+            session,
+            command=_verify_command(
+                user_id=snapshot.user_id,
+                current_session_id=current_session_id,
+            ),
+            settings=_settings(m2_test_database),
+            identity_crypto_config=synthetic_identity_crypto_config(),
+        )
+
+    with Session(m2_test_database) as session:
+        customer = session.get(Customer, snapshot.customer_id)
+        link = session.get(TelegramLink, link_id)
+        challenge = session.get(OtpChallenge, challenge_id)
+        dispatch = session.get(OtpDispatch, dispatch_id)
+        current_session = session.get(AuthSession, current_session_id)
+        capability_counts = tuple(
+            session.scalar(select(func.count()).select_from(model)) or 0
+            for model in (
+                OtpChallenge,
+                OtpDispatch,
+                OtpChallengeEvent,
+                AuditLog,
+                AuthSession,
+            )
+        )
+        challenge_events = tuple(
+            session.scalars(select(OtpChallengeEvent.action)).all()
+        )
+
+    assert isinstance(issue_result, RegistrationOtpPrerequisiteFailed)
+    assert issue_result.error is (
+        RegistrationPrerequisiteError.TELEGRAM_PHONE_NOT_VERIFIED
+    )
+    assert isinstance(verify_result, RegistrationOtpVerificationResult)
+    assert verify_result.outcome is (
+        RegistrationOtpVerificationOutcome.CUSTOMER_ACTIVATION_CHANGED
+    )
+    assert customer is not None
+    assert (customer.onboarding_status, customer.activated_at) == ("draft", None)
+    assert link is not None
+    assert link.telegram_chat_id is not None
+    assert link.unlinked_at is None
+    assert link.phone_verified_at is None
+    assert challenge is not None
+    assert challenge.status == OtpChallengeStatus.INVALIDATED.value
+    assert challenge.failed_attempts == 0
+    assert dispatch is not None
+    assert dispatch.status == OtpDispatchStatus.CANCELLED.value
+    assert current_session is not None
+    assert current_session.revoked_at is None
+    assert capability_counts == (1, 1, 1, 0, 1)
+    assert challenge_events == (
+        OtpChallengeEventAction.INVALIDATED_BY_LINK_CHANGE.value,
+    )
+
+
+@pytest.mark.integration
+def test_phone_verified_link_permits_login_and_registration_otp(
+    m2_test_database: Engine,
+) -> None:
+    phone = "+998900001392"
+    with Session(m2_test_database) as session, session.begin():
+        snapshot = seed_registration_snapshot(session, phone=phone)
+        readiness = get_registration_readiness(
+            session,
+            context=_activation_context(snapshot=snapshot, phone=phone),
+            identity_crypto_config=synthetic_identity_crypto_config(),
+        )
+        login_result = issue_login_otp_in_transaction(
+            session,
+            _settings(m2_test_database),
+            phone_input=phone,
+            browser_binding_digest=_LOGIN_DIGEST,
+            locale="uz-Latn",
+            now=_NOW,
+        )
+        registration_result = issue_registration_otp(
+            session,
+            context=_activation_context(snapshot=snapshot, phone=phone),
+            identity_crypto_config=synthetic_identity_crypto_config(),
+            language=OtpWebLanguage.UZ_LATN,
+            now=_NOW,
+        )
+
+    with Session(m2_test_database) as session:
+        link = session.get(TelegramLink, snapshot.telegram_link_id)
+        challenges = tuple(
+            session.scalars(select(OtpChallenge).order_by(OtpChallenge.purpose)).all()
+        )
+        dispatch_count = (
+            session.scalar(select(func.count()).select_from(OtpDispatch)) or 0
+        )
+        issued_event_count = (
+            session.scalar(
+                select(func.count())
+                .select_from(OtpChallengeEvent)
+                .where(OtpChallengeEvent.action == OtpChallengeEventAction.ISSUED.value)
+            )
+            or 0
+        )
+
+    assert readiness.state is RegistrationReadinessState.READY_FOR_OTP
+    assert all(
+        component.status is RegistrationReadinessComponentStatus.COMPLETE
+        for component in readiness.components
+    )
+    assert {component.component for component in readiness.components} == set(
+        RegistrationReadinessComponent
+    )
+    assert login_result.outcome is OtpInternalOutcome.OTP_PENDING
+    assert isinstance(registration_result, RegistrationOtpPendingDelivery)
+    assert link is not None
+    assert link.phone_verified_at == link.linked_at
+    assert tuple(challenge.purpose for challenge in challenges) == (
+        OtpPurpose.LOGIN.value,
+        OtpPurpose.REGISTRATION.value,
+    )
+    assert all(
+        challenge.telegram_link_id == link.id
+        and challenge.telegram_linked_at == link.linked_at
+        for challenge in challenges
+    )
+    assert dispatch_count == 2
+    assert issued_event_count == 2
 
 
 @pytest.mark.integration
@@ -397,8 +762,7 @@ def test_active_customer_ordinary_unlink_is_zero_write_denied(
     assert before == after
 
 
-@pytest.mark.integration
-def test_active_customer_protected_relink_is_atomic_and_invalidates_both_purposes(
+def _assert_same_phone_reverify_invalidates_both_purposes(
     m2_test_database: Engine,
 ) -> None:
     with Session(m2_test_database) as session, session.begin():
@@ -430,11 +794,12 @@ def test_active_customer_protected_relink_is_atomic_and_invalidates_both_purpose
 
     relinked_at = _NOW + timedelta(seconds=1)
     with Session(m2_test_database) as session, session.begin():
-        result = consume_start_token(
+        result = _consume_matching_contact(
             session,
-            raw_token,
-            VerifiedPrivateTelegramChatIdentity(9_980_001_381),
-            relinked_at,
+            raw_token=raw_token,
+            chat_id=9_980_001_381,
+            phone="+998900001381",
+            now=relinked_at,
         )
         assert result.outcome is TelegramLinkOutcome.RELINKED
 
@@ -461,6 +826,7 @@ def test_active_customer_protected_relink_is_atomic_and_invalidates_both_purpose
     assert (customer.onboarding_status, customer.activated_at) == ("active", _NOW)
     assert link.unlinked_at is None
     assert link.linked_at == relinked_at
+    assert link.phone_verified_at == relinked_at
     assert link.linked_at != old_linked_at
     assert registration.status == OtpChallengeStatus.INVALIDATED.value
     assert login.status == OtpChallengeStatus.INVALIDATED.value
@@ -471,6 +837,20 @@ def test_active_customer_protected_relink_is_atomic_and_invalidates_both_purpose
         OtpChallengeEventAction.INVALIDATED_BY_LINK_CHANGE.value,
     )
     assert tuple(event.action for event in link_events) == ("relinked",)
+
+
+@pytest.mark.integration
+def test_active_customer_protected_relink_is_atomic_and_invalidates_both_purposes(
+    m2_test_database: Engine,
+) -> None:
+    _assert_same_phone_reverify_invalidates_both_purposes(m2_test_database)
+
+
+@pytest.mark.integration
+def test_same_phone_reverify_rotates_generation_and_stales_both_purposes(
+    m2_test_database: Engine,
+) -> None:
+    _assert_same_phone_reverify_invalidates_both_purposes(m2_test_database)
 
 
 @pytest.mark.integration
@@ -526,11 +906,12 @@ def test_protected_active_relink_collision_preserves_old_generation_and_otp(
 
     with Session(m2_test_database) as session, session.begin():
         with pytest.raises(TelegramChatAlreadyLinkedError):
-            consume_start_token(
+            _consume_matching_contact(
                 session,
-                raw_token,
-                VerifiedPrivateTelegramChatIdentity(collision_chat_id),
-                _NOW + timedelta(seconds=1),
+                raw_token=raw_token,
+                chat_id=collision_chat_id,
+                phone="+998900001382",
+                now=_NOW + timedelta(seconds=1),
             )
 
     with Session(m2_test_database) as session:
@@ -560,6 +941,146 @@ def test_protected_active_relink_collision_preserves_old_generation_and_otp(
     assert customer.onboarding_status == CustomerLifecycleStatus.ACTIVE.value
     assert event_count == 0
     assert challenge_event_count == 0
+
+
+@pytest.mark.integration
+def test_activation_verify_and_link_token_issue_barrier_converges_without_deadlock(
+    monkeypatch: pytest.MonkeyPatch,
+    m2_test_database: Engine,
+) -> None:
+    with Session(m2_test_database) as session, session.begin():
+        snapshot = seed_registration_snapshot(
+            session,
+            phone="+998900001386",
+        )
+        registration = create_pending_registration_challenge(
+            session,
+            snapshot=snapshot,
+            now=SEED_NOW,
+        )
+        _activate_otp(
+            session,
+            challenge=registration,
+            purpose=OtpPurpose.REGISTRATION,
+            code="004271",
+        )
+        current = create_authenticated_session(
+            session,
+            snapshot.user_id,
+            "synthetic-activation-link-issue-browser",
+            SEED_NOW,
+            settings=_settings(m2_test_database),
+        )
+        session.flush()
+        registration_id = registration.id
+        current_session_id = current.session.id
+        original_link_state = (
+            snapshot.telegram_link_id,
+            snapshot.telegram_linked_at,
+        )
+
+    activation_write_reached = Event()
+    issue_link_state_observed = Event()
+    original_append_audit = activation_service_module.append_audit_event
+    original_has_active_link = telegram_service_module.has_active_telegram_link
+
+    def hold_activation_write(*args: object, **kwargs: object):
+        result = original_append_audit(*args, **kwargs)
+        activation_write_reached.set()
+        assert issue_link_state_observed.wait(timeout=5)
+        return result
+
+    def observe_link_state(*args: object, **kwargs: object) -> bool:
+        result = original_has_active_link(*args, **kwargs)
+        issue_link_state_observed.set()
+        return result
+
+    monkeypatch.setattr(
+        activation_service_module,
+        "append_audit_event",
+        hold_activation_write,
+    )
+    monkeypatch.setattr(
+        telegram_service_module,
+        "has_active_telegram_link",
+        observe_link_state,
+    )
+
+    def activate() -> str:
+        with Session(m2_test_database) as session, session.begin():
+            result = verify_and_activate_registration_customer(
+                session,
+                command=_verify_command(
+                    user_id=snapshot.user_id,
+                    current_session_id=current_session_id,
+                ),
+                settings=_settings(m2_test_database),
+                identity_crypto_config=synthetic_identity_crypto_config(),
+            )
+            assert isinstance(result, PreparedCustomerActivation)
+            return RegistrationOtpVerificationOutcome.ACTIVATED.value
+
+    def issue_link_token() -> ErrorCode:
+        assert activation_write_reached.wait(timeout=5)
+        with Session(m2_test_database) as session, session.begin():
+            user = session.get(User, snapshot.user_id)
+            assert user is not None
+            with pytest.raises(TelegramLinkTokenIssueError) as caught:
+                telegram_service_module.issue_link_token_after_rate_limit(
+                    session,
+                    user,
+                    _NOW + timedelta(seconds=1),
+                    token_generator=lambda _size: "activation_link_issue_barrier_token",
+                )
+            return caught.value.error_code
+
+    executor = ThreadPoolExecutor(max_workers=2)
+    try:
+        activation_future = executor.submit(activate)
+        issue_future = executor.submit(issue_link_token)
+        completed, pending = wait((activation_future, issue_future), timeout=10)
+        assert not pending
+        assert len(completed) == 2
+        assert activation_future.result() == "ACTIVATED"
+        assert issue_future.result() is ErrorCode.TELEGRAM_ALREADY_LINKED
+    finally:
+        issue_link_state_observed.set()
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    with Session(m2_test_database) as session:
+        customer = session.get(Customer, snapshot.customer_id)
+        link = session.get(TelegramLink, snapshot.telegram_link_id)
+        challenge = session.get(OtpChallenge, registration_id)
+        old_session = session.get(AuthSession, current_session_id)
+        token_count = session.scalar(
+            select(func.count()).select_from(TelegramLinkToken)
+        )
+        link_event_count = session.scalar(
+            select(func.count()).select_from(TelegramLinkEvent)
+        )
+        activation_audit_count = session.scalar(
+            select(func.count()).select_from(AuditLog)
+        )
+        authenticated_session_count = session.scalar(
+            select(func.count())
+            .select_from(AuthSession)
+            .where(AuthSession.user_id == snapshot.user_id)
+        )
+        assert customer is not None
+        assert link is not None
+        assert challenge is not None
+        assert old_session is not None
+
+    assert (customer.onboarding_status, customer.activated_at) == ("active", _NOW)
+    assert (link.id, link.linked_at) == original_link_state
+    assert link.phone_verified_at == link.linked_at
+    assert link.unlinked_at is None
+    assert challenge.status == OtpChallengeStatus.CONSUMED.value
+    assert old_session.revoked_at == _NOW
+    assert token_count == 0
+    assert link_event_count == 0
+    assert activation_audit_count == 1
+    assert authenticated_session_count == 2
 
 
 @pytest.mark.integration
@@ -815,11 +1336,12 @@ def test_relink_first_invalidates_old_registration_challenge_before_verify(
 
     def relink() -> str:
         with Session(m2_test_database) as session, session.begin():
-            result = consume_start_token(
+            result = _consume_matching_contact(
                 session,
-                raw_token,
-                VerifiedPrivateTelegramChatIdentity(9_980_001_385),
-                _NOW + timedelta(seconds=1),
+                raw_token=raw_token,
+                chat_id=9_980_001_385,
+                phone="+998900001385",
+                now=_NOW + timedelta(seconds=1),
             )
             return result.outcome.value
 

@@ -117,6 +117,7 @@ def add_user_with_link(session: Session) -> User:
             user_id=user.id,
             telegram_chat_id=CHAT_ID,
             linked_at=NOW,
+            phone_verified_at=NOW,
             updated_at=NOW,
         )
     )

@@ -497,6 +497,14 @@ def test_readiness_get_is_complete_and_zero_side_effect(
             "telegram_link",
         ),
         (
+            RegistrationReadinessComponent.TELEGRAM_LINK,
+            "unverified_telegram_link",
+        ),
+        (
+            RegistrationReadinessComponent.TELEGRAM_LINK,
+            "cross_owner_telegram_link",
+        ),
+        (
             RegistrationReadinessComponent.OFFER_ACCEPTANCE,
             "offer_acceptance",
         ),
@@ -525,7 +533,26 @@ def test_each_missing_readiness_gate_is_safe_and_side_effect_free(
             assert link is not None
             link.telegram_chat_id = None
             link.unlinked_at = NOW
+            link.phone_verified_at = None
             link.updated_at = NOW
+        elif mutation == "unverified_telegram_link":
+            link = session.get(TelegramLink, snapshot.telegram_link_id)
+            assert link is not None
+            link.phone_verified_at = None
+            link.updated_at = NOW
+        elif mutation == "cross_owner_telegram_link":
+            other_user = User(
+                phone="+998900001499",
+                password_hash=None,
+                is_active=True,
+                created_at=NOW,
+                updated_at=NOW,
+            )
+            session.add(other_user)
+            session.flush()
+            link = session.get(TelegramLink, snapshot.telegram_link_id)
+            assert link is not None
+            link.user_id = other_user.id
         elif mutation == "offer_acceptance":
             acceptance = session.get(
                 OfferAcceptance,
@@ -544,12 +571,54 @@ def test_each_missing_readiness_gate_is_safe_and_side_effect_free(
             assert object_file is not None
             object_file.status = ObjectFileStatus.DELETE_PENDING.value
 
-    with Session(m2_test_database) as session:
-        readiness = get_registration_readiness(
-            session,
-            context=_activation_context(snapshot),
-            identity_crypto_config=synthetic_identity_crypto_config(),
-        )
+    statements: list[str] = []
+
+    def capture_statement(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        statements.append(" ".join(statement.split()))
+
+    event.listen(m2_test_database, "before_cursor_execute", capture_statement)
+    try:
+        with Session(m2_test_database) as session:
+            before = tuple(
+                session.scalar(select(func.count()).select_from(model))
+                for model in (
+                    Customer,
+                    OtpChallenge,
+                    OtpDispatch,
+                    OtpChallengeEvent,
+                    AuditLog,
+                    AuthRateLimit,
+                    AuthSession,
+                )
+            )
+            statements.clear()
+            readiness = get_registration_readiness(
+                session,
+                context=_activation_context(snapshot),
+                identity_crypto_config=synthetic_identity_crypto_config(),
+            )
+            readiness_statements = tuple(statements)
+            after = tuple(
+                session.scalar(select(func.count()).select_from(model))
+                for model in (
+                    Customer,
+                    OtpChallenge,
+                    OtpDispatch,
+                    OtpChallengeEvent,
+                    AuditLog,
+                    AuthRateLimit,
+                    AuthSession,
+                )
+            )
+    finally:
+        event.remove(m2_test_database, "before_cursor_execute", capture_statement)
 
     status_by_component = {
         component.component: component.status for component in readiness.components
@@ -558,6 +627,12 @@ def test_each_missing_readiness_gate_is_safe_and_side_effect_free(
     assert (
         status_by_component[missing_component]
         is RegistrationReadinessComponentStatus.INCOMPLETE
+    )
+    assert before == after
+    assert all("FOR UPDATE" not in statement for statement in readiness_statements)
+    assert all(
+        not statement.startswith(("INSERT ", "UPDATE ", "DELETE "))
+        for statement in readiness_statements
     )
 
 

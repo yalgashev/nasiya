@@ -13,6 +13,7 @@ import app.customer_activation.service as activation_service_module
 import app.otp.issuance as otp_issuance_module
 import app.otp.repository as otp_repository_module
 import app.otp.verification as otp_verification_module
+import app.telegram.repository as telegram_repository_module
 import app.telegram.service as telegram_service_module
 from app.audit.models import AuditLog
 from app.auth.models import Session as AuthSession
@@ -813,6 +814,9 @@ def test_corrected_lock_paths_are_static_forward_subsequences() -> None:
     otp_lock_source = getsource(
         otp_repository_module._lock_outstanding_challenge_set_for_purposes
     )
+    otp_id_recheck_source = getsource(
+        otp_repository_module.get_outstanding_challenge_ids_by_user_for_purposes
+    )
     issue_source = getsource(otp_issuance_module._issue_challenge_for_target)
     verify_source = getsource(otp_verification_module.check_login_otp_candidate)
     invalidate_source = getsource(
@@ -820,8 +824,40 @@ def test_corrected_lock_paths_are_static_forward_subsequences() -> None:
     )
     consume_link_source = getsource(telegram_service_module.consume_start_token)
     unlink_source = getsource(telegram_service_module.unlink)
+    link_token_issue_source = getsource(
+        telegram_service_module._issue_token_for_link_state_after_rate_limit
+    )
     rotation_source = getsource(
         activation_repository_module.SqlAlchemyCurrentSessionRotation.replace_current_authenticated_session
+    )
+    token_lock_sources = tuple(
+        getsource(lock_callable)
+        for lock_callable in (
+            telegram_repository_module.lock_outstanding_telegram_link_token_set_by_user,
+            telegram_repository_module.lock_telegram_link_token_set_by_ids,
+        )
+    )
+    link_set_source = getsource(
+        telegram_repository_module.lock_telegram_link_change_set
+    )
+    prelocked_mutation_sources = tuple(
+        getsource(mutation)
+        for mutation in (
+            telegram_repository_module.link_unverified_private_chat_from_prelocked_state,
+            telegram_repository_module.relink_unverified_private_chat_from_prelocked_state,
+            telegram_repository_module.link_phone_verified_private_chat_from_prelocked_state,
+            telegram_repository_module.relink_phone_verified_private_chat_from_prelocked_state,
+            telegram_repository_module.unlink_verified_private_chat_from_prelocked_state,
+        )
+    )
+    locked_invalidation_source = getsource(
+        telegram_repository_module.invalidate_locked_outstanding_telegram_link_tokens
+    )
+    contact_binding_source = getsource(
+        telegram_service_module.bind_start_token_for_contact
+    )
+    contact_binding_mutation_source = getsource(
+        telegram_repository_module.bind_locked_telegram_link_token_for_contact
     )
 
     assert otp_lock_source.index("select(OtpDispatch)") < otp_lock_source.index(
@@ -834,16 +870,100 @@ def test_corrected_lock_paths_are_static_forward_subsequences() -> None:
         "lock_verification_candidate_set_by_browser"
     ) < verify_source.index("_revalidate_current_login_target")
     assert "load_dispatch_by_challenge_for_update" not in invalidate_source
-    assert consume_link_source.index("_lock_link_change_otp_state") < (
-        consume_link_source.index("lock_telegram_link_change_set")
+    assert (
+        consume_link_source.index(
+            "get_pending_telegram_link_token_ids_by_contact_binding"
+        )
+        < consume_link_source.index("lock_telegram_link_token_set_by_ids")
+        < consume_link_source.rindex(
+            "get_pending_telegram_link_token_ids_by_contact_binding"
+        )
+        < consume_link_source.index("_lock_link_change_otp_state")
+        < consume_link_source.index("_lock_active_user")
+        < consume_link_source.index("_link_change_otp_state_is_current")
+        < consume_link_source.index("lock_telegram_link_change_set")
+        < consume_link_source.index("lock_existing_own_customer_for_update")
     )
-    assert unlink_source.index("_lock_link_change_otp_state") < unlink_source.index(
-        "unlink_verified_private_chat"
+    assert (
+        unlink_source.index("lock_outstanding_telegram_link_token_set_by_user")
+        < unlink_source.index("_lock_link_change_otp_state")
+        < unlink_source.index("_lock_active_user")
+        < unlink_source.index("_link_change_otp_state_is_current")
+        < unlink_source.index("get_outstanding_telegram_link_token_ids_by_user")
+        < unlink_source.index("get_telegram_link_by_user_for_update")
+        < unlink_source.index("lock_existing_own_customer_for_update")
+        < unlink_source.index("invalidate_locked_outstanding_telegram_link_tokens")
+        < unlink_source.index("unlink_verified_private_chat")
+    )
+    assert "invalidate_outstanding_telegram_link_tokens" not in unlink_source
+    assert "with_for_update" not in otp_id_recheck_source
+    assert ".order_by(OtpChallenge.id.asc())" in otp_id_recheck_source
+    assert (
+        link_token_issue_source.index("invalidate_and_insert_telegram_link_token")
+        < link_token_issue_source.index("_lock_active_user")
+        < link_token_issue_source.index("get_telegram_link_by_user_for_update")
+    )
+    assert link_token_issue_source.count("has_active_telegram_link") == 1
+    for token_lock_source in token_lock_sources:
+        assert token_lock_source.index(
+            ".order_by(TelegramLinkToken.id.asc())"
+        ) < token_lock_source.index(".with_for_update()")
+    assert link_set_source.index(
+        ".order_by(TelegramLink.id.asc())"
+    ) < link_set_source.index(".with_for_update()")
+    for mutation_source in prelocked_mutation_sources:
+        assert "with_for_update" not in mutation_source
+        assert "get_telegram_link_by_user_for_update" not in mutation_source
+    assert "select(" not in locked_invalidation_source
+    assert "update(" not in locked_invalidation_source
+    assert "with_for_update" not in locked_invalidation_source
+    assert (
+        contact_binding_source.index("get_telegram_link_token_ids_for_contact_binding")
+        < contact_binding_source.index("lock_telegram_link_token_set_by_ids")
+        < contact_binding_source.rindex(
+            "get_telegram_link_token_ids_for_contact_binding"
+        )
+        < contact_binding_source.index("bind_locked_telegram_link_token_for_contact")
+    )
+    for forbidden_lock in (
+        "_lock_active_user",
+        "_lock_link_change_otp_state",
+        "lock_telegram_link_change_set",
+        "lock_existing_own_customer_for_update",
+    ):
+        assert forbidden_lock not in contact_binding_source
+    assert (
+        contact_binding_mutation_source.index(
+            "token.pending_contact_binding_mac = None"
+        )
+        < contact_binding_mutation_source.index("session.flush()")
+        < contact_binding_mutation_source.index(
+            "target.pending_contact_binding_mac = stored_binding_mac"
+        )
+        < contact_binding_mutation_source.rindex("session.flush()")
     )
     assert rotation_source.index("with_for_update") < rotation_source.index(
         "rotate_session"
     )
-    for source in (otp_lock_source, issue_source, verify_source, rotation_source):
+    for source in (
+        otp_lock_source,
+        issue_source,
+        verify_source,
+        rotation_source,
+        consume_link_source,
+        unlink_source,
+        link_token_issue_source,
+        *token_lock_sources,
+        link_set_source,
+        *prelocked_mutation_sources,
+        locked_invalidation_source,
+        contact_binding_source,
+        contact_binding_mutation_source,
+    ):
         assert ".commit(" not in source
         assert ".rollback(" not in source
         assert ".close(" not in source
+        assert "sleep(" not in source
+        assert "nowait" not in source
+        assert "lock_timeout" not in source
+        assert "pg_" + "advisory" not in source

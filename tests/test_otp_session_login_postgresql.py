@@ -72,6 +72,7 @@ def create_active_challenge(session: Session) -> OtpChallenge:
         user_id=user.id,
         telegram_chat_id=9_983_000_301,
         linked_at=NOW,
+        phone_verified_at=NOW,
         updated_at=NOW,
     )
     session.add(link)
@@ -200,6 +201,45 @@ def test_unlink_first_invalidates_otp_and_prevents_session_login(
     assert created is None
     assert challenge.status == OtpChallengeStatus.INVALIDATED.value
     assert anonymous.session.revoked_at is None
+    assert db_session.scalar(select(func.count()).select_from(AuthSession)) == 1
+
+
+@pytest.mark.integration
+def test_cross_owner_verified_link_never_rotates_login_session(
+    db_session: Session,
+    m2_test_database: Engine,
+) -> None:
+    settings = make_settings(m2_test_database)
+    challenge = create_active_challenge(db_session)
+    anonymous = create_anonymous_session(db_session, "ua", NOW, settings=settings)
+    link = db_session.get(TelegramLink, challenge.telegram_link_id)
+    assert link is not None
+    other_user = User(phone="+998900009302")
+    db_session.add(other_user)
+    db_session.flush()
+    link.user_id = other_user.id
+    db_session.flush()
+
+    verification_result = verify_login_otp(
+        db_session,
+        settings,
+        browser_binding_digest=VALID_DIGEST,
+        candidate_code_input="123456",
+        now=NOW + timedelta(seconds=2),
+    )
+    created = rotate_session_after_otp_consume(
+        db_session,
+        verification_result=verification_result,
+        current_session=anonymous.session,
+        user_agent="otp login ua",
+        now=NOW + timedelta(seconds=3),
+        settings=settings,
+    )
+
+    assert verification_result.outcome is OtpInternalOutcome.OTP_LINK_CHANGED
+    assert created is None
+    assert anonymous.session.revoked_at is None
+    assert anonymous.session.user_id is None
     assert db_session.scalar(select(func.count()).select_from(AuthSession)) == 1
 
 

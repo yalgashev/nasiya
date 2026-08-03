@@ -1,4 +1,5 @@
 from base64 import b64encode
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from html import escape
 from pathlib import Path
@@ -15,16 +16,20 @@ from app.auth.cookies import delete_session_cookie, set_session_cookie
 from app.auth.deps import (
     CurrentSessionContext,
     CurrentSessionStatus,
+    DetachedMutationSessionContext,
     LoginRequired,
     get_current_session_context,
     get_current_time,
     get_database_session,
+    get_detached_mutation_session_context,
     get_settings,
     require_user,
     validate_csrf,
 )
 from app.auth.error_codes import ErrorCode, get_error_http_status, get_public_error_body
 from app.auth.login_rate_limit import LoginRateLimitPolicy
+from app.auth.models import Session as AuthSession
+from app.auth.models import User
 from app.auth.phone import (
     PhoneNormalizationError,
     mask_phone_for_display,
@@ -56,8 +61,11 @@ from app.offers.web_presentation import (
     get_offer_web_copy,
     resolve_offer_web_language,
 )
-from app.otp.crypto import derive_browser_binding_digest
-from app.otp.issuance import request_login_otp, request_new_login_code
+from app.otp.crypto import OtpBrowserBindingDigest, derive_browser_binding_digest
+from app.otp.issuance import (
+    coordinate_login_otp_request,
+    coordinate_new_login_code_request,
+)
 from app.otp.session_login import rotate_session_after_otp_consume
 from app.otp.verification import verify_login_otp
 from app.otp.web_presentation import (
@@ -78,11 +86,12 @@ from app.telegram.service import (
     TelegramLinkTokenIssueError,
     TelegramLinkTokenIssueInternalError,
     get_link_status,
-    issue_link_token,
-    issue_relink_token,
+    issue_link_token_after_rate_limit,
+    issue_relink_token_after_rate_limit,
+    record_link_token_issuance_rate_limit,
 )
 from app.telegram.service import unlink as unlink_telegram
-from app.telegram.token import build_telegram_start_link
+from app.telegram.token import RawTelegramLinkToken, build_telegram_start_link
 from app.telegram.web_presentation import (
     TELEGRAM_ATTEMPT_POLL_INTERVAL_SECONDS,
     TelegramLinkAttemptPresentation,
@@ -99,6 +108,67 @@ OTP_PATH = "/auth/otp"
 TELEGRAM_PATH = "/auth/telegram"
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 router = APIRouter(prefix="/auth")
+
+
+@dataclass(frozen=True, repr=False)
+class _CommittedTelegramTokenIssue:
+    raw_token: RawTelegramLinkToken
+    attempt_id: UUID
+
+    def __repr__(self) -> str:
+        return "_CommittedTelegramTokenIssue(raw_token=<redacted>, attempt_id=<UUID>)"
+
+
+@dataclass(frozen=True, repr=False)
+class DetachedOtpMutationContext:
+    status: CurrentSessionStatus
+    session_id: UUID | None
+    browser_binding_digest: OtpBrowserBindingDigest | None
+
+    @property
+    def is_authenticated(self) -> bool:
+        return self.status is CurrentSessionStatus.AUTHENTICATED
+
+    def __repr__(self) -> str:
+        return (
+            "DetachedOtpMutationContext("
+            f"status={self.status!s}, session_id=<UUID | None>, "
+            "browser_binding_digest=<OtpBrowserBindingDigest | None>)"
+        )
+
+
+class _LoginOtpSessionUnavailable(RuntimeError):
+    pass
+
+
+async def get_detached_otp_mutation_context(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings)],
+    now: Annotated[datetime, Depends(get_current_time)],
+) -> DetachedOtpMutationContext:
+    session_factory = request.app.state.database_session_factory
+    with session_factory.begin() as db:
+        context = get_current_session_context(request, db, settings, now)
+        await validate_csrf(request, context, now)
+        current_session = context.get_session_row()
+        browser_binding_digest = None
+        if current_session is not None:
+            try:
+                otp_hmac_key = settings.require_otp_hmac_key()
+            except OtpHmacKeySettingsError:
+                pass
+            else:
+                browser_binding_digest = derive_browser_binding_digest(
+                    otp_hmac_key=otp_hmac_key,
+                    session_id=current_session.id,
+                    csrf_secret=current_session.csrf_secret,
+                )
+        detached = DetachedOtpMutationContext(
+            status=context.status,
+            session_id=context.session_id,
+            browser_binding_digest=browser_binding_digest,
+        )
+    return detached
 
 
 @router.get("/otp", response_class=HTMLResponse, response_model=None)
@@ -152,21 +222,15 @@ def otp_request_page(
 @router.post("/otp/request", response_model=None)
 def request_login_otp_route(
     request: Request,
-    db: Annotated[
-        DatabaseSession,
-        Depends(get_database_session, scope="function"),
-    ],
     settings: Annotated[Settings, Depends(get_settings)],
     now: Annotated[datetime, Depends(get_current_time)],
     context: Annotated[
-        CurrentSessionContext,
-        Depends(get_current_session_context),
+        DetachedOtpMutationContext,
+        Depends(get_detached_otp_mutation_context),
     ],
-    _csrf: Annotated[None, Depends(validate_csrf)],
     phone: Annotated[str, Form()] = "",
     next_url: Annotated[str | None, Form(alias="next")] = None,
 ) -> Response:
-    _ = _csrf
     if context.is_authenticated:
         response = RedirectResponse(
             "/auth/account",
@@ -174,27 +238,20 @@ def request_login_otp_route(
         )
         return mark_auth_response_no_store(response)
 
-    current_session = context.get_session_row()
-    if current_session is None:
+    if context.browser_binding_digest is None:
         return _redirect_otp_verify(next_url)
 
     try:
         client_ip = resolve_client_ip(request, settings)
-        otp_hmac_key = settings.require_otp_hmac_key()
-    except (ClientIpResolutionError, OtpHmacKeySettingsError):
+    except ClientIpResolutionError:
         return _redirect_otp_verify(next_url)
 
     language = _otp_web_language(request)
-    browser_binding_digest = derive_browser_binding_digest(
-        otp_hmac_key=otp_hmac_key,
-        session_id=current_session.id,
-        csrf_secret=current_session.csrf_secret,
-    )
-    request_login_otp(
-        db,
+    coordinate_login_otp_request(
+        request.app.state.database_session_factory,
         settings,
         phone_input=phone,
-        browser_binding_digest=browser_binding_digest,
+        browser_binding_digest=context.browser_binding_digest,
         client_ip=client_ip,
         locale=get_otp_dispatch_locale(language),
         now=now,
@@ -257,20 +314,14 @@ def otp_verify_page(
 @router.post("/otp/new-code", response_model=None)
 def request_new_login_otp_route(
     request: Request,
-    db: Annotated[
-        DatabaseSession,
-        Depends(get_database_session, scope="function"),
-    ],
     settings: Annotated[Settings, Depends(get_settings)],
     now: Annotated[datetime, Depends(get_current_time)],
     context: Annotated[
-        CurrentSessionContext,
-        Depends(get_current_session_context),
+        DetachedOtpMutationContext,
+        Depends(get_detached_otp_mutation_context),
     ],
-    _csrf: Annotated[None, Depends(validate_csrf)],
     next_url: Annotated[str | None, Form(alias="next")] = None,
 ) -> Response:
-    _ = _csrf
     if context.is_authenticated:
         response = RedirectResponse(
             "/auth/account",
@@ -278,26 +329,19 @@ def request_new_login_otp_route(
         )
         return mark_auth_response_no_store(response)
 
-    current_session = context.get_session_row()
-    if current_session is None:
+    if context.browser_binding_digest is None:
         return _redirect_otp_verify(next_url)
 
     try:
         client_ip = resolve_client_ip(request, settings)
-        otp_hmac_key = settings.require_otp_hmac_key()
-    except (ClientIpResolutionError, OtpHmacKeySettingsError):
+    except ClientIpResolutionError:
         return _redirect_otp_verify(next_url)
 
     language = _otp_web_language(request)
-    browser_binding_digest = derive_browser_binding_digest(
-        otp_hmac_key=otp_hmac_key,
-        session_id=current_session.id,
-        csrf_secret=current_session.csrf_secret,
-    )
-    request_new_login_code(
-        db,
+    coordinate_new_login_code_request(
+        request.app.state.database_session_factory,
         settings,
-        browser_binding_digest=browser_binding_digest,
+        browser_binding_digest=context.browser_binding_digest,
         client_ip=client_ip,
         locale=get_otp_dispatch_locale(language),
         now=now,
@@ -308,21 +352,15 @@ def request_new_login_otp_route(
 @router.post("/otp/verify", response_model=None)
 def verify_login_otp_route(
     request: Request,
-    db: Annotated[
-        DatabaseSession,
-        Depends(get_database_session, scope="function"),
-    ],
     settings: Annotated[Settings, Depends(get_settings)],
     now: Annotated[datetime, Depends(get_current_time)],
     context: Annotated[
-        CurrentSessionContext,
-        Depends(get_current_session_context),
+        DetachedOtpMutationContext,
+        Depends(get_detached_otp_mutation_context),
     ],
-    _csrf: Annotated[None, Depends(validate_csrf)],
     code: Annotated[str, Form()] = "",
     next_url: Annotated[str | None, Form(alias="next")] = None,
 ) -> Response:
-    _ = _csrf
     if context.is_authenticated:
         response = RedirectResponse(
             "/auth/account",
@@ -330,43 +368,25 @@ def verify_login_otp_route(
         )
         return mark_auth_response_no_store(response)
 
-    current_session = context.get_session_row()
-    if current_session is None:
+    if context.session_id is None or context.browser_binding_digest is None:
         return _redirect_otp_verify(next_url, error="invalid")
 
-    try:
-        otp_hmac_key = settings.require_otp_hmac_key()
-    except OtpHmacKeySettingsError:
-        return _redirect_otp_verify(next_url, error="invalid")
-
-    browser_binding_digest = derive_browser_binding_digest(
-        otp_hmac_key=otp_hmac_key,
-        session_id=current_session.id,
-        csrf_secret=current_session.csrf_secret,
-    )
-    verification_result = verify_login_otp(
-        db,
-        settings,
-        browser_binding_digest=browser_binding_digest,
+    raw_session_token = _verify_login_otp_domain_phase(
+        request=request,
+        settings=settings,
+        current_session_id=context.session_id,
+        browser_binding_digest=context.browser_binding_digest,
         candidate_code_input=code,
         now=now,
     )
-    created_session = rotate_session_after_otp_consume(
-        db,
-        verification_result=verification_result,
-        current_session=current_session,
-        user_agent=request.headers.get("user-agent"),
-        now=now,
-        settings=settings,
-    )
-    if created_session is None:
+    if raw_session_token is None:
         return _redirect_otp_verify(next_url, error="invalid")
 
     response = RedirectResponse(
         get_safe_redirect_target(next_url),
         status_code=status.HTTP_303_SEE_OTHER,
     )
-    set_session_cookie(response, created_session.raw_token, settings)
+    set_session_cookie(response, raw_session_token, settings)
     return mark_auth_response_no_store(response)
 
 
@@ -665,23 +685,16 @@ def telegram_attempt_status(
 @router.post("/telegram/link-token", response_class=HTMLResponse, response_model=None)
 def issue_telegram_link_token(
     request: Request,
-    db: Annotated[
-        DatabaseSession,
-        Depends(get_database_session, scope="function"),
-    ],
     settings: Annotated[Settings, Depends(get_settings)],
     now: Annotated[datetime, Depends(get_current_time)],
     context: Annotated[
-        CurrentSessionContext,
-        Depends(get_current_session_context),
+        DetachedMutationSessionContext,
+        Depends(get_detached_mutation_session_context),
     ],
-    _csrf: Annotated[None, Depends(validate_csrf)],
 ) -> Response:
-    _ = _csrf
-    try:
-        user = require_user(context)
-    except LoginRequired:
+    if not context.is_authenticated or context.user_id is None:
         return _redirect_auth_login(context, settings)
+    actor_user_id = context.user_id
 
     if not _is_htmx_request(request):
         return _redirect_telegram_javascript_required()
@@ -702,7 +715,19 @@ def issue_telegram_link_token(
         )
 
     try:
-        issued = issue_link_token(db, settings, user, client_ip, now)
+        _record_telegram_link_rate_phase(
+            request=request,
+            settings=settings,
+            actor_user_id=actor_user_id,
+            client_ip=client_ip,
+            now=now,
+        )
+        issued = _issue_telegram_link_token_domain_phase(
+            request=request,
+            actor_user_id=actor_user_id,
+            now=now,
+            require_active_link=False,
+        )
     except TelegramLinkTokenIssueError as exc:
         return _render_telegram_issue_error(request, exc)
     except TelegramLinkTokenIssueInternalError:
@@ -715,7 +740,7 @@ def issue_telegram_link_token(
     return _render_telegram_reveal_response(
         request,
         start_link.as_delivery_url(),
-        attempt_id=issued.token.id,
+        attempt_id=issued.attempt_id,
         action="link",
     )
 
@@ -723,33 +748,25 @@ def issue_telegram_link_token(
 @router.post("/telegram/relink-token", response_class=HTMLResponse, response_model=None)
 def issue_telegram_relink_token(
     request: Request,
-    db: Annotated[
-        DatabaseSession,
-        Depends(get_database_session, scope="function"),
-    ],
     settings: Annotated[Settings, Depends(get_settings)],
     now: Annotated[datetime, Depends(get_current_time)],
     context: Annotated[
-        CurrentSessionContext,
-        Depends(get_current_session_context),
+        DetachedMutationSessionContext,
+        Depends(get_detached_mutation_session_context),
     ],
-    _csrf: Annotated[None, Depends(validate_csrf)],
     current_password: Annotated[str | None, Form()] = None,
 ) -> Response:
-    _ = _csrf
-    try:
-        user = require_user(context)
-    except LoginRequired:
+    if not context.is_authenticated or context.user_id is None:
         return _redirect_auth_login(context, settings)
+    actor_user_id = context.user_id
 
     if not _is_htmx_request(request):
         return _redirect_telegram_javascript_required()
 
     reauth_result = _verify_telegram_account_control_password(
         request=request,
-        db=db,
         settings=settings,
-        user=user,
+        actor_user_id=actor_user_id,
         raw_password=current_password,
         now=now,
     )
@@ -764,7 +781,19 @@ def issue_telegram_relink_token(
         )
 
     try:
-        issued = issue_relink_token(db, settings, user, client_ip, now)
+        _record_telegram_link_rate_phase(
+            request=request,
+            settings=settings,
+            actor_user_id=actor_user_id,
+            client_ip=client_ip,
+            now=now,
+        )
+        issued = _issue_telegram_link_token_domain_phase(
+            request=request,
+            actor_user_id=actor_user_id,
+            now=now,
+            require_active_link=True,
+        )
     except TelegramLinkTokenIssueError as exc:
         return _render_telegram_issue_error(request, exc)
     except TelegramLinkTokenIssueInternalError:
@@ -777,7 +806,7 @@ def issue_telegram_relink_token(
     return _render_telegram_reveal_response(
         request,
         start_link.as_delivery_url(),
-        attempt_id=issued.token.id,
+        attempt_id=issued.attempt_id,
         action="relink",
     )
 
@@ -785,30 +814,22 @@ def issue_telegram_relink_token(
 @router.post("/telegram/unlink", response_model=None)
 def unlink_telegram_account(
     request: Request,
-    db: Annotated[
-        DatabaseSession,
-        Depends(get_database_session, scope="function"),
-    ],
     settings: Annotated[Settings, Depends(get_settings)],
     now: Annotated[datetime, Depends(get_current_time)],
     context: Annotated[
-        CurrentSessionContext,
-        Depends(get_current_session_context),
+        DetachedMutationSessionContext,
+        Depends(get_detached_mutation_session_context),
     ],
-    _csrf: Annotated[None, Depends(validate_csrf)],
     current_password: Annotated[str | None, Form()] = None,
 ) -> Response:
-    _ = _csrf
-    try:
-        user = require_user(context)
-    except LoginRequired:
+    if not context.is_authenticated or context.user_id is None:
         return _redirect_auth_login(context, settings)
+    actor_user_id = context.user_id
 
     reauth_result = _verify_telegram_account_control_password(
         request=request,
-        db=db,
         settings=settings,
-        user=user,
+        actor_user_id=actor_user_id,
         raw_password=current_password,
         now=now,
     )
@@ -816,7 +837,11 @@ def unlink_telegram_account(
         return reauth_result
 
     try:
-        unlink_telegram(db, user, now)
+        _unlink_telegram_domain_phase(
+            request=request,
+            actor_user_id=actor_user_id,
+            now=now,
+        )
     except TelegramLinkTokenIssueError as exc:
         if exc.error_code is ErrorCode.TELEGRAM_NOT_LINKED:
             response = RedirectResponse(
@@ -998,6 +1023,54 @@ def _get_or_create_anonymous_session(
         now,
         settings=settings,
     )
+
+
+def _verify_login_otp_domain_phase(
+    *,
+    request: Request,
+    settings: Settings,
+    current_session_id: UUID,
+    browser_binding_digest: OtpBrowserBindingDigest,
+    candidate_code_input: str,
+    now: datetime,
+) -> RawSessionToken | None:
+    session_factory = request.app.state.database_session_factory
+    try:
+        with session_factory.begin() as db:
+            verification_result = verify_login_otp(
+                db,
+                settings,
+                browser_binding_digest=browser_binding_digest,
+                candidate_code_input=candidate_code_input,
+                now=now,
+            )
+            if not verification_result.consumed:
+                return None
+            current_session = db.get(
+                AuthSession,
+                current_session_id,
+                with_for_update=True,
+            )
+            if (
+                current_session is None
+                or current_session.user_id is not None
+                or current_session.revoked_at is not None
+                or current_session.expires_at <= now
+            ):
+                raise _LoginOtpSessionUnavailable()
+            created_session = rotate_session_after_otp_consume(
+                db,
+                verification_result=verification_result,
+                current_session=current_session,
+                user_agent=request.headers.get("user-agent"),
+                now=now,
+                settings=settings,
+            )
+            if created_session is None:
+                raise _LoginOtpSessionUnavailable()
+            return created_session.raw_token
+    except _LoginOtpSessionUnavailable:
+        return None
 
 
 def _redirect_auth_login(
@@ -1184,12 +1257,74 @@ def _render_telegram_qr_data_uri(start_link_url: str) -> str | None:
     return f"data:image/png;base64,{encoded_png}"
 
 
+def _record_telegram_link_rate_phase(
+    *,
+    request: Request,
+    settings: Settings,
+    actor_user_id: UUID,
+    client_ip: ResolvedClientIp,
+    now: datetime,
+) -> None:
+    session_factory = request.app.state.database_session_factory
+    with session_factory.begin() as db:
+        user = _load_active_telegram_actor(db, actor_user_id)
+        record_link_token_issuance_rate_limit(
+            db,
+            settings,
+            user,
+            client_ip,
+            now,
+        )
+
+
+def _issue_telegram_link_token_domain_phase(
+    *,
+    request: Request,
+    actor_user_id: UUID,
+    now: datetime,
+    require_active_link: bool,
+) -> _CommittedTelegramTokenIssue:
+    session_factory = request.app.state.database_session_factory
+    with session_factory.begin() as db:
+        user = _load_active_telegram_actor(db, actor_user_id)
+        if require_active_link:
+            issued = issue_relink_token_after_rate_limit(db, user, now)
+        else:
+            issued = issue_link_token_after_rate_limit(db, user, now)
+        committed = _CommittedTelegramTokenIssue(
+            raw_token=issued.raw_token,
+            attempt_id=issued.token.id,
+        )
+    return committed
+
+
+def _unlink_telegram_domain_phase(
+    *,
+    request: Request,
+    actor_user_id: UUID,
+    now: datetime,
+) -> None:
+    session_factory = request.app.state.database_session_factory
+    with session_factory.begin() as db:
+        user = _load_active_telegram_actor(db, actor_user_id)
+        unlink_telegram(db, user, now)
+
+
+def _load_active_telegram_actor(
+    db: DatabaseSession,
+    actor_user_id: UUID,
+) -> User:
+    user = db.get(User, actor_user_id)
+    if user is None or not user.is_active:
+        raise TelegramLinkTokenIssueError(ErrorCode.UNAUTHORIZED)
+    return user
+
+
 def _verify_telegram_account_control_password(
     *,
     request: Request,
-    db: DatabaseSession,
     settings: Settings,
-    user,
+    actor_user_id: UUID,
     raw_password: str | None,
     now: datetime,
 ) -> ResolvedClientIp | Response:
@@ -1202,40 +1337,86 @@ def _verify_telegram_account_control_password(
             error_key="client_ip",
         )
 
-    rate_limit_policy = TelegramReauthRateLimitPolicy(db, settings)
-    if not rate_limit_policy.check(user, client_ip, now).allowed:
+    password_matches = _check_telegram_account_control_password_phase(
+        request=request,
+        settings=settings,
+        actor_user_id=actor_user_id,
+        raw_password=raw_password,
+    )
+    if password_matches is None:
+        return _render_telegram_public_error(
+            request,
+            ErrorCode.UNAUTHORIZED,
+        )
+
+    reauth_error = _decide_telegram_reauth_rate_phase(
+        request=request,
+        settings=settings,
+        actor_user_id=actor_user_id,
+        client_ip=client_ip,
+        now=now,
+        password_matches=password_matches,
+    )
+    if reauth_error is ErrorCode.RATE_LIMITED:
         return _render_telegram_public_error(
             request,
             ErrorCode.RATE_LIMITED,
             error_key="reauth_rate_limit",
         )
-
-    submitted_password = raw_password or ""
-    if not check_current_password(
-        db,
-        user,
-        submitted_password,
-        settings,
-    ):
-        failure_result = rate_limit_policy.record_failure(
-            user,
-            client_ip,
-            now,
-        )
-        if not failure_result.allowed:
-            return _render_telegram_public_error(
-                request,
-                ErrorCode.RATE_LIMITED,
-                error_key="reauth_rate_limit",
-            )
+    if reauth_error is ErrorCode.FORBIDDEN:
         return _render_telegram_public_error(
             request,
             ErrorCode.FORBIDDEN,
             error_key="current_password",
         )
-
-    rate_limit_policy.clear_user_failures_after_success(user)
     return client_ip
+
+
+def _check_telegram_account_control_password_phase(
+    *,
+    request: Request,
+    settings: Settings,
+    actor_user_id: UUID,
+    raw_password: str | None,
+) -> bool | None:
+    session_factory = request.app.state.database_session_factory
+    with session_factory.begin() as db:
+        user = db.get(User, actor_user_id)
+        if user is None or not user.is_active:
+            return None
+        return check_current_password(
+            db,
+            user,
+            raw_password or "",
+            settings,
+        )
+
+
+def _decide_telegram_reauth_rate_phase(
+    *,
+    request: Request,
+    settings: Settings,
+    actor_user_id: UUID,
+    client_ip: ResolvedClientIp,
+    now: datetime,
+    password_matches: bool,
+) -> ErrorCode | None:
+    session_factory = request.app.state.database_session_factory
+    with session_factory.begin() as db:
+        policy = TelegramReauthRateLimitPolicy(db, settings)
+        if not policy.check_for_user_id(actor_user_id, client_ip, now).allowed:
+            return ErrorCode.RATE_LIMITED
+        if not password_matches:
+            failure_result = policy.record_failure_for_user_id(
+                actor_user_id,
+                client_ip,
+                now,
+            )
+            if not failure_result.allowed:
+                return ErrorCode.RATE_LIMITED
+            return ErrorCode.FORBIDDEN
+        policy.clear_user_failures_after_success_for_user_id(actor_user_id)
+    return None
 
 
 def _render_telegram_attempt_status_fragment(

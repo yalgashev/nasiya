@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
+from pydantic import SecretStr
 from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
@@ -11,18 +12,27 @@ from sqlalchemy.orm import Session
 import app.telegram.service as telegram_service
 from app.auth.models import User
 from app.db import create_database_session_factory
-from app.telegram.inbound import VerifiedPrivateTelegramChatIdentity
+from app.telegram.inbound import (
+    SensitiveTelegramContactPhone,
+    TelegramUserIdentity,
+    VerifiedPrivateTelegramChatIdentity,
+)
 from app.telegram.models import TelegramLink, TelegramLinkEvent, TelegramLinkToken
 from app.telegram.service import (
     TELEGRAM_LINK_TOKEN_TTL_SECONDS,
     TelegramLinkLifecycleInternalError,
     TelegramLinkOutcome,
+    bind_start_token_for_contact,
     consume_start_token,
 )
 from app.telegram.service import (
     unlink as unlink_telegram,
 )
 from app.telegram.token import RawTelegramLinkToken, hash_telegram_link_token
+
+CONTACT_BINDING_KEY = SecretStr(
+    "test-event-failure-contact-binding-key-at-least-32-characters"
+)
 
 
 def add_user(session: Session, phone: str) -> User:
@@ -45,6 +55,9 @@ def add_link(
         telegram_chat_id=telegram_chat_id,
         linked_at=linked_at,
         unlinked_at=unlinked_at,
+        phone_verified_at=(
+            linked_at if telegram_chat_id is not None and unlinked_at is None else None
+        ),
         updated_at=unlinked_at or linked_at,
     )
     session.add(link)
@@ -68,6 +81,42 @@ def add_token(
     session.add(token)
     session.flush()
     return token
+
+
+def consume_raw(
+    session: Session,
+    *,
+    raw_token: str,
+    telegram_chat_id: int,
+    now: datetime,
+):
+    raw = RawTelegramLinkToken(raw_token)
+    token_hash = hash_telegram_link_token(raw)
+    phone = session.scalar(
+        select(User.phone)
+        .join(TelegramLinkToken, TelegramLinkToken.user_id == User.id)
+        .where(TelegramLinkToken.token_hash == token_hash)
+    )
+    assert phone is not None
+    chat_identity = VerifiedPrivateTelegramChatIdentity(telegram_chat_id)
+    sender_identity = TelegramUserIdentity(telegram_chat_id)
+    bind_start_token_for_contact(
+        session,
+        raw,
+        chat_identity,
+        sender_identity,
+        rate_limit_hmac_key=CONTACT_BINDING_KEY,
+        now=now,
+    )
+    return consume_start_token(
+        session,
+        chat_identity,
+        sender_identity,
+        sender_identity,
+        SensitiveTelegramContactPhone(phone),
+        rate_limit_hmac_key=CONTACT_BINDING_KEY,
+        now=now,
+    )
 
 
 def link_state(
@@ -183,11 +232,11 @@ def test_first_link_event_failure_rolls_back_transition_and_retry_succeeds(
                 fail_event_writer(raw_database_detail),
             )
             with pytest.raises(TelegramLinkLifecycleInternalError) as exc_info:
-                consume_start_token(
+                consume_raw(
                     session,
-                    RawTelegramLinkToken(raw_token),
-                    VerifiedPrivateTelegramChatIdentity(chat_id),
-                    failure_at,
+                    raw_token=raw_token,
+                    telegram_chat_id=chat_id,
+                    now=failure_at,
                 )
 
         assert_safe_internal_failure(
@@ -204,11 +253,11 @@ def test_first_link_event_failure_rolls_back_transition_and_retry_succeeds(
         assert token_state(session, token_id) == (None, None)
         assert event_snapshots(session, user_id) == []
 
-        result = consume_start_token(
+        result = consume_raw(
             session,
-            RawTelegramLinkToken(raw_token),
-            VerifiedPrivateTelegramChatIdentity(chat_id),
-            retry_at,
+            raw_token=raw_token,
+            telegram_chat_id=chat_id,
+            now=retry_at,
         )
         session.commit()
 
@@ -296,6 +345,7 @@ def test_unlink_event_failure_rolls_back_transition_and_retry_succeeds(
 
         assert result.outcome is TelegramLinkOutcome.UNLINKED
         assert result.invalidated_token_count == 1
+        assert result.link.phone_verified_at is None
         assert link_state(session, link_id) == (None, linked_at, retry_at, retry_at)
         assert token_state(session, token_id) == (None, retry_at)
         assert event_snapshots(session, user_id) == [("unlinked", retry_at)]
@@ -347,11 +397,11 @@ def test_relink_event_failure_rolls_back_transition_and_retry_succeeds(
                 fail_event_writer(raw_database_detail),
             )
             with pytest.raises(TelegramLinkLifecycleInternalError) as exc_info:
-                consume_start_token(
+                consume_raw(
                     session,
-                    RawTelegramLinkToken(raw_token),
-                    VerifiedPrivateTelegramChatIdentity(chat_b),
-                    failure_at,
+                    raw_token=raw_token,
+                    telegram_chat_id=chat_b,
+                    now=failure_at,
                 )
 
         assert_safe_internal_failure(
@@ -369,11 +419,11 @@ def test_relink_event_failure_rolls_back_transition_and_retry_succeeds(
         assert token_state(session, token_id) == (None, None)
         assert event_snapshots(session, user_id) == []
 
-        result = consume_start_token(
+        result = consume_raw(
             session,
-            RawTelegramLinkToken(raw_token),
-            VerifiedPrivateTelegramChatIdentity(chat_b),
-            retry_at,
+            raw_token=raw_token,
+            telegram_chat_id=chat_b,
+            now=retry_at,
         )
         session.commit()
 

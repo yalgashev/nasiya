@@ -74,6 +74,7 @@ def add_link(
         telegram_chat_id=telegram_chat_id,
         linked_at=linked_at,
         unlinked_at=unlinked_at,
+        phone_verified_at=linked_at if unlinked_at is None else None,
         updated_at=unlinked_at or linked_at,
     )
     session.add(link)
@@ -178,6 +179,7 @@ def test_tx_d1_invalid_link_cancels_dispatch_without_send_envelope(
     _user, link, challenge, dispatch = create_pending_challenge_and_dispatch(db_session)
     link.unlinked_at = NOW + timedelta(seconds=1)
     link.telegram_chat_id = None
+    link.phone_verified_at = None
     link.updated_at = link.unlinked_at
 
     prepared = prepare_next_otp_dispatch(
@@ -195,6 +197,92 @@ def test_tx_d1_invalid_link_cancels_dispatch_without_send_envelope(
     assert dispatch.status == OtpDispatchStatus.CANCELLED.value
     events = event_rows(db_session, challenge)
     assert [(event.action, event.safe_code) for event in events] == [
+        (
+            OtpChallengeEventAction.INVALIDATED_BY_LINK_CHANGE.value,
+            "OTP_LINK_CHANGED",
+        )
+    ]
+
+
+@pytest.mark.integration
+def test_tx_d1_legacy_unverified_link_cancels_before_code_generation(
+    db_session: Session,
+) -> None:
+    _user, link, challenge, dispatch = create_pending_challenge_and_dispatch(db_session)
+    link.phone_verified_at = None
+    db_session.flush()
+    generated: list[int] = []
+
+    prepared = prepare_next_otp_dispatch(
+        db_session,
+        otp_hmac_key=OTP_HMAC_KEY,
+        now=NOW + timedelta(seconds=1),
+        ttl_seconds=180,
+        claim_stale_seconds=60,
+        code_generator=lambda upper: generated.append(upper) or 999999,
+    )
+
+    assert prepared is None
+    assert generated == []
+    assert challenge.status == OtpChallengeStatus.INVALIDATED.value
+    assert challenge.failed_attempts == 0
+    assert challenge.code_mac is None
+    assert dispatch.status == OtpDispatchStatus.CANCELLED.value
+    assert [
+        (event.action, event.safe_code) for event in event_rows(db_session, challenge)
+    ] == [
+        (
+            OtpChallengeEventAction.INVALIDATED_BY_LINK_CHANGE.value,
+            "OTP_LINK_CHANGED",
+        )
+    ]
+
+
+@pytest.mark.integration
+def test_tx_d1_cross_owner_verified_link_cancels_before_code_generation(
+    db_session: Session,
+) -> None:
+    user = add_user(db_session, "+998900009002")
+    other_user = add_user(db_session, "+998900009003")
+    other_link = add_link(
+        db_session,
+        other_user,
+        telegram_chat_id=9_980_900_003,
+    )
+    challenge = create_pending_challenge(
+        db_session,
+        user_id=user.id,
+        telegram_link_id=other_link.id,
+        telegram_linked_at=other_link.linked_at,
+        browser_binding_digest="d" * 64,
+        now=NOW,
+    )
+    dispatch = repository_create_pending_dispatch(
+        db_session,
+        challenge_id=challenge.id,
+        locale="uz-Latn",
+        now=NOW,
+    )
+    generated: list[int] = []
+
+    prepared = prepare_next_otp_dispatch(
+        db_session,
+        otp_hmac_key=OTP_HMAC_KEY,
+        now=NOW + timedelta(seconds=1),
+        ttl_seconds=180,
+        claim_stale_seconds=60,
+        code_generator=lambda upper: generated.append(upper) or 999999,
+    )
+
+    assert prepared is None
+    assert generated == []
+    assert challenge.status == OtpChallengeStatus.INVALIDATED.value
+    assert challenge.failed_attempts == 0
+    assert challenge.code_mac is None
+    assert dispatch.status == OtpDispatchStatus.CANCELLED.value
+    assert [
+        (event.action, event.safe_code) for event in event_rows(db_session, challenge)
+    ] == [
         (
             OtpChallengeEventAction.INVALIDATED_BY_LINK_CHANGE.value,
             "OTP_LINK_CHANGED",

@@ -168,6 +168,7 @@ def add_user_and_link(
         user_id=user.id,
         telegram_chat_id=chat_id,
         linked_at=NOW,
+        phone_verified_at=NOW,
         updated_at=NOW,
     )
     session.add(link)

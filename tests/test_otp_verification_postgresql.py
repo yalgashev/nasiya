@@ -83,6 +83,7 @@ def add_user_and_link(
         user_id=user.id,
         telegram_chat_id=9_982_000_201,
         linked_at=NOW,
+        phone_verified_at=NOW,
         updated_at=NOW,
     )
     session.add(link)
@@ -481,6 +482,7 @@ def test_verify_revalidates_unlink_and_preserves_terminal_dispatch(
     assert link is not None
     link.telegram_chat_id = None
     link.unlinked_at = NOW + timedelta(seconds=3)
+    link.phone_verified_at = None
     link.updated_at = link.unlinked_at
 
     result = verify_login_otp(
@@ -506,6 +508,7 @@ def test_verify_revalidates_relink_generation_snapshot(
     link = db_session.get(TelegramLink, challenge.telegram_link_id)
     assert link is not None
     link.linked_at = NOW + timedelta(seconds=30)
+    link.phone_verified_at = link.linked_at
     link.updated_at = link.linked_at
 
     result = verify_login_otp(
@@ -522,6 +525,105 @@ def test_verify_revalidates_relink_generation_snapshot(
     )
     assert challenge.status == OtpChallengeStatus.INVALIDATED.value
     assert challenge.terminal_at == NOW + timedelta(seconds=31)
+
+
+@pytest.mark.integration
+def test_verify_rejects_legacy_unverified_link_before_mac_or_attempt(
+    db_session: Session,
+    m2_test_database: Engine,
+) -> None:
+    challenge = create_active_challenge(db_session)
+    link = db_session.get(TelegramLink, challenge.telegram_link_id)
+    assert link is not None
+    link.phone_verified_at = None
+    db_session.flush()
+    mac_calls: list[str] = []
+
+    def mac_verifier(**kwargs) -> bool:
+        mac_calls.append(kwargs["code"].as_internal_value())
+        return verify_otp_code_mac(**kwargs)
+
+    result = verify_login_otp(
+        db_session,
+        make_settings(m2_test_database),
+        browser_binding_digest=VALID_DIGEST,
+        candidate_code_input="123456",
+        now=NOW + timedelta(seconds=2),
+        mac_verifier=mac_verifier,
+    )
+
+    assert result.outcome is OtpInternalOutcome.OTP_LINK_CHANGED
+    assert map_internal_outcome_to_public(result.outcome) is (
+        OtpPublicOutcome.GENERIC_INVALID
+    )
+    assert mac_calls == []
+    assert challenge.status == OtpChallengeStatus.INVALIDATED.value
+    assert challenge.failed_attempts == 0
+    assert challenge.consumed_at is None
+    assert [
+        (event.action, event.safe_code)
+        for event in db_session.scalars(
+            select(OtpChallengeEvent).where(
+                OtpChallengeEvent.challenge_id == challenge.id
+            )
+        )
+    ] == [
+        (
+            OtpChallengeEventAction.INVALIDATED_BY_LINK_CHANGE.value,
+            "OTP_LINK_CHANGED",
+        )
+    ]
+
+
+@pytest.mark.integration
+def test_verify_rejects_cross_owner_verified_link_before_mac_or_attempt(
+    db_session: Session,
+    m2_test_database: Engine,
+) -> None:
+    challenge = create_active_challenge(db_session)
+    link = db_session.get(TelegramLink, challenge.telegram_link_id)
+    assert link is not None
+    other_user = User(phone="+998900009202")
+    db_session.add(other_user)
+    db_session.flush()
+    link.user_id = other_user.id
+    db_session.flush()
+    mac_calls: list[str] = []
+
+    def mac_verifier(**kwargs) -> bool:
+        mac_calls.append(kwargs["code"].as_internal_value())
+        return verify_otp_code_mac(**kwargs)
+
+    result = verify_login_otp(
+        db_session,
+        make_settings(m2_test_database),
+        browser_binding_digest=VALID_DIGEST,
+        candidate_code_input="123456",
+        now=NOW + timedelta(seconds=2),
+        mac_verifier=mac_verifier,
+    )
+
+    assert result.outcome is OtpInternalOutcome.OTP_LINK_CHANGED
+    assert map_internal_outcome_to_public(result.outcome) is (
+        OtpPublicOutcome.GENERIC_INVALID
+    )
+    assert mac_calls == []
+    assert challenge.status == OtpChallengeStatus.INVALIDATED.value
+    assert challenge.failed_attempts == 0
+    assert challenge.consumed_at is None
+    assert [
+        (event.action, event.safe_code)
+        for event in db_session.scalars(
+            select(OtpChallengeEvent).where(
+                OtpChallengeEvent.challenge_id == challenge.id
+            )
+        )
+    ] == [
+        (
+            OtpChallengeEventAction.INVALIDATED_BY_LINK_CHANGE.value,
+            "OTP_LINK_CHANGED",
+        )
+    ]
 
 
 @pytest.mark.integration

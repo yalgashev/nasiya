@@ -1,6 +1,7 @@
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
+from uuid import uuid4
 
 import pytest
 from fastapi import Depends
@@ -29,6 +30,23 @@ from app.main import create_app
 from app.settings import Settings
 
 TEST_RATE_LIMIT_HMAC_KEY = "test-rate-limit-hmac-key-for-auth-deps"
+
+
+def test_current_session_context_repr_redacts_session_and_user_ids() -> None:
+    session_id = uuid4()
+    user_id = uuid4()
+    context = CurrentSessionContext(
+        status=CurrentSessionStatus.AUTHENTICATED,
+        session_id=session_id,
+        user_id=user_id,
+    )
+
+    rendered = repr(context)
+
+    assert str(session_id) not in rendered
+    assert str(user_id) not in rendered
+    assert "session_id=<UUID | None>" in rendered
+    assert "user_id=<UUID | None>" in rendered
 
 
 @pytest.fixture

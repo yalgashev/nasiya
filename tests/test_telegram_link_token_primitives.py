@@ -4,17 +4,24 @@ import re
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
+from pydantic import SecretStr
 
 import app.telegram.token as telegram_token_module
 from app.telegram.bot import TelegramBotUsername
+from app.telegram.inbound import (
+    TelegramUserIdentity,
+    VerifiedPrivateTelegramChatIdentity,
+)
 from app.telegram.models import TelegramLinkToken
 from app.telegram.token import (
     TELEGRAM_LINK_TOKEN_ENTROPY_BYTES,
     RawTelegramLinkToken,
     TelegramBotUsernameNotConfigured,
+    TelegramContactBindingMac,
     TelegramStartLink,
     build_telegram_start_link,
     create_telegram_link_token,
+    derive_telegram_contact_binding_mac,
     hash_telegram_link_token,
 )
 
@@ -23,6 +30,10 @@ URLSAFE_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 DETERMINISTIC_RAW_TOKEN = "deterministic_token-123"
 DETERMINISTIC_TOKEN_SHA256 = (
     "7c5b13b59a6377db251ee7b60ec5960231933359b59a58461b700669c416a7c3"
+)
+CONTACT_BINDING_HMAC_KEY = "test-rate-limit-hmac-key-for-contact-binding"
+CONTACT_BINDING_GOLDEN = (
+    "9753ba4de225ed7ef3a501f059469df5de4fc4dcf21101abb238234000d71f45"
 )
 
 
@@ -120,6 +131,68 @@ def test_same_telegram_link_token_produces_same_hash() -> None:
     token = create_telegram_link_token()
 
     assert hash_telegram_link_token(token) == hash_telegram_link_token(token)
+
+
+def test_contact_binding_mac_matches_exact_cr_m11_02_golden_vector() -> None:
+    binding_mac = derive_telegram_contact_binding_mac(
+        rate_limit_hmac_key=SecretStr(CONTACT_BINDING_HMAC_KEY),
+        chat_identity=VerifiedPrivateTelegramChatIdentity(998_901_234_567),
+        sender_identity=TelegramUserIdentity(123_456_789),
+    )
+
+    assert binding_mac.as_stored_value() == CONTACT_BINDING_GOLDEN
+
+
+def test_contact_binding_mac_is_domain_and_identity_separated() -> None:
+    key = SecretStr(CONTACT_BINDING_HMAC_KEY)
+    baseline = derive_telegram_contact_binding_mac(
+        rate_limit_hmac_key=key,
+        chat_identity=VerifiedPrivateTelegramChatIdentity(1001),
+        sender_identity=TelegramUserIdentity(2001),
+    )
+    other_chat = derive_telegram_contact_binding_mac(
+        rate_limit_hmac_key=key,
+        chat_identity=VerifiedPrivateTelegramChatIdentity(1002),
+        sender_identity=TelegramUserIdentity(2001),
+    )
+    other_sender = derive_telegram_contact_binding_mac(
+        rate_limit_hmac_key=key,
+        chat_identity=VerifiedPrivateTelegramChatIdentity(1001),
+        sender_identity=TelegramUserIdentity(2002),
+    )
+
+    assert (
+        len(
+            {
+                baseline.as_stored_value(),
+                other_chat.as_stored_value(),
+                other_sender.as_stored_value(),
+            }
+        )
+        == 3
+    )
+    assert all(
+        SHA256_HEX_PATTERN.fullmatch(value)
+        for value in (
+            baseline.as_stored_value(),
+            other_chat.as_stored_value(),
+            other_sender.as_stored_value(),
+        )
+    )
+
+
+def test_contact_binding_mac_wrapper_and_key_errors_are_redacted() -> None:
+    binding_mac = TelegramContactBindingMac(CONTACT_BINDING_GOLDEN)
+
+    assert CONTACT_BINDING_GOLDEN not in repr(binding_mac)
+    assert CONTACT_BINDING_GOLDEN not in str(binding_mac)
+    with pytest.raises(ValueError, match="not configured") as exc_info:
+        derive_telegram_contact_binding_mac(
+            rate_limit_hmac_key=SecretStr(""),
+            chat_identity=VerifiedPrivateTelegramChatIdentity(1001),
+            sender_identity=TelegramUserIdentity(2001),
+        )
+    assert CONTACT_BINDING_HMAC_KEY not in str(exc_info.value)
 
 
 def test_different_telegram_link_tokens_produce_different_hashes() -> None:

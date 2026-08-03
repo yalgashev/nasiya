@@ -36,6 +36,12 @@ class TelegramLink(Base):
             ")",
             name="ck_telegram_links_state_consistent",
         ),
+        CheckConstraint(
+            "phone_verified_at IS NULL OR ("
+            "unlinked_at IS NULL AND phone_verified_at = linked_at"
+            ")",
+            name="ck_telegram_links_phone_verification_consistent",
+        ),
         Index(
             "uq_telegram_links_active_chat_id",
             "telegram_chat_id",
@@ -66,6 +72,10 @@ class TelegramLink(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    phone_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -90,12 +100,38 @@ class TelegramLinkToken(Base):
             "NOT (consumed_at IS NOT NULL AND invalidated_at IS NOT NULL)",
             name="ck_telegram_link_tokens_terminal_state_exclusive",
         ),
+        CheckConstraint(
+            "pending_contact_binding_mac IS NULL OR "
+            "pending_contact_binding_mac ~ '^[0-9a-f]{64}$'",
+            name="ck_telegram_link_tokens_pending_contact_binding_mac_format",
+        ),
+        CheckConstraint(
+            "(pending_contact_binding_mac IS NULL) = "
+            "(contact_requested_at IS NULL) AND ("
+            "consumed_at IS NULL AND invalidated_at IS NULL "
+            "OR pending_contact_binding_mac IS NULL"
+            ")",
+            name="ck_telegram_link_tokens_pending_contact_state_consistent",
+        ),
+        CheckConstraint(
+            "contact_requested_at IS NULL OR contact_requested_at >= created_at",
+            name="ck_telegram_link_tokens_pending_contact_timestamp_order",
+        ),
         Index(
             "uq_telegram_link_tokens_one_outstanding_per_user",
             "user_id",
             unique=True,
             postgresql_where=sqlalchemy_text(
                 "consumed_at IS NULL AND invalidated_at IS NULL"
+            ),
+        ),
+        Index(
+            "uq_telegram_link_tokens_pending_contact_binding_mac_outstanding",
+            "pending_contact_binding_mac",
+            unique=True,
+            postgresql_where=sqlalchemy_text(
+                "pending_contact_binding_mac IS NOT NULL "
+                "AND consumed_at IS NULL AND invalidated_at IS NULL"
             ),
         ),
     )
@@ -125,6 +161,14 @@ class TelegramLinkToken(Base):
         nullable=True,
     )
     invalidated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    pending_contact_binding_mac: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    contact_requested_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
     )

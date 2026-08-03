@@ -66,6 +66,7 @@ def seed_registration_snapshot(
         user_id=user.id,
         telegram_chat_id=9_980_001_321,
         linked_at=NOW,
+        phone_verified_at=NOW,
         updated_at=NOW,
     )
     session.add(link)

@@ -37,6 +37,8 @@ def test_accepted_uzbekistan_phone_formats_return_same_canonical_value(
         "+998 90 123 45 6a",
         "+998.90.123.45.67",
         "++998901234567",
+        "+٩٩٨٩٠١٢٣٤٥٦٧",
+        "+９９８９０１２３４５６７",
     ],
 )
 def test_invalid_uzbekistan_phone_formats_are_rejected(raw_phone: str) -> None:

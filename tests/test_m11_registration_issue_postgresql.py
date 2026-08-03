@@ -560,6 +560,16 @@ def test_registration_issue_runtime_lock_order_is_forward(
             id="T-M11-014-link-missing",
         ),
         pytest.param(
+            "unverified_link",
+            RegistrationPrerequisiteError.TELEGRAM_PHONE_NOT_VERIFIED,
+            id="T-M11-014-link-phone-unverified",
+        ),
+        pytest.param(
+            "cross_owner_link",
+            RegistrationPrerequisiteError.TELEGRAM_NOT_LINKED,
+            id="T-M11-014-link-cross-owner",
+        ),
+        pytest.param(
             "no_current_offer",
             RegistrationPrerequisiteError.OFFER_UNAVAILABLE,
             id="T-M11-014-offer-unavailable",
@@ -638,7 +648,26 @@ def test_registration_issue_failure_matrix_is_zero_capability(
                 assert link is not None
                 link.telegram_chat_id = None
                 link.unlinked_at = NOW + timedelta(seconds=1)
+                link.phone_verified_at = None
                 link.updated_at = NOW + timedelta(seconds=1)
+            elif case == "unverified_link":
+                link = session.get(TelegramLink, snapshot.telegram_link_id)
+                assert link is not None
+                link.phone_verified_at = None
+                link.updated_at = NOW + timedelta(seconds=1)
+            elif case == "cross_owner_link":
+                other_user = User(
+                    phone="+998900001499",
+                    password_hash=None,
+                    is_active=True,
+                    created_at=NOW,
+                    updated_at=NOW,
+                )
+                session.add(other_user)
+                session.flush()
+                link = session.get(TelegramLink, snapshot.telegram_link_id)
+                assert link is not None
+                link.user_id = other_user.id
             elif case == "no_current_offer":
                 acceptance = session.get(
                     OfferAcceptance,
@@ -766,6 +795,7 @@ def test_registration_issue_missing_customer_never_creates_one(
             user_id=user.id,
             telegram_chat_id=9_980_001_325,
             linked_at=NOW,
+            phone_verified_at=NOW,
             updated_at=NOW,
         )
         session.add(link)
@@ -1056,6 +1086,150 @@ def test_new_code_cooldown_and_supersession_are_registration_local(
     assert event_actions.count(OtpChallengeEventAction.ISSUED.value) == 2
     assert event_actions.count(OtpChallengeEventAction.SUPERSEDED.value) == 1
     assert all(challenge.code_mac is None for challenge in challenges)
+
+
+def test_new_registration_code_cross_owner_preserves_existing_capability(
+    monkeypatch: pytest.MonkeyPatch,
+    m2_test_database: Engine,
+) -> None:
+    factory = sessionmaker(bind=m2_test_database, expire_on_commit=False)
+    provider_calls: list[object] = []
+
+    async def provider_canary(*args: object, **kwargs: object) -> object:
+        provider_calls.append((args, kwargs))
+        raise AssertionError("Cross-owner new-code reached Telegram transport")
+
+    monkeypatch.setattr(TelegramBotApiClient, "send_message", provider_canary)
+    with Session(m2_test_database) as session, session.begin():
+        snapshot = seed_registration_snapshot(
+            session,
+            phone="+998900001325",
+        )
+        issued = issue_registration_otp(
+            session,
+            context=activation_context(snapshot),
+            identity_crypto_config=synthetic_identity_crypto_config(),
+            language=OtpWebLanguage.UZ_LATN,
+            now=NOW + timedelta(seconds=1),
+        )
+        assert isinstance(issued, RegistrationOtpPendingDelivery)
+        challenge = session.scalar(select(OtpChallenge))
+        dispatch = session.scalar(select(OtpDispatch))
+        link = session.get(TelegramLink, snapshot.telegram_link_id)
+        assert challenge is not None
+        assert dispatch is not None
+        assert link is not None
+        other_user = User(
+            phone="+998900001498",
+            password_hash=None,
+            is_active=True,
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        session.add(other_user)
+        session.flush()
+        link.user_id = other_user.id
+        link.updated_at = NOW + timedelta(seconds=2)
+        session.flush()
+        challenge_id = challenge.id
+        dispatch_id = dispatch.id
+        expected_challenge = (
+            challenge.status,
+            challenge.failed_attempts,
+            challenge.code_mac,
+            challenge.activated_at,
+            challenge.expires_at,
+            challenge.consumed_at,
+            challenge.terminal_at,
+            challenge.updated_at,
+        )
+        expected_dispatch = (
+            dispatch.status,
+            dispatch.claimed_at,
+            dispatch.prepared_at,
+            dispatch.sent_at,
+            dispatch.terminal_at,
+            dispatch.failure_code,
+            dispatch.updated_at,
+        )
+        expected_link = (
+            link.user_id,
+            link.telegram_chat_id,
+            link.linked_at,
+            link.phone_verified_at,
+            link.unlinked_at,
+            link.updated_at,
+        )
+
+    result = request_new_registration_otp(
+        factory,
+        context=activation_context(snapshot),
+        settings=registration_settings(),
+        identity_crypto_config=synthetic_identity_crypto_config(),
+        language=OtpWebLanguage.RU,
+        now=NOW + timedelta(seconds=62),
+    )
+
+    with Session(m2_test_database) as session:
+        challenge = session.get(OtpChallenge, challenge_id)
+        dispatch = session.get(OtpDispatch, dispatch_id)
+        link = session.get(TelegramLink, snapshot.telegram_link_id)
+        customer = session.get(Customer, snapshot.customer_id)
+        events = tuple(
+            session.scalars(
+                select(OtpChallengeEvent)
+                .where(OtpChallengeEvent.challenge_id == challenge_id)
+                .order_by(
+                    OtpChallengeEvent.occurred_at.asc(),
+                    OtpChallengeEvent.id.asc(),
+                )
+            )
+        )
+        rates = tuple(session.scalars(select(AuthRateLimit)))
+        counts = capability_counts(session)
+        assert challenge is not None
+        assert dispatch is not None
+        assert link is not None
+        assert customer is not None
+
+    assert result == RegistrationOtpPrerequisiteFailed(
+        RegistrationPrerequisiteError.TELEGRAM_NOT_LINKED
+    )
+    assert (
+        challenge.status,
+        challenge.failed_attempts,
+        challenge.code_mac,
+        challenge.activated_at,
+        challenge.expires_at,
+        challenge.consumed_at,
+        challenge.terminal_at,
+        challenge.updated_at,
+    ) == expected_challenge
+    assert (
+        dispatch.status,
+        dispatch.claimed_at,
+        dispatch.prepared_at,
+        dispatch.sent_at,
+        dispatch.terminal_at,
+        dispatch.failure_code,
+        dispatch.updated_at,
+    ) == expected_dispatch
+    assert (
+        link.user_id,
+        link.telegram_chat_id,
+        link.linked_at,
+        link.phone_verified_at,
+        link.unlinked_at,
+        link.updated_at,
+    ) == expected_link
+    assert [(row.action, row.safe_code) for row in events] == [
+        (OtpChallengeEventAction.ISSUED.value, None)
+    ]
+    assert customer.onboarding_status == "draft"
+    assert len(rates) == 3
+    assert {row.attempt_count for row in rates} == {1}
+    assert counts == (1, 1, 1, 0, 0)
+    assert provider_calls == []
 
 
 def test_new_registration_code_rate_limit_precedes_cooldown_and_is_not_refunded(

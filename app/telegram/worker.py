@@ -232,6 +232,7 @@ async def run_worker(
 
                 resolved_processor = TelegramUpdateProcessor(
                     session_factory,
+                    rate_limit_hmac_key=settings.rate_limit_hmac_key,
                     sleeper=shutdown.wait_async,
                     reply_delivery=lambda intent: deliver_bot_reply_best_effort(
                         client,

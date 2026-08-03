@@ -6,6 +6,7 @@ from threading import Barrier, BrokenBarrierError
 from uuid import UUID
 
 import pytest
+from pydantic import SecretStr
 from sqlalchemy import func, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
@@ -17,7 +18,11 @@ from app.auth.models import User
 from app.db import create_database_session_factory
 from app.settings import Settings
 from app.telegram.client_ip import ResolvedClientIp
-from app.telegram.inbound import VerifiedPrivateTelegramChatIdentity
+from app.telegram.inbound import (
+    SensitiveTelegramContactPhone,
+    TelegramUserIdentity,
+    VerifiedPrivateTelegramChatIdentity,
+)
 from app.telegram.models import TelegramLink, TelegramLinkEvent, TelegramLinkToken
 from app.telegram.rate_limit import TelegramLinkIssuanceRateLimitResult
 from app.telegram.service import (
@@ -26,16 +31,20 @@ from app.telegram.service import (
     TelegramLinkLifecycleInternalError,
     TelegramLinkTokenConsumeError,
     TelegramLinkTokenIssueError,
+    bind_start_token_for_contact,
     consume_start_token,
-    issue_link_token,
 )
 from app.telegram.token import (
     TELEGRAM_LINK_TOKEN_ENTROPY_BYTES,
     RawTelegramLinkToken,
     hash_telegram_link_token,
 )
+from tests.telegram_issue_helpers import (
+    issue_link_token_in_one_test_transaction as issue_link_token,
+)
 
 TEST_RATE_LIMIT_HMAC_KEY = "test-rate-limit-hmac-key-for-telegram-conflicts"
+CONTACT_BINDING_KEY = SecretStr(TEST_RATE_LIMIT_HMAC_KEY)
 _BARRIER_TIMEOUT_SECONDS = 5
 _FUTURE_TIMEOUT_SECONDS = 15
 
@@ -72,6 +81,7 @@ def add_active_link(
         user_id=user.id,
         telegram_chat_id=telegram_chat_id,
         linked_at=linked_at,
+        phone_verified_at=linked_at,
         updated_at=linked_at,
     )
     session.add(link)
@@ -114,6 +124,42 @@ def add_token(
     session.add(token)
     session.flush()
     return token
+
+
+def consume_raw(
+    session: Session,
+    *,
+    raw_token: str,
+    telegram_chat_id: int,
+    now: datetime,
+):
+    raw = RawTelegramLinkToken(raw_token)
+    token_hash = hash_telegram_link_token(raw)
+    phone = session.scalar(
+        select(User.phone)
+        .join(TelegramLinkToken, TelegramLinkToken.user_id == User.id)
+        .where(TelegramLinkToken.token_hash == token_hash)
+    )
+    assert phone is not None
+    chat_identity = VerifiedPrivateTelegramChatIdentity(telegram_chat_id)
+    sender_identity = TelegramUserIdentity(telegram_chat_id)
+    bind_start_token_for_contact(
+        session,
+        raw,
+        chat_identity,
+        sender_identity,
+        rate_limit_hmac_key=CONTACT_BINDING_KEY,
+        now=now,
+    )
+    return consume_start_token(
+        session,
+        chat_identity,
+        sender_identity,
+        sender_identity,
+        SensitiveTelegramContactPhone(phone),
+        rate_limit_hmac_key=CONTACT_BINDING_KEY,
+        now=now,
+    )
 
 
 def token_state(
@@ -303,11 +349,11 @@ def test_active_chat_unique_conflict_maps_safe_and_session_recovers(
         )
         with caplog.at_level(logging.DEBUG):
             with pytest.raises(TelegramChatAlreadyLinkedError) as exc_info:
-                consume_start_token(
+                consume_raw(
                     session,
-                    RawTelegramLinkToken(raw_token),
-                    VerifiedPrivateTelegramChatIdentity(chat_id),
-                    consume_at,
+                    raw_token=raw_token,
+                    telegram_chat_id=chat_id,
+                    now=consume_at,
                 )
         error_text = (
             f"{exc_info.value!r} {exc_info.value} {exc_info.value.public_error}"
@@ -361,21 +407,16 @@ def test_user_link_unique_conflict_maps_safe_and_session_recovers(
 
         monkeypatch.setattr(
             telegram_service,
-            "get_telegram_link_by_user_for_update",
-            lambda *_args, **_kwargs: None,
-        )
-        monkeypatch.setattr(
-            telegram_repository,
-            "get_telegram_link_by_user_for_update",
-            lambda *_args, **_kwargs: None,
+            "lock_telegram_link_change_set",
+            lambda *_args, **_kwargs: (),
         )
         with caplog.at_level(logging.DEBUG):
             with pytest.raises(TelegramLinkTokenConsumeError) as exc_info:
-                consume_start_token(
+                consume_raw(
                     session,
-                    RawTelegramLinkToken(raw_token),
-                    VerifiedPrivateTelegramChatIdentity(chat_id),
-                    consume_at,
+                    raw_token=raw_token,
+                    telegram_chat_id=chat_id,
+                    now=consume_at,
                 )
         error_text = (
             f"{exc_info.value!r} {exc_info.value} {exc_info.value.public_error}"
@@ -597,11 +638,11 @@ def test_event_action_constraint_failure_maps_internal_and_recovers_after_rollba
             append_bad_action_event,
         )
         with pytest.raises(TelegramLinkLifecycleInternalError) as exc_info:
-            consume_start_token(
+            consume_raw(
                 session,
-                RawTelegramLinkToken(raw_token),
-                VerifiedPrivateTelegramChatIdentity(chat_id),
-                consume_at,
+                raw_token=raw_token,
+                telegram_chat_id=chat_id,
+                now=consume_at,
             )
         error_text = f"{exc_info.value!r} {exc_info.value}"
 

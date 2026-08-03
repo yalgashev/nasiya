@@ -8,7 +8,7 @@ from uuid import UUID
 
 from pydantic import SecretStr
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.auth.models import User
 from app.auth.phone import PhoneNormalizationError, normalize_uzbekistan_phone
@@ -43,6 +43,7 @@ from app.otp.repository import (
 from app.settings import Settings
 from app.telegram.client_ip import ResolvedClientIp
 from app.telegram.models import TelegramLink
+from app.telegram.repository import is_otp_eligible_telegram_link
 
 OTP_LOGIN_ISSUE_PHONE_SCOPE: Final = "otp-login-issue:phone"
 OTP_LOGIN_ISSUE_USER_SCOPE: Final = "otp-login-issue:user"
@@ -98,6 +99,49 @@ class OtpIssueResult:
         )
 
 
+@dataclass(frozen=True, repr=False)
+class CoordinatedOtpIssueResult:
+    outcome: OtpInternalOutcome
+    challenge_id: UUID | None = None
+    dispatch_id: UUID | None = None
+
+    @property
+    def accepted(self) -> bool:
+        return self.outcome is OtpInternalOutcome.OTP_PENDING
+
+    def __repr__(self) -> str:
+        return (
+            "CoordinatedOtpIssueResult("
+            f"outcome={self.outcome.value}, challenge_id=<UUID | None>, "
+            "dispatch_id=<UUID | None>)"
+        )
+
+
+@dataclass(frozen=True, repr=False)
+class _LoginEligibilityDiscovery:
+    outcome: OtpInternalOutcome
+    user_id: UUID | None
+
+    def __repr__(self) -> str:
+        return (
+            "_LoginEligibilityDiscovery("
+            f"outcome={self.outcome.value}, user_id=<UUID | None>)"
+        )
+
+
+@dataclass(frozen=True, repr=False)
+class _LoginChallengeDiscovery:
+    challenge_id: UUID
+    user_id: UUID
+    created_at: datetime
+
+    def __repr__(self) -> str:
+        return (
+            "_LoginChallengeDiscovery("
+            "challenge_id=<UUID>, user_id=<UUID>, created_at=<datetime>)"
+        )
+
+
 def lookup_login_otp_eligibility(
     session: Session,
     *,
@@ -126,6 +170,10 @@ def lookup_login_otp_eligibility(
     link = session.scalar(link_statement)
     if link is None:
         return OtpEligibilityResult(outcome=OtpInternalOutcome.OTP_NOT_ELIGIBLE)
+    if not is_otp_eligible_telegram_link(link, expected_user_id=user.id):
+        return OtpEligibilityResult(
+            outcome=OtpInternalOutcome.TELEGRAM_PHONE_NOT_VERIFIED
+        )
 
     return OtpEligibilityResult(
         outcome=OtpInternalOutcome.OTP_PENDING,
@@ -232,8 +280,35 @@ def perform_neutral_otp_request_work(
     )
 
 
-def request_login_otp(
+def issue_login_otp_in_transaction(
     session: Session,
+    settings: Settings,
+    *,
+    phone_input: str,
+    browser_binding_digest: OtpBrowserBindingDigest | str,
+    locale: str,
+    now: datetime,
+    dummy_work: Callable[[SecretStr], None] | None = None,
+) -> OtpIssueResult:
+    current_time = _as_utc(now)
+    try:
+        otp_hmac_key = settings.require_otp_hmac_key()
+    except Exception:
+        return OtpIssueResult(outcome=OtpInternalOutcome.OTP_CONFIGURATION_UNAVAILABLE)
+
+    _run_dummy_work(otp_hmac_key, dummy_work)
+    return _request_login_otp_domain(
+        session,
+        settings=settings,
+        phone_input=phone_input,
+        browser_binding_digest=browser_binding_digest,
+        locale=locale,
+        now=current_time,
+    )
+
+
+def coordinate_login_otp_request(
+    session_factory: sessionmaker[Session],
     settings: Settings,
     *,
     phone_input: str,
@@ -242,41 +317,78 @@ def request_login_otp(
     locale: str,
     now: datetime,
     dummy_work: Callable[[SecretStr], None] | None = None,
-) -> OtpIssueResult:
+) -> CoordinatedOtpIssueResult:
     current_time = _as_utc(now)
     try:
         otp_hmac_key = settings.require_otp_hmac_key()
     except Exception:
-        return OtpIssueResult(outcome=OtpInternalOutcome.OTP_CONFIGURATION_UNAVAILABLE)
+        return CoordinatedOtpIssueResult(
+            outcome=OtpInternalOutcome.OTP_CONFIGURATION_UNAVAILABLE
+        )
 
     canonical_phone = _normalize_phone_or_none(phone_input)
-    limit_result = record_login_otp_issue_limits(
-        session,
-        settings,
-        canonical_phone=canonical_phone,
-        client_ip=client_ip,
-        now=current_time,
-    )
+    with session_factory.begin() as rate_session:
+        limit_result = record_login_otp_issue_limits(
+            rate_session,
+            settings,
+            canonical_phone=canonical_phone,
+            client_ip=client_ip,
+            now=current_time,
+        )
     if not limit_result.allowed:
-        return OtpIssueResult(outcome=OtpInternalOutcome.RATE_LIMITED)
+        return CoordinatedOtpIssueResult(outcome=OtpInternalOutcome.RATE_LIMITED)
 
     _run_dummy_work(otp_hmac_key, dummy_work)
+    with session_factory.begin() as discovery_session:
+        discovery = _discover_login_otp_eligibility(
+            discovery_session,
+            phone_input=phone_input,
+        )
+    if discovery.user_id is None:
+        return CoordinatedOtpIssueResult(outcome=discovery.outcome)
+
+    with session_factory.begin() as user_rate_session:
+        user_limit_result = record_login_otp_user_issue_limit(
+            user_rate_session,
+            settings,
+            now=current_time,
+            user_id=discovery.user_id,
+        )
+    if not user_limit_result.allowed:
+        return CoordinatedOtpIssueResult(outcome=OtpInternalOutcome.RATE_LIMITED)
+
+    with session_factory.begin() as domain_session:
+        result = _request_login_otp_domain(
+            domain_session,
+            settings=settings,
+            phone_input=phone_input,
+            browser_binding_digest=browser_binding_digest,
+            locale=locale,
+            now=current_time,
+            expected_user_id=discovery.user_id,
+        )
+        return _coordinate_issue_result(domain_session, result)
+
+
+def _request_login_otp_domain(
+    session: Session,
+    *,
+    settings: Settings,
+    phone_input: str,
+    browser_binding_digest: OtpBrowserBindingDigest | str,
+    locale: str,
+    now: datetime,
+    expected_user_id: UUID | None = None,
+) -> OtpIssueResult:
     eligibility = lookup_login_otp_eligibility(
         session,
         phone_input=phone_input,
         lock_rows=False,
     )
     if eligibility.target is None:
+        return OtpIssueResult(outcome=eligibility.outcome)
+    if expected_user_id is not None and eligibility.target.user.id != expected_user_id:
         return OtpIssueResult(outcome=OtpInternalOutcome.OTP_NOT_ELIGIBLE)
-
-    user_limit_result = record_login_otp_user_issue_limit(
-        session,
-        settings,
-        now=current_time,
-        user_id=eligibility.target.user.id,
-    )
-    if not user_limit_result.allowed:
-        return OtpIssueResult(outcome=OtpInternalOutcome.RATE_LIMITED)
 
     return _issue_challenge_for_target(
         session,
@@ -284,16 +396,15 @@ def request_login_otp(
         target=eligibility.target,
         browser_binding_digest=browser_binding_digest,
         locale=locale,
-        now=current_time,
+        now=now,
     )
 
 
-def request_new_login_code(
+def issue_new_login_code_in_transaction(
     session: Session,
     settings: Settings,
     *,
     browser_binding_digest: OtpBrowserBindingDigest | str,
-    client_ip: ResolvedClientIp,
     locale: str,
     now: datetime,
     dummy_work: Callable[[SecretStr], None] | None = None,
@@ -305,6 +416,85 @@ def request_new_login_code(
         return OtpIssueResult(outcome=OtpInternalOutcome.OTP_CONFIGURATION_UNAVAILABLE)
 
     _run_dummy_work(otp_hmac_key, dummy_work)
+    return _request_new_login_code_domain(
+        session,
+        settings=settings,
+        browser_binding_digest=browser_binding_digest,
+        locale=locale,
+        now=current_time,
+    )
+
+
+def coordinate_new_login_code_request(
+    session_factory: sessionmaker[Session],
+    settings: Settings,
+    *,
+    browser_binding_digest: OtpBrowserBindingDigest | str,
+    client_ip: ResolvedClientIp,
+    locale: str,
+    now: datetime,
+    dummy_work: Callable[[SecretStr], None] | None = None,
+) -> CoordinatedOtpIssueResult:
+    current_time = _as_utc(now)
+    try:
+        otp_hmac_key = settings.require_otp_hmac_key()
+    except Exception:
+        return CoordinatedOtpIssueResult(
+            outcome=OtpInternalOutcome.OTP_CONFIGURATION_UNAVAILABLE
+        )
+
+    _run_dummy_work(otp_hmac_key, dummy_work)
+    with session_factory.begin() as discovery_session:
+        discovered = _discover_login_challenge(
+            discovery_session,
+            browser_binding_digest=browser_binding_digest,
+        )
+    if discovered is None:
+        return CoordinatedOtpIssueResult(outcome=OtpInternalOutcome.OTP_NOT_ELIGIBLE)
+    if (
+        discovered.created_at
+        + timedelta(seconds=settings.otp_login_resend_cooldown_seconds)
+        > current_time
+    ):
+        return CoordinatedOtpIssueResult(outcome=OtpInternalOutcome.RATE_LIMITED)
+
+    with session_factory.begin() as rate_session:
+        limit_result = record_login_otp_issue_limits(
+            rate_session,
+            settings,
+            canonical_phone=None,
+            client_ip=client_ip,
+            now=current_time,
+            user_id=discovered.user_id,
+            new_code=True,
+        )
+    if not limit_result.allowed:
+        return CoordinatedOtpIssueResult(outcome=OtpInternalOutcome.RATE_LIMITED)
+
+    with session_factory.begin() as domain_session:
+        result = _request_new_login_code_domain(
+            domain_session,
+            settings=settings,
+            browser_binding_digest=browser_binding_digest,
+            locale=locale,
+            now=current_time,
+            expected_challenge_id=discovered.challenge_id,
+            expected_user_id=discovered.user_id,
+        )
+        return _coordinate_issue_result(domain_session, result)
+
+
+def _request_new_login_code_domain(
+    session: Session,
+    *,
+    settings: Settings,
+    browser_binding_digest: OtpBrowserBindingDigest | str,
+    locale: str,
+    now: datetime,
+    expected_challenge_id: UUID | None = None,
+    expected_user_id: UUID | None = None,
+) -> OtpIssueResult:
+    current_time = _as_utc(now)
     discovered_challenge = load_outstanding_challenge_by_browser(
         session,
         browser_binding_digest=browser_binding_digest,
@@ -313,22 +503,18 @@ def request_new_login_code(
     if discovered_challenge is None or discovered_challenge.user_id is None:
         return OtpIssueResult(outcome=OtpInternalOutcome.OTP_NOT_ELIGIBLE)
     if (
+        expected_challenge_id is not None
+        and discovered_challenge.id != expected_challenge_id
+    ) or (
+        expected_user_id is not None
+        and discovered_challenge.user_id != expected_user_id
+    ):
+        return OtpIssueResult(outcome=OtpInternalOutcome.OTP_NOT_ELIGIBLE)
+    if (
         discovered_challenge.created_at
         + timedelta(seconds=settings.otp_login_resend_cooldown_seconds)
         > current_time
     ):
-        return OtpIssueResult(outcome=OtpInternalOutcome.RATE_LIMITED)
-
-    limit_result = record_login_otp_issue_limits(
-        session,
-        settings,
-        canonical_phone=None,
-        client_ip=client_ip,
-        now=current_time,
-        user_id=discovered_challenge.user_id,
-        new_code=True,
-    )
-    if not limit_result.allowed:
         return OtpIssueResult(outcome=OtpInternalOutcome.RATE_LIMITED)
 
     typed_binding = _typed_browser_binding(browser_binding_digest)
@@ -368,6 +554,55 @@ def request_new_login_code(
         now=current_time,
         locked=locked,
         target_already_locked=True,
+    )
+
+
+def _coordinate_issue_result(
+    session: Session,
+    result: OtpIssueResult,
+) -> CoordinatedOtpIssueResult:
+    session.flush()
+    return CoordinatedOtpIssueResult(
+        outcome=result.outcome,
+        challenge_id=result.challenge.id if result.challenge is not None else None,
+        dispatch_id=result.dispatch.id if result.dispatch is not None else None,
+    )
+
+
+def _discover_login_otp_eligibility(
+    session: Session,
+    *,
+    phone_input: str,
+) -> _LoginEligibilityDiscovery:
+    eligibility = lookup_login_otp_eligibility(
+        session,
+        phone_input=phone_input,
+        lock_rows=False,
+    )
+    return _LoginEligibilityDiscovery(
+        outcome=eligibility.outcome,
+        user_id=(
+            eligibility.target.user.id if eligibility.target is not None else None
+        ),
+    )
+
+
+def _discover_login_challenge(
+    session: Session,
+    *,
+    browser_binding_digest: OtpBrowserBindingDigest | str,
+) -> _LoginChallengeDiscovery | None:
+    challenge = load_outstanding_challenge_by_browser(
+        session,
+        browser_binding_digest=browser_binding_digest,
+        purpose=OtpPurpose.LOGIN,
+    )
+    if challenge is None or challenge.user_id is None:
+        return None
+    return _LoginChallengeDiscovery(
+        challenge_id=challenge.id,
+        user_id=challenge.user_id,
+        created_at=challenge.created_at,
     )
 
 
@@ -579,6 +814,10 @@ def _target_from_challenge_snapshot(
         or link.telegram_chat_id is None
         or link.unlinked_at is not None
         or link.linked_at != current_challenge.telegram_linked_at
+        or not is_otp_eligible_telegram_link(
+            link,
+            expected_user_id=user.id,
+        )
     ):
         return None
     return OtpEligibleTarget(
@@ -603,6 +842,10 @@ def _lock_and_revalidate_target(
         or link.telegram_chat_id is None
         or link.unlinked_at is not None
         or link.linked_at != target.telegram_link.linked_at
+        or not is_otp_eligible_telegram_link(
+            link,
+            expected_user_id=user.id,
+        )
     ):
         return None
     return OtpEligibleTarget(

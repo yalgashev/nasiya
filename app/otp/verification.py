@@ -32,6 +32,7 @@ from app.otp.repository import (
 )
 from app.settings import OtpHmacKeySettingsError, Settings
 from app.telegram.models import TelegramLink
+from app.telegram.repository import is_otp_eligible_telegram_link
 
 _DUMMY_CHALLENGE_ID: Final = UUID("00000000-0000-4000-8000-000000000101")
 _DUMMY_USER_ID: Final = UUID("00000000-0000-4000-8000-000000000102")
@@ -364,6 +365,10 @@ def _revalidate_current_login_target(
         and link.telegram_chat_id is not None
         and link.unlinked_at is None
         and link.linked_at == challenge.telegram_linked_at
+        and is_otp_eligible_telegram_link(
+            link,
+            expected_user_id=user.id,
+        )
     )
 
 

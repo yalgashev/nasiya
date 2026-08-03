@@ -56,109 +56,118 @@ def _remove_compensation_race_rows(engine: Engine) -> None:
 
 def test_m10_revision_is_single_linear_child_of_m9_head() -> None:
     scripts = ScriptDirectory.from_config(_config())
-    assert scripts.get_heads() == [M10_REVISION]
     revision = scripts.get_revision(M10_REVISION)
     assert revision is not None
     assert revision.down_revision == M9_REVISION
+    assert M10_REVISION in {
+        migration.revision for migration in scripts.walk_revisions()
+    }
 
 
 @pytest.mark.integration
 def test_m10_schema_has_exact_two_tables_columns_constraints_and_indexes(
     m2_test_database: Engine,
 ) -> None:
-    command.upgrade(_config(), M10_REVISION)
-    inspector = inspect(m2_test_database)
+    config = _config()
+    try:
+        command.downgrade(config, M10_REVISION)
+        inspector = inspect(m2_test_database)
 
-    assert _current_revision(m2_test_database) == M10_REVISION
-    assert {"customer_identities", "customer_documents"} <= set(
-        inspector.get_table_names()
-    )
-    assert {column["name"] for column in inspector.get_columns("customers")} == {
-        "id",
-        "user_id",
-        "onboarding_status",
-        "created_at",
-        "updated_at",
-    }
-    assert {
-        column["name"] for column in inspector.get_columns("customer_identities")
-    } == {
-        "customer_id",
-        "ciphertext",
-        "nonce",
-        "key_id",
-        "schema_version",
-        "jshshir_blind_index",
-        "revision",
-        "created_at",
-        "updated_at",
-    }
-    assert {
-        column["name"] for column in inspector.get_columns("customer_documents")
-    } == {
-        "id",
-        "customer_id",
-        "object_file_id",
-        "submission_id",
-        "status",
-        "attached_by_user_id",
-        "attached_at",
-        "superseded_by_document_id",
-        "superseded_at",
-    }
-
-    identity_checks = {
-        check["name"]
-        for check in inspector.get_check_constraints("customer_identities")
-    }
-    assert identity_checks == {
-        "ck_customer_identities_ciphertext_minimum_length",
-        "ck_customer_identities_nonce_length",
-        "ck_customer_identities_key_id_format",
-        "ck_customer_identities_schema_version_supported",
-        "ck_customer_identities_blind_index_length",
-        "ck_customer_identities_revision_positive",
-        "ck_customer_identities_timestamp_order",
-    }
-    document_checks = {
-        check["name"] for check in inspector.get_check_constraints("customer_documents")
-    }
-    assert document_checks == {
-        "ck_customer_documents_status_allowed",
-        "ck_customer_documents_supersede_metadata_matches_status",
-        "ck_customer_documents_no_self_replacement",
-        "ck_customer_documents_timestamp_order",
-    }
-    current_index = {
-        index["name"]: index
-        for index in inspector.get_indexes("customer_documents")
-        if "duplicates_constraint" not in index
-    }["uq_customer_documents_current_customer_id"]
-    assert current_index["unique"] is True
-    assert current_index["column_names"] == ["customer_id"]
-    assert current_index["dialect_options"]["postgresql_where"] == (
-        "((status)::text = 'CURRENT'::text)"
-    )
-    for table_name in ("customer_identities", "customer_documents"):
-        assert all(
-            foreign_key["options"]["ondelete"] == "RESTRICT"
-            for foreign_key in inspector.get_foreign_keys(table_name)
+        assert _current_revision(m2_test_database) == M10_REVISION
+        assert {"customer_identities", "customer_documents"} <= set(
+            inspector.get_table_names()
         )
+        assert {column["name"] for column in inspector.get_columns("customers")} == {
+            "id",
+            "user_id",
+            "onboarding_status",
+            "created_at",
+            "updated_at",
+        }
+        assert {
+            column["name"] for column in inspector.get_columns("customer_identities")
+        } == {
+            "customer_id",
+            "ciphertext",
+            "nonce",
+            "key_id",
+            "schema_version",
+            "jshshir_blind_index",
+            "revision",
+            "created_at",
+            "updated_at",
+        }
+        assert {
+            column["name"] for column in inspector.get_columns("customer_documents")
+        } == {
+            "id",
+            "customer_id",
+            "object_file_id",
+            "submission_id",
+            "status",
+            "attached_by_user_id",
+            "attached_at",
+            "superseded_by_document_id",
+            "superseded_at",
+        }
 
-    audit_checks = {
-        check["name"]: check["sqltext"]
-        for check in inspector.get_check_constraints("audit_log")
-    }
-    assert set(audit_checks) == {
-        "ck_audit_log_event_type_allowed",
-        "ck_audit_log_actor_kind_allowed",
-        "ck_audit_log_object_type_allowed",
-        "ck_audit_log_actor_matches_event",
-        "ck_audit_log_object_matches_event",
-        "ck_audit_log_payload_exact_shape",
-    }
-    assert "customer.identity_saved" in audit_checks["ck_audit_log_event_type_allowed"]
-    assert "customer_document" in audit_checks["ck_audit_log_object_type_allowed"]
+        identity_checks = {
+            check["name"]
+            for check in inspector.get_check_constraints("customer_identities")
+        }
+        assert identity_checks == {
+            "ck_customer_identities_ciphertext_minimum_length",
+            "ck_customer_identities_nonce_length",
+            "ck_customer_identities_key_id_format",
+            "ck_customer_identities_schema_version_supported",
+            "ck_customer_identities_blind_index_length",
+            "ck_customer_identities_revision_positive",
+            "ck_customer_identities_timestamp_order",
+        }
+        document_checks = {
+            check["name"]
+            for check in inspector.get_check_constraints("customer_documents")
+        }
+        assert document_checks == {
+            "ck_customer_documents_status_allowed",
+            "ck_customer_documents_supersede_metadata_matches_status",
+            "ck_customer_documents_no_self_replacement",
+            "ck_customer_documents_timestamp_order",
+        }
+        current_index = {
+            index["name"]: index
+            for index in inspector.get_indexes("customer_documents")
+            if "duplicates_constraint" not in index
+        }["uq_customer_documents_current_customer_id"]
+        assert current_index["unique"] is True
+        assert current_index["column_names"] == ["customer_id"]
+        assert current_index["dialect_options"]["postgresql_where"] == (
+            "((status)::text = 'CURRENT'::text)"
+        )
+        for table_name in ("customer_identities", "customer_documents"):
+            assert all(
+                foreign_key["options"]["ondelete"] == "RESTRICT"
+                for foreign_key in inspector.get_foreign_keys(table_name)
+            )
+
+        audit_checks = {
+            check["name"]: check["sqltext"]
+            for check in inspector.get_check_constraints("audit_log")
+        }
+        assert set(audit_checks) == {
+            "ck_audit_log_event_type_allowed",
+            "ck_audit_log_actor_kind_allowed",
+            "ck_audit_log_object_type_allowed",
+            "ck_audit_log_actor_matches_event",
+            "ck_audit_log_object_matches_event",
+            "ck_audit_log_payload_exact_shape",
+        }
+        assert (
+            "customer.identity_saved" in audit_checks["ck_audit_log_event_type_allowed"]
+        )
+        assert "customer_document" in audit_checks["ck_audit_log_object_type_allowed"]
+    finally:
+        command.upgrade(config, "head")
 
 
 @pytest.mark.integration
@@ -194,6 +203,8 @@ def test_m9_m10_m9_m10_walk_preserves_inherited_data(
             )
 
         command.upgrade(config, M10_REVISION)
+        assert _current_revision(m2_test_database) == M10_REVISION
+        command.upgrade(config, "head")
         concurrency_tests.test_attach_winner_serializes_compensation_to_noop(
             m2_test_database
         )
@@ -224,11 +235,13 @@ def test_m9_m10_m9_m10_walk_preserves_inherited_data(
                 == "draft"
             )
         command.upgrade(config, M10_REVISION)
+        assert _current_revision(m2_test_database) == M10_REVISION
+        command.upgrade(config, "head")
         concurrency_tests.test_compensation_winner_blocks_attachment_with_zero_write(
             m2_test_database
         )
         _remove_compensation_race_rows(m2_test_database)
-        assert _current_revision(m2_test_database) == M10_REVISION
+        assert _current_revision(m2_test_database) == "d2e3f4a5b6c7"
         with m2_test_database.connect() as connection:
             assert (
                 connection.scalar(

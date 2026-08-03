@@ -52,9 +52,11 @@ from tests.m11_seed import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 M10_REVISION = "b0c1d2e3f4a5"
-M11_REVISION = "c1d2e3f4a5b6"
+ORIGINAL_M11_REVISION = "c1d2e3f4a5b6"
+M11_REVISION = "d2e3f4a5b6c7"
 NOW = datetime(2026, 8, 2, 10, 0, tzinfo=UTC)
 GLOBAL_REGISTRATION_LOCK_ORDER = (
+    "TelegramLinkToken",
     "OtpDispatch",
     "OtpChallenge",
     "User",
@@ -84,8 +86,15 @@ def test_m10_baseline_and_protected_source_pins_are_exact() -> None:
         "30705134413",
         "2735 passed",
         "8/8",
+        "17ded4cacee9f80728139feee91c67451570be66a9d76f604d0be2346f83b9f9",
+        "f9a7109a4439ea889cc982210e01ae069489606d3d6103cc57e1a88c1fd1f7d5",
         "48de725166daaa07e2a0998bca1e907caedc6050cd3ad8740b8a34d3d79ce8e0",
         "08668a326d682a175cc62366b1ca7092963f02457c3cb6f876cfab08f812a526",
+        "562556c2462828db8bfff2747096dbe929ded7c499626bfc13a75ee1524395c3",
+        "68badd200a843148f48de8ffbfe0530502b2f7230210959a9cf6c4f99d0f94a7",
+        "a2bf649887f7d7701a26cd518b8f8876dd0a85b0198a326f9327a0c02ff3d1e2",
+        "seven original committed checkpoints",
+        "eight total M11 implementation commits",
     ):
         assert pinned_evidence in scope_source
 
@@ -133,14 +142,37 @@ def _restore_draft_if_m11(engine: Engine) -> None:
         )
 
 
-def test_m11_migration_is_single_linear_zero_table_child() -> None:
+def _clear_cr_m11_02_state(engine: Engine) -> None:
+    inspector = inspect(engine)
+    if "telegram_link_tokens" not in set(inspector.get_table_names()):
+        return
+    if "pending_contact_binding_mac" in {
+        column["name"] for column in inspector.get_columns("telegram_link_tokens")
+    }:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE telegram_link_tokens SET "
+                    "pending_contact_binding_mac = NULL, "
+                    "contact_requested_at = NULL"
+                )
+            )
+            connection.execute(
+                text("UPDATE telegram_links SET phone_verified_at = NULL")
+            )
+
+
+def test_m11_migrations_are_single_linear_zero_table_chain() -> None:
     scripts = ScriptDirectory.from_config(_config())
     assert scripts.get_heads() == [M11_REVISION]
-    revision = scripts.get_revision(M11_REVISION)
-    assert revision is not None
-    assert revision.down_revision == M10_REVISION
+    recovery_revision = scripts.get_revision(M11_REVISION)
+    original_revision = scripts.get_revision(ORIGINAL_M11_REVISION)
+    assert recovery_revision is not None
+    assert original_revision is not None
+    assert recovery_revision.down_revision == ORIGINAL_M11_REVISION
+    assert original_revision.down_revision == M10_REVISION
 
-    source = (
+    original_source = (
         PROJECT_ROOT
         / "alembic/versions/c1d2e3f4a5b6_extend_customer_activation_foundation.py"
     ).read_text(encoding="utf-8")
@@ -154,7 +186,15 @@ def test_m11_migration_is_single_linear_zero_table_child() -> None:
         "CREATE VIEW",
         "op.create_index",
     ):
-        assert forbidden not in source
+        assert forbidden not in original_source
+
+    recovery_source = (
+        PROJECT_ROOT
+        / "alembic/versions/d2e3f4a5b6c7_add_telegram_self_phone_verification.py"
+    ).read_text(encoding="utf-8")
+    assert "op.create_table" not in recovery_source
+    assert recovery_source.count("op.create_index(") == 1
+    assert recovery_source.count("op.add_column(") == 3
 
 
 def test_global_registration_lock_order_is_static_and_workaround_free() -> None:
@@ -182,6 +222,7 @@ def test_global_registration_lock_order_is_static_and_workaround_free() -> None:
     )
 
     assert GLOBAL_REGISTRATION_LOCK_ORDER == (
+        "TelegramLinkToken",
         "OtpDispatch",
         "OtpChallenge",
         "User",
@@ -233,7 +274,7 @@ def test_global_registration_lock_order_is_static_and_workaround_free() -> None:
 
 
 @pytest.mark.integration
-def test_m11_upgrade_downgrade_walk_and_active_downgrade_fail_closed(
+def test_original_m11_and_recovery_migration_walk_is_deterministic(
     m2_test_database: Engine,
 ) -> None:
     config = _config()
@@ -244,6 +285,39 @@ def test_m11_upgrade_downgrade_walk_and_active_downgrade_fail_closed(
     try:
         command.downgrade(config, "base")
         assert set(inspect(m2_test_database).get_table_names()) <= {"alembic_version"}
+        command.upgrade(config, M11_REVISION)
+        assert _current_revision(m2_test_database) == M11_REVISION
+
+        command.downgrade(config, ORIGINAL_M11_REVISION)
+        with m2_test_database.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO users "
+                    "(id, phone, password_hash, is_active, is_platform_admin, "
+                    "created_at, updated_at) "
+                    "VALUES (:id, :phone, NULL, true, false, :now, :now)"
+                ),
+                {
+                    "id": user_id,
+                    "phone": "+997900001301",
+                    "now": NOW,
+                },
+            )
+        with pytest.raises(
+            RuntimeError,
+            match="CR-M11-02 upgrade blocked: noncanonical user phone exists",
+        ):
+            command.upgrade(config, M11_REVISION)
+        assert _current_revision(m2_test_database) == ORIGINAL_M11_REVISION
+        assert "pending_contact_binding_mac" not in {
+            column["name"]
+            for column in inspect(m2_test_database).get_columns("telegram_link_tokens")
+        }
+        with m2_test_database.begin() as connection:
+            connection.execute(
+                text("DELETE FROM users WHERE id = :id"),
+                {"id": user_id},
+            )
         command.upgrade(config, M11_REVISION)
         assert _current_revision(m2_test_database) == M11_REVISION
 
@@ -309,7 +383,12 @@ def test_m11_upgrade_downgrade_walk_and_active_downgrade_fail_closed(
         m11_inspector = inspect(m2_test_database)
         assert _current_revision(m2_test_database) == M11_REVISION
         assert set(m11_inspector.get_table_names()) == m10_tables
-        assert _table_indexes(m2_test_database) == m10_indexes
+        assert _table_indexes(m2_test_database) == m10_indexes | {
+            (
+                "telegram_link_tokens",
+                "uq_telegram_link_tokens_pending_contact_binding_mac_outstanding",
+            )
+        }
         customer_columns = {
             column["name"] for column in m11_inspector.get_columns("customers")
         }
@@ -331,6 +410,16 @@ def test_m11_upgrade_downgrade_walk_and_active_downgrade_fail_closed(
             "customer_document_id",
         } <= challenge_columns
         assert {
+            "pending_contact_binding_mac",
+            "contact_requested_at",
+        } <= {
+            column["name"]
+            for column in m11_inspector.get_columns("telegram_link_tokens")
+        }
+        assert "phone_verified_at" in {
+            column["name"] for column in m11_inspector.get_columns("telegram_links")
+        }
+        assert {
             foreign_key["name"]: foreign_key["options"]["ondelete"]
             for foreign_key in m11_inspector.get_foreign_keys("otp_challenges")
             if foreign_key["name"].startswith("fk_otp_challenges_customer")
@@ -350,6 +439,21 @@ def test_m11_upgrade_downgrade_walk_and_active_downgrade_fail_closed(
                 ),
                 {"id": customer_id},
             ).one() == ("draft", None)
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT pending_contact_binding_mac, contact_requested_at "
+                        "FROM telegram_link_tokens"
+                    )
+                ).all()
+                == []
+            )
+            assert (
+                connection.execute(
+                    text("SELECT phone_verified_at FROM telegram_links")
+                ).all()
+                == []
+            )
             assert connection.execute(
                 text(
                     "SELECT customer_id, registration_offer_acceptance_id, "
@@ -387,6 +491,17 @@ def test_m11_upgrade_downgrade_walk_and_active_downgrade_fail_closed(
             "TELEGRAM_REGISTRATION_OTP"
             in audit_checks["ck_audit_log_payload_exact_shape"]
         )
+        assert {
+            "ck_telegram_link_tokens_pending_contact_binding_mac_format",
+            "ck_telegram_link_tokens_pending_contact_state_consistent",
+            "ck_telegram_link_tokens_pending_contact_timestamp_order",
+        } <= set(_check_sql(m2_test_database, "telegram_link_tokens"))
+        assert "ck_telegram_links_phone_verification_consistent" in _check_sql(
+            m2_test_database, "telegram_links"
+        )
+        assert "ck_users_phone_canonical_uz_e164" in _check_sql(
+            m2_test_database, "users"
+        )
 
         command.downgrade(config, M10_REVISION)
         downgraded = inspect(m2_test_database)
@@ -402,6 +517,18 @@ def test_m11_upgrade_downgrade_walk_and_active_downgrade_fail_closed(
         }.isdisjoint(
             {column["name"] for column in downgraded.get_columns("otp_challenges")}
         )
+        assert {
+            "pending_contact_binding_mac",
+            "contact_requested_at",
+        }.isdisjoint(
+            {
+                column["name"]
+                for column in downgraded.get_columns("telegram_link_tokens")
+            }
+        )
+        assert "phone_verified_at" not in {
+            column["name"] for column in downgraded.get_columns("telegram_links")
+        }
         assert (
             "customer.activated"
             not in _check_sql(m2_test_database, "audit_log")[
@@ -464,7 +591,139 @@ def test_m11_upgrade_downgrade_walk_and_active_downgrade_fail_closed(
                 {"id": customer_id},
             ).one() == ("active", NOW)
     finally:
+        _clear_cr_m11_02_state(m2_test_database)
         _restore_draft_if_m11(m2_test_database)
+        command.upgrade(config, "head")
+
+
+@pytest.mark.integration
+def test_recovery_downgrade_fails_closed_with_pending_or_verified_state(
+    m2_test_database: Engine,
+) -> None:
+    config = _config()
+    user_id = uuid4()
+    token_id = uuid4()
+    link_id = uuid4()
+    try:
+        command.upgrade(config, M11_REVISION)
+        with m2_test_database.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO users "
+                    "(id, phone, password_hash, is_active, is_platform_admin, "
+                    "created_at, updated_at) "
+                    "VALUES (:id, :phone, NULL, true, false, :now, :now)"
+                ),
+                {"id": user_id, "phone": "+998900001390", "now": NOW},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO telegram_link_tokens "
+                    "(id, user_id, token_hash, created_at, expires_at, "
+                    "consumed_at, invalidated_at, pending_contact_binding_mac, "
+                    "contact_requested_at) VALUES ("
+                    ":id, :user_id, :token_hash, :now, :expires_at, NULL, NULL, "
+                    ":binding_mac, :now)"
+                ),
+                {
+                    "id": token_id,
+                    "user_id": user_id,
+                    "token_hash": "e" * 64,
+                    "now": NOW,
+                    "expires_at": NOW.replace(hour=11),
+                    "binding_mac": "f" * 64,
+                },
+            )
+
+        with pytest.raises(
+            RuntimeError,
+            match=(
+                "CR-M11-02 downgrade blocked: pending or verified Telegram state exists"
+            ),
+        ):
+            command.downgrade(config, ORIGINAL_M11_REVISION)
+
+        assert _current_revision(m2_test_database) == M11_REVISION
+        assert "pending_contact_binding_mac" in {
+            column["name"]
+            for column in inspect(m2_test_database).get_columns("telegram_link_tokens")
+        }
+        with m2_test_database.connect() as connection:
+            assert (
+                connection.scalar(
+                    text(
+                        "SELECT pending_contact_binding_mac IS NOT NULL "
+                        "AND contact_requested_at IS NOT NULL "
+                        "FROM telegram_link_tokens WHERE id = :id"
+                    ),
+                    {"id": token_id},
+                )
+                is True
+            )
+
+        with m2_test_database.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE telegram_link_tokens SET "
+                    "pending_contact_binding_mac = NULL, "
+                    "contact_requested_at = NULL WHERE id = :id"
+                ),
+                {"id": token_id},
+            )
+        command.downgrade(config, ORIGINAL_M11_REVISION)
+        assert _current_revision(m2_test_database) == ORIGINAL_M11_REVISION
+        command.upgrade(config, M11_REVISION)
+
+        with m2_test_database.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO telegram_links "
+                    "(id, user_id, telegram_chat_id, linked_at, unlinked_at, "
+                    "phone_verified_at, updated_at) VALUES ("
+                    ":id, :user_id, :chat_id, :now, NULL, :now, :now)"
+                ),
+                {
+                    "id": link_id,
+                    "user_id": user_id,
+                    "chat_id": 1_001_390,
+                    "now": NOW,
+                },
+            )
+
+        with pytest.raises(
+            RuntimeError,
+            match=(
+                "CR-M11-02 downgrade blocked: pending or verified Telegram state exists"
+            ),
+        ):
+            command.downgrade(config, ORIGINAL_M11_REVISION)
+
+        assert _current_revision(m2_test_database) == M11_REVISION
+        with m2_test_database.connect() as connection:
+            assert (
+                connection.scalar(
+                    text(
+                        "SELECT phone_verified_at = linked_at "
+                        "FROM telegram_links WHERE id = :id"
+                    ),
+                    {"id": link_id},
+                )
+                is True
+            )
+
+        with m2_test_database.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE telegram_links SET phone_verified_at = NULL WHERE id = :id"
+                ),
+                {"id": link_id},
+            )
+        command.downgrade(config, ORIGINAL_M11_REVISION)
+        assert _current_revision(m2_test_database) == ORIGINAL_M11_REVISION
+        command.upgrade(config, M11_REVISION)
+        assert _current_revision(m2_test_database) == M11_REVISION
+    finally:
+        _clear_cr_m11_02_state(m2_test_database)
         command.upgrade(config, "head")
 
 

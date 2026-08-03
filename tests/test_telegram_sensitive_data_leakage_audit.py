@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from pydantic import SecretStr
 from sqlalchemy import func, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
@@ -15,7 +16,11 @@ from app.db import create_database_session_factory
 from app.settings import Settings
 from app.telegram.bot import TelegramBotUsername
 from app.telegram.client_ip import ResolvedClientIp
-from app.telegram.inbound import VerifiedPrivateTelegramChatIdentity
+from app.telegram.inbound import (
+    SensitiveTelegramContactPhone,
+    TelegramUserIdentity,
+    VerifiedPrivateTelegramChatIdentity,
+)
 from app.telegram.models import TelegramLink, TelegramLinkEvent, TelegramLinkToken
 from app.telegram.service import (
     TelegramChatAlreadyLinkedError,
@@ -23,13 +28,16 @@ from app.telegram.service import (
     TelegramLinkTokenConsumeError,
     TelegramLinkTokenIssueError,
     TelegramLinkTokenIssueInternalError,
+    bind_start_token_for_contact,
     consume_start_token,
-    issue_link_token,
 )
 from app.telegram.token import (
     RawTelegramLinkToken,
     build_telegram_start_link,
     hash_telegram_link_token,
+)
+from tests.telegram_issue_helpers import (
+    issue_link_token_in_one_test_transaction as issue_link_token,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -97,13 +105,15 @@ def persisted_text_by_table(session: Session) -> dict[str, str]:
         "telegram_links": table_text(
             session,
             "SELECT id::text, user_id::text, telegram_chat_id::text, "
-            "linked_at::text, unlinked_at::text, updated_at::text "
+            "linked_at::text, unlinked_at::text, phone_verified_at::text, "
+            "updated_at::text "
             "FROM telegram_links",
         ),
         "telegram_link_tokens": table_text(
             session,
             "SELECT id::text, user_id::text, token_hash, created_at::text, "
-            "expires_at::text, consumed_at::text, invalidated_at::text "
+            "expires_at::text, consumed_at::text, invalidated_at::text, "
+            "pending_contact_binding_mac, contact_requested_at::text "
             "FROM telegram_link_tokens",
         ),
         "telegram_link_events": table_text(
@@ -129,10 +139,12 @@ def test_m4_persistence_stores_only_approved_sensitive_fields(
     raw_ip = "203.0.113.170"
     raw_token_value = "pytest_m4_70_raw_link_token"
     chat_id = 981_701
+    sender_id = 881_701
     now = datetime(2026, 7, 25, 17, 0, tzinfo=UTC)
     user = add_user(db_session, phone)
     client_ip = ResolvedClientIp(raw_ip)
     chat_identity = VerifiedPrivateTelegramChatIdentity(chat_id)
+    sender_identity = TelegramUserIdentity(sender_id)
 
     with caplog.at_level(logging.DEBUG):
         issued = issue_link_token(
@@ -147,11 +159,22 @@ def test_m4_persistence_stores_only_approved_sensitive_fields(
             settings.telegram_bot_username,
             issued.raw_token,
         )
-        consumed = consume_start_token(
+        bind_start_token_for_contact(
             db_session,
             issued.raw_token,
             chat_identity,
-            now,
+            sender_identity,
+            rate_limit_hmac_key=SecretStr(TEST_RATE_LIMIT_HMAC_KEY),
+            now=now,
+        )
+        consumed = consume_start_token(
+            db_session,
+            chat_identity,
+            sender_identity,
+            sender_identity,
+            SensitiveTelegramContactPhone(phone),
+            rate_limit_hmac_key=SecretStr(TEST_RATE_LIMIT_HMAC_KEY),
+            now=now,
         )
 
     full_deep_link = start_link.as_delivery_url()
@@ -184,6 +207,7 @@ def test_m4_persistence_stores_only_approved_sensitive_fields(
             "https://t.me",
             raw_ip,
             "leakauditbot",
+            str(sender_id),
         ),
         all_persisted_text,
     )
@@ -213,6 +237,7 @@ def test_m4_schema_has_no_profile_update_json_or_broad_metadata_persistence() ->
         "telegram_chat_id",
         "linked_at",
         "unlinked_at",
+        "phone_verified_at",
         "updated_at",
     }
     assert set(TelegramLinkToken.__table__.columns.keys()) == {
@@ -223,6 +248,8 @@ def test_m4_schema_has_no_profile_update_json_or_broad_metadata_persistence() ->
         "expires_at",
         "consumed_at",
         "invalidated_at",
+        "pending_contact_binding_mac",
+        "contact_requested_at",
     }
     assert set(TelegramLinkEvent.__table__.columns.keys()) == {
         "id",

@@ -46,7 +46,7 @@ def test_alembic_head_exists() -> None:
     assert get_alembic_head()
 
 
-def test_m2_cleanup_tables_use_allowlist_with_m8_child_first_order(
+def test_m2_cleanup_tables_use_allowlist_with_m11_child_first_order(
     monkeypatch,
 ) -> None:
     inspector = Mock()
@@ -76,14 +76,14 @@ def test_m2_cleanup_tables_use_allowlist_with_m8_child_first_order(
     monkeypatch.setattr(postgresql, "inspect", lambda _: inspector)
 
     assert get_m2_cleanup_tables(Mock()) == [
+        "otp_challenge_events",
+        "otp_dispatches",
+        "otp_challenges",
         "audit_log",
         "offer_acceptances",
         "offer_texts",
         "offer_versions",
         "object_files",
-        "otp_challenge_events",
-        "otp_dispatches",
-        "otp_challenges",
         "otp_dispatcher_state",
         "telegram_link_events",
         "telegram_link_tokens",

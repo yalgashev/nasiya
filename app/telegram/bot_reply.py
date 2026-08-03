@@ -10,6 +10,7 @@ from app.telegram.bot_api import (
     TelegramApiError,
     TelegramApiErrorCode,
     TelegramBotApiClient,
+    TelegramFixedReplyMarkup,
 )
 from app.telegram.update_processing import (
     BotReplyIntent,
@@ -43,6 +44,20 @@ _BOT_REPLY_CATALOG: Final[Mapping[TelegramReplyLanguage, Mapping[BotReplyKey, st
                         "Telegramni bog'lab bo'lmadi. Yangi havola yarating va "
                         "holatni Nasiya veb-sahifasida tekshiring."
                     ),
+                    BotReplyKey.CONTACT_REQUIRED: (
+                        "Davom etish uchun pastdagi tugma orqali o'zingizning "
+                        "Telegram kontaktingizni yuboring. Keyin Nasiya "
+                        "veb-sahifasidagi holatni tekshiring."
+                    ),
+                    BotReplyKey.CONTACT_VERIFIED: (
+                        "Telegram kontaktingiz tasdiqlandi. "
+                        "Joriy holatni Nasiya veb-sahifasida tekshiring."
+                    ),
+                    BotReplyKey.CONTACT_FAILED: (
+                        "Telegram kontaktini tasdiqlab bo'lmadi. Pastdagi tugma "
+                        "orqali o'zingizning kontaktingizni qayta yuboring va "
+                        "Nasiya veb-sahifasidagi holatni tekshiring."
+                    ),
                 }
             ),
             TelegramReplyLanguage.RU: MappingProxyType(
@@ -59,6 +74,20 @@ _BOT_REPLY_CATALOG: Final[Mapping[TelegramReplyLanguage, Mapping[BotReplyKey, st
                         "Не удалось подключить Telegram. Создайте новую ссылку "
                         "и проверьте статус на веб-странице Nasiya."
                     ),
+                    BotReplyKey.CONTACT_REQUIRED: (
+                        "Чтобы продолжить, отправьте свой контакт Telegram "
+                        "кнопкой ниже. Затем проверьте статус на веб-странице "
+                        "Nasiya."
+                    ),
+                    BotReplyKey.CONTACT_VERIFIED: (
+                        "Ваш контакт Telegram подтверждён. "
+                        "Проверьте текущий статус на веб-странице Nasiya."
+                    ),
+                    BotReplyKey.CONTACT_FAILED: (
+                        "Не удалось подтвердить контакт Telegram. Отправьте "
+                        "свой контакт ещё раз кнопкой ниже и проверьте статус "
+                        "на веб-странице Nasiya."
+                    ),
                 }
             ),
         }
@@ -68,6 +97,21 @@ _BOT_REPLY_CATALOG: Final[Mapping[TelegramReplyLanguage, Mapping[BotReplyKey, st
 
 def render_bot_reply(intent: BotReplyIntent) -> str:
     return _BOT_REPLY_CATALOG[intent.language][intent.reply_key]
+
+
+def render_bot_reply_markup(
+    intent: BotReplyIntent,
+) -> TelegramFixedReplyMarkup | None:
+    if intent.reply_key is BotReplyKey.CONTACT_REQUIRED:
+        return {
+            TelegramReplyLanguage.UZ_LATN: (
+                TelegramFixedReplyMarkup.REQUEST_CONTACT_UZ_LATN
+            ),
+            TelegramReplyLanguage.RU: TelegramFixedReplyMarkup.REQUEST_CONTACT_RU,
+        }[intent.language]
+    if intent.reply_key is BotReplyKey.CONTACT_VERIFIED:
+        return TelegramFixedReplyMarkup.REMOVE_KEYBOARD
+    return None
 
 
 async def deliver_bot_reply_best_effort(
@@ -80,10 +124,7 @@ async def deliver_bot_reply_best_effort(
         return BotReplyDeliveryStatus.NO_REPLY
 
     try:
-        await client.send_message(
-            chat_id=intent.chat_identity,
-            text=render_bot_reply(intent),
-        )
+        await _send_bot_reply(client, intent=intent)
     except asyncio.CancelledError:
         raise
     except TelegramApiError as exc:
@@ -114,13 +155,29 @@ async def _retry_rate_limited_reply_once(
     intent: BotReplyIntent,
 ) -> BotReplyDeliveryStatus:
     try:
-        await client.send_message(
-            chat_id=intent.chat_identity,
-            text=render_bot_reply(intent),
-        )
+        await _send_bot_reply(client, intent=intent)
     except asyncio.CancelledError:
         raise
     except Exception:
         LOGGER.warning("TELEGRAM_REPLY_NOT_SENT")
         return BotReplyDeliveryStatus.NOT_SENT
     return BotReplyDeliveryStatus.SENT
+
+
+async def _send_bot_reply(
+    client: TelegramBotApiClient,
+    *,
+    intent: BotReplyIntent,
+) -> None:
+    reply_markup = render_bot_reply_markup(intent)
+    if reply_markup is None:
+        await client.send_message(
+            chat_id=intent.chat_identity,
+            text=render_bot_reply(intent),
+        )
+        return
+    await client.send_message(
+        chat_id=intent.chat_identity,
+        text=render_bot_reply(intent),
+        reply_markup=reply_markup,
+    )

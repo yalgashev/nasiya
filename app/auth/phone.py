@@ -23,7 +23,7 @@ def normalize_uzbekistan_phone(raw_phone: str) -> str:
     else:
         candidate = normalized
 
-    if not candidate.isdecimal():
+    if not candidate.isascii() or not candidate.isdigit():
         raise PhoneNormalizationError("Invalid phone number format")
 
     if len(candidate) == UZBEKISTAN_LOCAL_LENGTH:

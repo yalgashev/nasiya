@@ -24,6 +24,12 @@ def utc_now() -> datetime:
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint(
+            "phone ~ '^\\+998[0-9]{9}$'",
+            name="ck_users_phone_canonical_uz_e164",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(
         PostgresUUID(as_uuid=True),

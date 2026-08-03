@@ -17,12 +17,15 @@ from app.telegram.models import TelegramLink, TelegramLinkEvent, TelegramLinkTok
 from app.telegram.service import (
     TELEGRAM_LINK_TOKEN_TTL_SECONDS,
     TelegramLinkTokenIssueError,
-    issue_relink_token,
+    issue_relink_token_after_rate_limit,
 )
 from app.telegram.token import (
     TELEGRAM_LINK_TOKEN_ENTROPY_BYTES,
     RawTelegramLinkToken,
     hash_telegram_link_token,
+)
+from tests.telegram_issue_helpers import (
+    issue_relink_token_in_one_test_transaction as issue_relink_token,
 )
 
 TEST_RATE_LIMIT_HMAC_KEY = "test-rate-limit-hmac-key-for-telegram-relink-service"
@@ -189,13 +192,11 @@ def stored_relink_domain_text(session: Session) -> str:
 
 
 def test_issue_relink_token_public_api_has_no_password_or_external_identity() -> None:
-    parameters = signature(issue_relink_token).parameters
+    parameters = signature(issue_relink_token_after_rate_limit).parameters
 
     assert list(parameters) == [
         "session",
-        "settings",
         "current_user",
-        "client_ip",
         "now",
         "token_generator",
     ]
@@ -207,7 +208,7 @@ def test_issue_relink_token_public_api_has_no_password_or_external_identity() ->
     assert "current_password" not in parameters
     assert "raw_password" not in parameters
 
-    source = getsource(issue_relink_token)
+    source = getsource(issue_relink_token_after_rate_limit)
     assert "password" not in source
     assert "build_telegram_start_link" not in source
     assert "append_telegram_link_event" not in source

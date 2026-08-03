@@ -10,6 +10,7 @@ def test_sensitive_no_store_scope_is_exact_and_csp_forbids_inline_code() -> None
     assert M9_NO_STORE_PATH_PREFIXES == (
         "/admin/offers",
         "/auth/registration-offer",
+        "/customer/activation",
         "/customer/identity",
     )
     assert "script-src 'self'" in CONTENT_SECURITY_POLICY

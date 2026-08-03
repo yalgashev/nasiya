@@ -1,21 +1,30 @@
 import base64
+import inspect
 import re
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from html import unescape
+from threading import Event
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 import app.auth.router as auth_router_module
+import app.telegram.service as telegram_service_module
 from app.auth.csrf import get_csrf_token
-from app.auth.deps import get_current_time, validate_csrf
+from app.auth.deps import (
+    get_current_time,
+    get_detached_mutation_session_context,
+    validate_csrf,
+)
 from app.auth.error_codes import ErrorCode
 from app.auth.models import AuthRateLimit, User
 from app.auth.models import Session as AuthSession
@@ -24,6 +33,7 @@ from app.auth.sessions import CreatedSession, create_authenticated_session
 from app.auth.telegram_reauth import (
     TELEGRAM_REAUTH_IP_SCOPE,
     TELEGRAM_REAUTH_USER_SCOPE,
+    TelegramReauthRateLimitPolicy,
 )
 from app.db import create_database_session_factory
 from app.main import create_app
@@ -34,9 +44,15 @@ from app.shop.dependencies import require_shop_owner, require_shop_staff
 from app.shop.enums import ShopRole, ShopStatus
 from app.shop.models import Shop, ShopStaff
 from app.telegram.bot_api import TelegramMessageEnvelope, TelegramUpdateEnvelope
+from app.telegram.client_ip import ResolvedClientIp
+from app.telegram.inbound import TelegramUserIdentity
 from app.telegram.models import TelegramLink, TelegramLinkEvent, TelegramLinkToken
 from app.telegram.polling_repository import load_or_create_polling_state
 from app.telegram.qr import TelegramQrRenderError
+from app.telegram.rate_limit import (
+    TELEGRAM_LINK_RATE_LIMIT_USER_SCOPE,
+    record_telegram_link_issuance_attempt,
+)
 from app.telegram.service import (
     TELEGRAM_LINK_TOKEN_TTL_SECONDS,
     TelegramLinkLifecycleInternalError,
@@ -44,12 +60,22 @@ from app.telegram.service import (
 from app.telegram.token import RawTelegramLinkToken, hash_telegram_link_token
 from app.telegram.update_processing import (
     TelegramUpdateOutcomeCode,
-    process_telegram_update_tx_a,
+)
+from app.telegram.update_processing import (
+    process_telegram_update_tx_a as _process_telegram_update_tx_a,
 )
 
 TEST_RATE_LIMIT_HMAC_KEY = "test-rate-limit-hmac-key-for-auth-telegram-routes"
 TEST_CLIENT_HOST = "203.0.113.45"
 TEST_BOT_USERNAME = "Nasiya_LinkBot"
+
+
+def process_telegram_update_tx_a(*args, **kwargs):
+    return _process_telegram_update_tx_a(
+        *args,
+        rate_limit_hmac_key=SecretStr(TEST_RATE_LIMIT_HMAC_KEY),
+        **kwargs,
+    )
 
 
 @pytest.fixture
@@ -253,7 +279,7 @@ def iter_dependency_calls(dependant: Dependant) -> Iterator[object]:
 
 def route_has_csrf_dependency(route: APIRoute) -> bool:
     return any(
-        dependency_call is validate_csrf
+        dependency_call in {validate_csrf, get_detached_mutation_session_context}
         for dependency_call in iter_dependency_calls(route.dependant)
     )
 
@@ -786,7 +812,7 @@ def test_non_htmx_relink_does_not_verify_or_mutate(
     assert count_table(db_session, AuthRateLimit) == 0
 
 
-def test_unlink_transaction_rolls_back_domain_and_reauth_clear(
+def test_unlink_domain_rollback_preserves_committed_reauth_prephase(
     m2_test_database: Engine,
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -840,7 +866,363 @@ def test_unlink_transaction_rolls_back_domain_and_reauth_clear(
     assert stored_link.unlinked_at is None
     assert count_table(db_session, TelegramLinkEvent) == 0
     scopes = set(db_session.scalars(select(AuthRateLimit.scope)))
-    assert scopes == {TELEGRAM_REAUTH_USER_SCOPE, TELEGRAM_REAUTH_IP_SCOPE}
+    assert scopes == {TELEGRAM_REAUTH_IP_SCOPE}
+
+
+@pytest.mark.parametrize(
+    ("path", "active_link_required", "expected_status", "expected_phase_count"),
+    (
+        ("/auth/telegram/link-token", False, 200, 3),
+        ("/auth/telegram/relink-token", True, 200, 5),
+        ("/auth/telegram/unlink", True, 303, 4),
+    ),
+)
+def test_telegram_mutation_routes_close_auth_and_rate_prephases_before_domain(
+    m2_test_database: Engine,
+    db_session: Session,
+    path: str,
+    active_link_required: bool,
+    expected_status: int,
+    expected_phase_count: int,
+) -> None:
+    now = datetime(2026, 7, 28, 11, 0, tzinfo=UTC)
+    client, settings, user, created = create_logged_in_client(
+        m2_test_database,
+        db_session,
+        now,
+    )
+    user_id = user.id
+    auth_session_id = created.session.id
+    if active_link_required:
+        add_active_link(db_session, user, now - timedelta(minutes=1))
+
+    stored_session = db_session.get(AuthSession, auth_session_id)
+    assert stored_session is not None
+    stored_session.last_seen_at = now - timedelta(minutes=10)
+    client_ip = ResolvedClientIp(TEST_CLIENT_HOST)
+    if path != "/auth/telegram/unlink":
+        rate_result = record_telegram_link_issuance_attempt(
+            db_session,
+            settings,
+            user,
+            client_ip,
+            now - timedelta(seconds=1),
+        )
+        assert rate_result.allowed
+    if active_link_required:
+        reauth_result = TelegramReauthRateLimitPolicy(
+            db_session,
+            settings,
+        ).record_failure(
+            user,
+            client_ip,
+            now - timedelta(seconds=1),
+        )
+        assert reauth_result.allowed
+    db_session.commit()
+
+    created_sessions: list[tuple[int, frozenset[int]]] = []
+    closed_sessions: set[int] = set()
+
+    class TrackingSession(Session):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self._phase_number = len(created_sessions)
+            created_sessions.append((self._phase_number, frozenset(closed_sessions)))
+
+        def close(self) -> None:
+            closed_sessions.add(self._phase_number)
+            super().close()
+
+    tracking_factory = sessionmaker(
+        bind=m2_test_database,
+        class_=TrackingSession,
+    )
+    client.app.state.database_session_factory = tracking_factory
+    request_data = {"csrf_token": csrf_token(created)}
+    headers: dict[str, str] = {}
+    if path != "/auth/telegram/unlink":
+        headers["HX-Request"] = "true"
+    if active_link_required:
+        request_data["current_password"] = "Password123"
+
+    response = client.post(
+        path,
+        data=request_data,
+        headers=headers,
+        follow_redirects=False,
+    )
+
+    assert response.status_code == expected_status
+    assert len(created_sessions) == expected_phase_count
+    assert len({phase_number for phase_number, _closed in created_sessions}) == (
+        expected_phase_count
+    )
+    for index, (_phase_number, closed_before_create) in enumerate(created_sessions):
+        expected_closed = {
+            phase_number for phase_number, _closed in created_sessions[:index]
+        }
+        assert expected_closed.issubset(closed_before_create)
+    assert {phase_number for phase_number, _closed in created_sessions}.issubset(
+        closed_sessions
+    )
+
+    db_session.expire_all()
+    touched_session = db_session.get(AuthSession, auth_session_id)
+    assert touched_session is not None
+    assert touched_session.last_seen_at == now
+    assert db_session.get(User, user_id) is not None
+
+
+def test_link_issue_rate_row_barrier_stops_domain_after_closed_auth_prephase(
+    m2_test_database: Engine,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 7, 28, 11, 30, tzinfo=UTC)
+    client, settings, user, created = create_logged_in_client(
+        m2_test_database,
+        db_session,
+        now,
+    )
+    auth_session_id = created.session.id
+    stored_session = db_session.get(AuthSession, auth_session_id)
+    assert stored_session is not None
+    stored_session.last_seen_at = now - timedelta(minutes=10)
+    rate_result = record_telegram_link_issuance_attempt(
+        db_session,
+        settings,
+        user,
+        ResolvedClientIp(TEST_CLIENT_HOST),
+        now - timedelta(seconds=1),
+    )
+    assert rate_result.allowed
+    db_session.commit()
+
+    session_factory = create_database_session_factory(m2_test_database)
+    blocker = session_factory()
+    blocked_row = blocker.scalar(
+        select(AuthRateLimit)
+        .where(AuthRateLimit.scope == TELEGRAM_LINK_RATE_LIMIT_USER_SCOPE)
+        .with_for_update()
+    )
+    assert blocked_row is not None
+
+    rate_phase_entered = Event()
+    domain_phase_entered = Event()
+    original_rate_phase = auth_router_module.record_link_token_issuance_rate_limit
+    original_domain_phase = auth_router_module.issue_link_token_after_rate_limit
+
+    def synchronized_rate_phase(*args, **kwargs):
+        rate_phase_entered.set()
+        return original_rate_phase(*args, **kwargs)
+
+    def observe_domain_phase(*args, **kwargs):
+        domain_phase_entered.set()
+        return original_domain_phase(*args, **kwargs)
+
+    monkeypatch.setattr(
+        auth_router_module,
+        "record_link_token_issuance_rate_limit",
+        synchronized_rate_phase,
+    )
+    monkeypatch.setattr(
+        auth_router_module,
+        "issue_link_token_after_rate_limit",
+        observe_domain_phase,
+    )
+
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        future = executor.submit(
+            client.post,
+            "/auth/telegram/link-token",
+            data={"csrf_token": csrf_token(created)},
+            headers={"HX-Request": "true"},
+        )
+        assert rate_phase_entered.wait(timeout=5)
+        assert not domain_phase_entered.is_set()
+        with session_factory() as observer:
+            visible_session = observer.get(AuthSession, auth_session_id)
+            assert visible_session is not None
+            assert visible_session.last_seen_at == now
+
+        blocker.commit()
+        response = future.result(timeout=10)
+    finally:
+        if blocker.in_transaction():
+            blocker.rollback()
+        blocker.close()
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    assert response.status_code == 200
+    assert domain_phase_entered.is_set()
+    assert count_table(db_session, TelegramLinkToken) == 1
+
+
+def test_reauth_rate_row_barrier_stops_domain_after_closed_password_phase(
+    m2_test_database: Engine,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 7, 28, 11, 45, tzinfo=UTC)
+    client, settings, user, created = create_logged_in_client(
+        m2_test_database,
+        db_session,
+        now,
+    )
+    auth_session_id = created.session.id
+    add_active_link(db_session, user, now - timedelta(minutes=1))
+    stored_session = db_session.get(AuthSession, auth_session_id)
+    assert stored_session is not None
+    stored_session.last_seen_at = now - timedelta(minutes=10)
+    reauth_result = TelegramReauthRateLimitPolicy(
+        db_session,
+        settings,
+    ).record_failure(
+        user,
+        ResolvedClientIp(TEST_CLIENT_HOST),
+        now - timedelta(seconds=1),
+    )
+    assert reauth_result.allowed
+    db_session.commit()
+
+    session_factory = create_database_session_factory(m2_test_database)
+    blocker = session_factory()
+    blocked_row = blocker.scalar(
+        select(AuthRateLimit)
+        .where(AuthRateLimit.scope == TELEGRAM_REAUTH_USER_SCOPE)
+        .with_for_update()
+    )
+    assert blocked_row is not None
+
+    rate_phase_entered = Event()
+    password_phase_completed = Event()
+    domain_phase_entered = Event()
+    original_rate_check = TelegramReauthRateLimitPolicy.check_for_user_id
+    original_password_phase = (
+        auth_router_module._check_telegram_account_control_password_phase
+    )
+    original_domain_phase = auth_router_module._issue_telegram_link_token_domain_phase
+
+    def synchronized_rate_check(self, *args, **kwargs):
+        rate_phase_entered.set()
+        return original_rate_check(self, *args, **kwargs)
+
+    def observe_password_phase(*args, **kwargs):
+        result = original_password_phase(*args, **kwargs)
+        password_phase_completed.set()
+        return result
+
+    def observe_domain_phase(*args, **kwargs):
+        domain_phase_entered.set()
+        return original_domain_phase(*args, **kwargs)
+
+    monkeypatch.setattr(
+        TelegramReauthRateLimitPolicy,
+        "check_for_user_id",
+        synchronized_rate_check,
+    )
+    monkeypatch.setattr(
+        auth_router_module,
+        "_check_telegram_account_control_password_phase",
+        observe_password_phase,
+    )
+    monkeypatch.setattr(
+        auth_router_module,
+        "_issue_telegram_link_token_domain_phase",
+        observe_domain_phase,
+    )
+
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        future = executor.submit(
+            client.post,
+            "/auth/telegram/relink-token",
+            data={
+                "csrf_token": csrf_token(created),
+                "current_password": "Password123",
+            },
+            headers={"HX-Request": "true"},
+        )
+        assert rate_phase_entered.wait(timeout=5)
+        assert password_phase_completed.is_set()
+        assert not domain_phase_entered.is_set()
+        with session_factory() as observer:
+            visible_session = observer.get(AuthSession, auth_session_id)
+            assert visible_session is not None
+            assert visible_session.last_seen_at == now
+
+        blocker.commit()
+        response = future.result(timeout=10)
+    finally:
+        if blocker.in_transaction():
+            blocker.rollback()
+        blocker.close()
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    assert response.status_code == 200
+    assert domain_phase_entered.is_set()
+    assert count_table(db_session, TelegramLinkToken) == 1
+
+
+def test_telegram_mutation_runtime_call_graph_has_closed_prephases() -> None:
+    assert not hasattr(telegram_service_module, "issue_link_token")
+    assert not hasattr(telegram_service_module, "issue_relink_token")
+
+    for route_callable in (
+        auth_router_module.issue_telegram_link_token,
+        auth_router_module.issue_telegram_relink_token,
+        auth_router_module.unlink_telegram_account,
+    ):
+        route_source = inspect.getsource(route_callable)
+        assert "get_detached_mutation_session_context" in route_source
+        assert "Depends(get_database_session" not in route_source
+        assert "Depends(get_current_session_context" not in route_source
+
+    detached_source = inspect.getsource(get_detached_mutation_session_context)
+    rate_source = inspect.getsource(auth_router_module._record_telegram_link_rate_phase)
+    reauth_coordinator_source = inspect.getsource(
+        auth_router_module._verify_telegram_account_control_password
+    )
+    reauth_rate_source = inspect.getsource(
+        auth_router_module._decide_telegram_reauth_rate_phase
+    )
+    reauth_password_source = inspect.getsource(
+        auth_router_module._check_telegram_account_control_password_phase
+    )
+    domain_sources = (
+        inspect.getsource(auth_router_module._issue_telegram_link_token_domain_phase),
+        inspect.getsource(auth_router_module._unlink_telegram_domain_phase),
+    )
+    assert "with session_factory.begin()" in detached_source
+    assert "with session_factory.begin()" in rate_source
+    assert "with session_factory.begin()" in reauth_rate_source
+    for scalar_rate_operation in (
+        "check_for_user_id",
+        "record_failure_for_user_id",
+        "clear_user_failures_after_success_for_user_id",
+    ):
+        assert scalar_rate_operation in reauth_rate_source
+    assert "db.get(" not in reauth_rate_source
+    assert "with session_factory.begin()" in reauth_password_source
+    assert "TelegramReauthRateLimitPolicy" not in reauth_password_source
+    assert "check_current_password" not in reauth_rate_source
+    assert "with session_factory.begin()" not in reauth_coordinator_source
+    assert reauth_coordinator_source.index(
+        "_check_telegram_account_control_password_phase"
+    ) < reauth_coordinator_source.index("_decide_telegram_reauth_rate_phase")
+    assert all("with session_factory.begin()" in source for source in domain_sources)
+    assert all(
+        "record_link_token_issuance_rate_limit" not in source
+        for source in domain_sources
+    )
+    assert "record_telegram_link_issuance_attempt" not in inspect.getsource(
+        auth_router_module.issue_link_token_after_rate_limit
+    )
+    assert "record_telegram_link_issuance_attempt" not in inspect.getsource(
+        auth_router_module.issue_relink_token_after_rate_limit
+    )
 
 
 def test_forged_htmx_header_does_not_bypass_auth_or_csrf(
@@ -996,7 +1378,7 @@ def test_link_and_relink_reveals_require_explicit_external_activation(
         assert raw_token not in stored_token.token_hash
 
 
-def test_relink_attempt_owns_reveal_across_three_polls_until_consumed(
+def test_relink_attempt_owns_reveal_across_polls_until_contact_is_verified(
     m2_test_database: Engine,
     db_session: Session,
     caplog: pytest.LogCaptureFixture,
@@ -1083,30 +1465,33 @@ def test_relink_attempt_owns_reveal_across_three_polls_until_consumed(
                 chat_type="private",
                 text=f"/start {raw_token}",
                 structurally_valid=True,
+                sender_identity=TelegramUserIdentity(9_900_502),
             ),
         ),
         now=now,
     )
 
-    assert worker_result.outcome is TelegramUpdateOutcomeCode.RELINKED
-    linked_response = client.get(status_url)
-    assert 'data-telegram-attempt-status="LINKED"' in linked_response.text
-    assert linked_response.headers["hx-retarget"] == "#telegram-link-reveal"
-    assert linked_response.headers["hx-reswap"] == "innerHTML"
-    assert "hx-get" not in linked_response.text
-    assert 'id="telegram-notice"' in linked_response.text
-    assert 'hx-swap-oob="delete"' in linked_response.text
-    assert "Telegram bog'lanishi uzildi." not in linked_response.text
-    assert raw_token not in linked_response.text
+    assert worker_result.outcome is TelegramUpdateOutcomeCode.CONTACT_REQUIRED
+    pending_response = client.get(status_url)
+    assert 'data-telegram-attempt-status="WAITING"' in pending_response.text
+    assert f'hx-get="{status_url}"' in pending_response.text
+    assert 'hx-trigger="every 3s"' in pending_response.text
+    assert "hx-retarget" not in pending_response.headers
+    assert raw_token not in pending_response.text
 
     db_session.expire_all()
-    linked = db_session.get(TelegramLink, link.id)
-    assert linked is not None
-    assert linked.telegram_chat_id == 9_900_502
-    assert linked.unlinked_at is None
+    pending_link = db_session.get(TelegramLink, link.id)
+    pending_token = db_session.get(TelegramLinkToken, attempt_id)
+    assert pending_link is not None
+    assert pending_link.telegram_chat_id == 9_900_501
+    assert pending_link.unlinked_at is None
+    assert pending_token is not None
+    assert pending_token.pending_contact_binding_mac is not None
+    assert pending_token.contact_requested_at == now
+    assert pending_token.consumed_at is None
 
 
-def test_unlink_then_initial_attempt_stays_waiting_until_consumed(
+def test_unlink_then_initial_attempt_stays_waiting_after_start_binding(
     m2_test_database: Engine,
     db_session: Session,
     caplog: pytest.LogCaptureFixture,
@@ -1221,35 +1606,35 @@ def test_unlink_then_initial_attempt_stays_waiting_until_consumed(
                 chat_type="private",
                 text=f"/start {raw_token}",
                 structurally_valid=True,
+                sender_identity=TelegramUserIdentity(9_900_511),
             ),
         ),
         now=now,
     )
 
-    assert worker_result.outcome is TelegramUpdateOutcomeCode.LINKED
-    linked_response = client.get(status_url)
+    assert worker_result.outcome is TelegramUpdateOutcomeCode.CONTACT_REQUIRED
+    pending_response = client.get(status_url)
     account_status = client.get("/auth/telegram/status")
-    assert 'data-telegram-attempt-status="LINKED"' in linked_response.text
-    assert linked_response.headers["hx-retarget"] == "#telegram-link-reveal"
-    assert linked_response.headers["hx-reswap"] == "innerHTML"
-    assert 'id="telegram-notice"' in linked_response.text
-    assert 'hx-swap-oob="delete"' in linked_response.text
-    assert "Telegram bog'lanishi uzildi." not in linked_response.text
-    assert 'data-telegram-link-status="LINKED"' in account_status.text
-    assert raw_token not in linked_response.text
+    assert 'data-telegram-attempt-status="WAITING"' in pending_response.text
+    assert f'hx-get="{status_url}"' in pending_response.text
+    assert "hx-retarget" not in pending_response.headers
+    assert 'data-telegram-link-status="UNLINKED"' in account_status.text
+    assert raw_token not in pending_response.text
     assert raw_token not in account_status.text
     assert raw_token not in str(issue_response.request.url)
     assert raw_token not in caplog.text
 
     db_session.expire_all()
-    consumed_token = db_session.get(TelegramLinkToken, attempt_id)
-    active_link = db_session.get(TelegramLink, link.id)
-    assert consumed_token is not None
-    assert consumed_token.consumed_at == now
-    assert consumed_token.invalidated_at is None
-    assert active_link is not None
-    assert active_link.telegram_chat_id == 9_900_511
-    assert active_link.unlinked_at is None
+    pending_token = db_session.get(TelegramLinkToken, attempt_id)
+    still_unlinked = db_session.get(TelegramLink, link.id)
+    assert pending_token is not None
+    assert pending_token.consumed_at is None
+    assert pending_token.invalidated_at is None
+    assert pending_token.pending_contact_binding_mac is not None
+    assert pending_token.contact_requested_at == now
+    assert still_unlinked is not None
+    assert still_unlinked.telegram_chat_id is None
+    assert still_unlinked.unlinked_at == now
 
 
 def test_rate_limited_initial_issue_after_unlink_has_visible_error_contract(
@@ -1490,7 +1875,7 @@ def test_qr_failure_keeps_button_and_does_not_reissue_token(
     assert raw_token not in caplog.text
 
 
-def test_attempt_polling_handles_supersession_link_and_foreign_uuid(
+def test_attempt_polling_handles_supersession_binding_and_foreign_uuid(
     m2_test_database: Engine,
     db_session: Session,
 ) -> None:
@@ -1542,21 +1927,29 @@ def test_attempt_polling_handles_supersession_link_and_foreign_uuid(
                 chat_type="private",
                 text=f"/start {second_raw_token}",
                 structurally_valid=True,
+                sender_identity=TelegramUserIdentity(9_900_200),
             ),
         ),
         now=now,
     )
-    assert worker_result.outcome is TelegramUpdateOutcomeCode.LINKED
+    assert worker_result.outcome is TelegramUpdateOutcomeCode.CONTACT_REQUIRED
 
     first_terminal_response = client.get(
         f"/auth/telegram/attempts/{first_attempt_id}/status"
     )
-    linked_response = client.get(f"/auth/telegram/attempts/{second_attempt_id}/status")
+    pending_response = client.get(f"/auth/telegram/attempts/{second_attempt_id}/status")
     assert 'data-telegram-attempt-status="SUPERSEDED"' in first_terminal_response.text
-    assert 'data-telegram-attempt-status="LINKED"' in linked_response.text
-    for terminal_response in (first_terminal_response, linked_response):
-        assert "hx-get" not in terminal_response.text
-        assert terminal_response.headers["hx-retarget"] == "#telegram-link-reveal"
+    assert "hx-get" not in first_terminal_response.text
+    assert first_terminal_response.headers["hx-retarget"] == "#telegram-link-reveal"
+    assert 'data-telegram-attempt-status="WAITING"' in pending_response.text
+    assert "hx-get" in pending_response.text
+    assert "hx-retarget" not in pending_response.headers
+    db_session.expire_all()
+    pending_token = db_session.get(TelegramLinkToken, second_attempt_id)
+    assert pending_token is not None
+    assert pending_token.pending_contact_binding_mac is not None
+    assert pending_token.contact_requested_at == now
+    assert pending_token.consumed_at is None
 
     foreign_user = commit_user(db_session, "+998901234599")
     foreign_token = TelegramLinkToken(
@@ -1729,7 +2122,7 @@ def test_protected_relink_and_unlink_ignore_suspended_and_revoked_shop(
     assert stored_link.telegram_chat_id is None
 
 
-def test_password_protected_relink_is_atomic_through_fake_worker(
+def test_password_protected_relink_start_only_binds_pending_contact(
     m2_test_database: Engine,
     db_session: Session,
 ) -> None:
@@ -1770,24 +2163,35 @@ def test_password_protected_relink_is_atomic_through_fake_worker(
                 chat_type="private",
                 text=f"/start {raw_token}",
                 structurally_valid=True,
+                sender_identity=TelegramUserIdentity(9_900_402),
             ),
         ),
         now=now,
     )
-    assert worker_result.outcome is TelegramUpdateOutcomeCode.RELINKED
+    assert worker_result.outcome is TelegramUpdateOutcomeCode.CONTACT_REQUIRED
 
     status_response = client.get(f"/auth/telegram/attempts/{attempt_id}/status")
-    assert 'data-telegram-attempt-status="LINKED"' in status_response.text
+    assert 'data-telegram-attempt-status="WAITING"' in status_response.text
     db_session.expire_all()
-    after_consume = db_session.get(TelegramLink, link.id)
-    assert after_consume is not None
-    assert after_consume.telegram_chat_id == 9_900_402
-    assert after_consume.unlinked_at is None
-    assert list(
-        db_session.scalars(
-            select(TelegramLinkEvent.action).where(TelegramLinkEvent.user_id == user.id)
+    after_binding = db_session.get(TelegramLink, link.id)
+    pending_token = db_session.get(TelegramLinkToken, attempt_id)
+    assert after_binding is not None
+    assert after_binding.telegram_chat_id == 9_900_401
+    assert after_binding.unlinked_at is None
+    assert pending_token is not None
+    assert pending_token.pending_contact_binding_mac is not None
+    assert pending_token.contact_requested_at == now
+    assert pending_token.consumed_at is None
+    assert (
+        list(
+            db_session.scalars(
+                select(TelegramLinkEvent.action).where(
+                    TelegramLinkEvent.user_id == user.id
+                )
+            )
         )
-    ) == ["relinked"]
+        == []
+    )
 
 
 def test_telegram_page_and_attempt_status_support_russian(

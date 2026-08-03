@@ -11,7 +11,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 import app.auth.router as auth_router_module
-from app.auth.deps import get_current_time, validate_csrf
+from app.auth.deps import get_current_time
 from app.auth.models import Session as AuthSession
 from app.auth.models import User
 from app.auth.sessions import hash_session_token, resolve_by_raw_token
@@ -125,6 +125,7 @@ def add_user_and_link(
         user_id=user.id,
         telegram_chat_id=9_985_000_501,
         linked_at=NOW,
+        phone_verified_at=NOW,
         updated_at=NOW,
     )
     session.add(link)
@@ -174,6 +175,7 @@ def seed_active_challenge(
     challenge.failed_attempts = failed_attempts
     if link_changed:
         link.linked_at = NOW + timedelta(seconds=1)
+        link.phone_verified_at = link.linked_at
         link.updated_at = link.linked_at
     session.flush()
     return user, challenge
@@ -452,7 +454,11 @@ def test_post_otp_verify_route_has_csrf_dependency() -> None:
     )
 
     dependency_calls = [dependency.call for dependency in route.dependant.dependencies]
-    assert validate_csrf in dependency_calls
+    assert auth_router_module.get_detached_otp_mutation_context in dependency_calls
+    dependency_source = inspect.getsource(
+        auth_router_module.get_detached_otp_mutation_context
+    )
+    assert "await validate_csrf(request, context, now)" in dependency_source
 
 
 def test_post_otp_verify_route_has_no_delivery_or_shop_scope() -> None:

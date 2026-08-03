@@ -122,6 +122,7 @@ def add_user_with_link(
         else None,
         linked_at=NOW,
         unlinked_at=None if linked else NOW,
+        phone_verified_at=NOW if linked else None,
         updated_at=NOW,
     )
     session.add(link)

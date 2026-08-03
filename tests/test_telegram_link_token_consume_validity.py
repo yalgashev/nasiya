@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
+from pydantic import SecretStr
 from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError
@@ -12,14 +13,23 @@ from sqlalchemy.orm import Session
 from app.auth.error_codes import ErrorCode
 from app.auth.models import User
 from app.db import create_database_session_factory
-from app.telegram.inbound import VerifiedPrivateTelegramChatIdentity
+from app.telegram.inbound import (
+    SensitiveTelegramContactPhone,
+    TelegramUserIdentity,
+    VerifiedPrivateTelegramChatIdentity,
+)
 from app.telegram.models import TelegramLink, TelegramLinkEvent, TelegramLinkToken
 from app.telegram.service import (
     TelegramLinkTokenConsumeError,
+    bind_start_token_for_contact,
     consume_start_token,
     get_valid_link_token_for_consume,
 )
 from app.telegram.token import RawTelegramLinkToken, hash_telegram_link_token
+
+CONTACT_BINDING_KEY = SecretStr(
+    "test-consume-validity-contact-binding-key-at-least-32-characters"
+)
 
 
 class SessionSpy:
@@ -96,6 +106,41 @@ def add_token(
     session.add(token)
     session.flush()
     return token
+
+
+def consume_raw(
+    session: Session,
+    *,
+    raw_token: str,
+    telegram_chat_id: int,
+    now: datetime,
+):
+    raw = RawTelegramLinkToken(raw_token)
+    phone = session.scalar(
+        select(User.phone)
+        .join(TelegramLinkToken, TelegramLinkToken.user_id == User.id)
+        .where(TelegramLinkToken.token_hash == hash_telegram_link_token(raw))
+    )
+    assert phone is not None
+    chat_identity = VerifiedPrivateTelegramChatIdentity(telegram_chat_id)
+    sender_identity = TelegramUserIdentity(telegram_chat_id)
+    bind_start_token_for_contact(
+        session,
+        raw,
+        chat_identity,
+        sender_identity,
+        rate_limit_hmac_key=CONTACT_BINDING_KEY,
+        now=now,
+    )
+    return consume_start_token(
+        session,
+        chat_identity,
+        sender_identity,
+        sender_identity,
+        SensitiveTelegramContactPhone(phone),
+        rate_limit_hmac_key=CONTACT_BINDING_KEY,
+        now=now,
+    )
 
 
 def count_table(session: Session, model) -> int:
@@ -576,22 +621,22 @@ def test_invalid_token_matrix_is_uniform_and_state_preserving(
         expires_at=now + timedelta(minutes=5),
     )
     first_consume_at = now + timedelta(seconds=1)
-    first_result = consume_start_token(
+    first_result = consume_raw(
         db_session,
-        RawTelegramLinkToken(replay_raw),
-        VerifiedPrivateTelegramChatIdentity(10_123),
-        first_consume_at,
+        raw_token=replay_raw,
+        telegram_chat_id=10_123,
+        now=first_consume_at,
     )
     assert first_result.token is replay_token
     assert replay_token.consumed_at == first_consume_at
     capture_invalid_case(
         raw_token=replay_raw,
         token_hash=replay_token.token_hash,
-        operation=lambda: consume_start_token(
+        operation=lambda: consume_raw(
             db_session,
-            RawTelegramLinkToken(replay_raw),
-            VerifiedPrivateTelegramChatIdentity(10_123),
-            first_consume_at + timedelta(seconds=1),
+            raw_token=replay_raw,
+            telegram_chat_id=10_123,
+            now=first_consume_at + timedelta(seconds=1),
         ),
     )
 

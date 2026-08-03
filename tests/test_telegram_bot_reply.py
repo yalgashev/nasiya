@@ -5,11 +5,16 @@ from collections.abc import Awaitable
 import pytest
 
 import app.telegram.bot_reply as bot_reply_module
-from app.telegram.bot_api import TelegramApiError, TelegramApiErrorCode
+from app.telegram.bot_api import (
+    TelegramApiError,
+    TelegramApiErrorCode,
+    TelegramFixedReplyMarkup,
+)
 from app.telegram.bot_reply import (
     BotReplyDeliveryStatus,
     deliver_bot_reply_best_effort,
     render_bot_reply,
+    render_bot_reply_markup,
 )
 from app.telegram.inbound import VerifiedPrivateTelegramChatIdentity
 from app.telegram.update_processing import (
@@ -39,8 +44,8 @@ class FakeClient:
         self.outcomes = outcomes
         self.calls = []
 
-    async def send_message(self, *, chat_id, text) -> None:
-        self.calls.append((chat_id, text))
+    async def send_message(self, *, chat_id, text, reply_markup=None) -> None:
+        self.calls.append((chat_id, text, reply_markup))
         outcome = self.outcomes.pop(0)
         if outcome is not None:
             raise outcome
@@ -77,6 +82,71 @@ def test_invalid_expired_replay_and_collision_share_one_failure_message() -> Non
         assert invalid_message == collision_message
 
 
+@pytest.mark.parametrize(
+    ("key", "language", "expected"),
+    [
+        (
+            BotReplyKey.CONTACT_REQUIRED,
+            TelegramReplyLanguage.UZ_LATN,
+            TelegramFixedReplyMarkup.REQUEST_CONTACT_UZ_LATN,
+        ),
+        (
+            BotReplyKey.CONTACT_REQUIRED,
+            TelegramReplyLanguage.RU,
+            TelegramFixedReplyMarkup.REQUEST_CONTACT_RU,
+        ),
+        (
+            BotReplyKey.CONTACT_VERIFIED,
+            TelegramReplyLanguage.UZ_LATN,
+            TelegramFixedReplyMarkup.REMOVE_KEYBOARD,
+        ),
+        (
+            BotReplyKey.CONTACT_VERIFIED,
+            TelegramReplyLanguage.RU,
+            TelegramFixedReplyMarkup.REMOVE_KEYBOARD,
+        ),
+        (BotReplyKey.CONTACT_FAILED, TelegramReplyLanguage.UZ_LATN, None),
+        (BotReplyKey.CONTACT_FAILED, TelegramReplyLanguage.RU, None),
+        (BotReplyKey.LINKED, TelegramReplyLanguage.UZ_LATN, None),
+        (BotReplyKey.LINK_FAILED, TelegramReplyLanguage.RU, None),
+    ],
+)
+def test_reply_markup_matrix_is_closed_and_language_exact(
+    key: BotReplyKey,
+    language: TelegramReplyLanguage,
+    expected: TelegramFixedReplyMarkup | None,
+) -> None:
+    assert render_bot_reply_markup(intent(key, language)) is expected
+
+
+@pytest.mark.parametrize("language", list(TelegramReplyLanguage))
+@pytest.mark.parametrize(
+    "key",
+    [
+        BotReplyKey.CONTACT_REQUIRED,
+        BotReplyKey.CONTACT_VERIFIED,
+        BotReplyKey.CONTACT_FAILED,
+    ],
+)
+def test_contact_reply_copy_is_localized_bounded_and_non_disclosing(
+    language: TelegramReplyLanguage,
+    key: BotReplyKey,
+) -> None:
+    message = render_bot_reply(intent(key, language))
+
+    assert message
+    assert len(message) <= 240
+    for forbidden in (
+        "+998",
+        "user_id",
+        "chat_id",
+        "token",
+        "binding",
+        "mismatch",
+    ):
+        assert forbidden not in message.casefold()
+
+
 def test_success_and_no_reply_delivery() -> None:
     client = FakeClient([None])
 
@@ -99,6 +169,31 @@ def test_success_and_no_reply_delivery() -> None:
         is BotReplyDeliveryStatus.NO_REPLY
     )
     assert len(client.calls) == 1
+
+
+def test_contact_request_and_removal_delivery_use_only_fixed_markup() -> None:
+    client = FakeClient([None, None, None])
+
+    for key in (
+        BotReplyKey.CONTACT_REQUIRED,
+        BotReplyKey.CONTACT_VERIFIED,
+        BotReplyKey.CONTACT_FAILED,
+    ):
+        assert (
+            run(
+                deliver_bot_reply_best_effort(
+                    client,  # type: ignore[arg-type]
+                    intent=intent(key, TelegramReplyLanguage.UZ_LATN),
+                )
+            )
+            is BotReplyDeliveryStatus.SENT
+        )
+
+    assert [call[2] for call in client.calls] == [
+        TelegramFixedReplyMarkup.REQUEST_CONTACT_UZ_LATN,
+        TelegramFixedReplyMarkup.REMOVE_KEYBOARD,
+        None,
+    ]
 
 
 def test_rate_limit_waits_and_retries_exactly_once() -> None:
@@ -127,6 +222,38 @@ def test_rate_limit_waits_and_retries_exactly_once() -> None:
     assert result is BotReplyDeliveryStatus.SENT
     assert sleeps == [17]
     assert len(client.calls) == 2
+
+
+def test_rate_limit_retry_reuses_the_same_fixed_contact_markup() -> None:
+    client = FakeClient(
+        [
+            TelegramApiError(
+                TelegramApiErrorCode.TRANSIENT_RATE_LIMIT,
+                retry_after_seconds=1,
+            ),
+            None,
+        ]
+    )
+
+    async def sleeper(_seconds: float) -> None:
+        return None
+
+    result = run(
+        deliver_bot_reply_best_effort(
+            client,  # type: ignore[arg-type]
+            intent=intent(
+                BotReplyKey.CONTACT_REQUIRED,
+                TelegramReplyLanguage.RU,
+            ),
+            sleeper=sleeper,
+        )
+    )
+
+    assert result is BotReplyDeliveryStatus.SENT
+    assert [call[2] for call in client.calls] == [
+        TelegramFixedReplyMarkup.REQUEST_CONTACT_RU,
+        TelegramFixedReplyMarkup.REQUEST_CONTACT_RU,
+    ]
 
 
 def test_second_rate_limit_or_unknown_timeout_is_not_retried_again() -> None:

@@ -242,6 +242,27 @@ def lock_outstanding_challenge_set_by_user_for_purposes(
     )
 
 
+def get_outstanding_challenge_ids_by_user_for_purposes(
+    session: Session,
+    *,
+    user_id: UUID,
+    purposes: tuple[OtpPurpose, ...],
+) -> tuple[UUID, ...]:
+    if not purposes or len(set(purposes)) != len(purposes):
+        raise ValueError("OTP lookup purposes must be unique and non-empty")
+    typed_purposes = tuple(_require_typed_purpose(purpose) for purpose in purposes)
+    statement = (
+        select(OtpChallenge.id)
+        .where(
+            OtpChallenge.user_id == _validate_uuid(user_id, "OTP user id"),
+            OtpChallenge.purpose.in_(purpose.value for purpose in typed_purposes),
+            OtpChallenge.status.in_(_OUTSTANDING_CHALLENGE_STATUSES),
+        )
+        .order_by(OtpChallenge.id.asc())
+    )
+    return tuple(session.scalars(statement).all())
+
+
 def lock_outstanding_challenge_set_by_user_and_browser(
     session: Session,
     *,

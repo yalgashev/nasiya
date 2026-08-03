@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
+from pydantic import SecretStr
 from sqlalchemy import DateTime, func, select
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.engine import Engine
@@ -15,23 +16,34 @@ from app.auth.models import User
 from app.db import create_database_session_factory
 from app.settings import Settings
 from app.telegram.client_ip import ResolvedClientIp
-from app.telegram.inbound import VerifiedPrivateTelegramChatIdentity
-from app.telegram.models import TelegramLink, TelegramLinkEvent
+from app.telegram.inbound import (
+    SensitiveTelegramContactPhone,
+    TelegramUserIdentity,
+    VerifiedPrivateTelegramChatIdentity,
+)
+from app.telegram.models import TelegramLink, TelegramLinkEvent, TelegramLinkToken
 from app.telegram.service import (
     TELEGRAM_LINK_TOKEN_TTL_SECONDS,
     TelegramChatAlreadyLinkedError,
     TelegramLinkTokenConsumeError,
     TelegramLinkTokenIssueError,
     TelegramStartTokenConsumeOutcome,
+    bind_start_token_for_contact,
     consume_start_token,
-    issue_link_token,
-    issue_relink_token,
 )
 from app.telegram.service import (
     unlink as unlink_telegram,
 )
+from app.telegram.token import RawTelegramLinkToken, hash_telegram_link_token
+from tests.telegram_issue_helpers import (
+    issue_link_token_in_one_test_transaction as issue_link_token,
+)
+from tests.telegram_issue_helpers import (
+    issue_relink_token_in_one_test_transaction as issue_relink_token,
+)
 
 TEST_RATE_LIMIT_HMAC_KEY = "test-rate-limit-hmac-key-for-telegram-events"
+CONTACT_BINDING_KEY = SecretStr(TEST_RATE_LIMIT_HMAC_KEY)
 
 
 @pytest.fixture
@@ -155,11 +167,32 @@ def consume_raw(
     telegram_chat_id: int,
     now: datetime,
 ):
+    raw = RawTelegramLinkToken(raw_token)
+    token_hash = hash_telegram_link_token(raw)
+    phone = session.scalar(
+        select(User.phone)
+        .join(TelegramLinkToken, TelegramLinkToken.user_id == User.id)
+        .where(TelegramLinkToken.token_hash == token_hash)
+    )
+    assert phone is not None
+    chat_identity = VerifiedPrivateTelegramChatIdentity(telegram_chat_id)
+    sender_identity = TelegramUserIdentity(telegram_chat_id)
+    bind_start_token_for_contact(
+        session,
+        raw,
+        chat_identity,
+        sender_identity,
+        rate_limit_hmac_key=CONTACT_BINDING_KEY,
+        now=now,
+    )
     return consume_start_token(
         session,
-        raw_token,
-        VerifiedPrivateTelegramChatIdentity(telegram_chat_id),
-        now,
+        chat_identity,
+        sender_identity,
+        sender_identity,
+        SensitiveTelegramContactPhone(phone),
+        rate_limit_hmac_key=CONTACT_BINDING_KEY,
+        now=now,
     )
 
 
@@ -400,11 +433,11 @@ def test_noop_issue_and_failure_paths_do_not_write_events_or_duplicates(
         telegram_chat_id=chat_a,
         now=linked_at + timedelta(seconds=8),
     )
-    assert same_chat_result.outcome is (
-        TelegramStartTokenConsumeOutcome.ALREADY_LINKED_TO_THIS_CHAT
-    )
-    assert same_chat_result.event is None
-    assert count_events(db_session) == 1
+    assert same_chat_result.outcome is TelegramStartTokenConsumeOutcome.RELINKED
+    assert same_chat_result.event is not None
+    assert same_chat_result.event.action == "relinked"
+    assert same_chat_result.link.phone_verified_at == linked_at + timedelta(seconds=8)
+    assert count_events(db_session) == 2
 
     with pytest.raises(TelegramLinkTokenConsumeError) as replay_exc_info:
         consume_raw(
@@ -414,7 +447,7 @@ def test_noop_issue_and_failure_paths_do_not_write_events_or_duplicates(
             now=linked_at + timedelta(seconds=9),
         )
     assert replay_exc_info.value.error_code is ErrorCode.LINK_TOKEN_INVALID
-    assert count_events(db_session) == 1
+    assert count_events(db_session) == 2
 
     expired_issue_at = linked_at + timedelta(seconds=10)
     expired_raw = issue_relink_raw(
@@ -434,7 +467,7 @@ def test_noop_issue_and_failure_paths_do_not_write_events_or_duplicates(
             + timedelta(seconds=TELEGRAM_LINK_TOKEN_TTL_SECONDS + 1),
         )
     assert expired_exc_info.value.error_code is ErrorCode.LINK_TOKEN_INVALID
-    assert count_events(db_session) == 1
+    assert count_events(db_session) == 2
 
     collision_user = add_user(db_session, "+998900016005")
     collision_user_raw = issue_first_raw(
@@ -462,11 +495,12 @@ def test_noop_issue_and_failure_paths_do_not_write_events_or_duplicates(
     )
 
     with pytest.raises(TelegramChatAlreadyLinkedError) as collision_exc_info:
-        consume_start_token(
+        consume_raw(
             db_session,
-            candidate_result.raw_token,
-            VerifiedPrivateTelegramChatIdentity(collision_chat),
-            expired_issue_at + timedelta(seconds=TELEGRAM_LINK_TOKEN_TTL_SECONDS + 5),
+            raw_token=candidate_result.raw_token.as_internal_value(),
+            telegram_chat_id=collision_chat,
+            now=expired_issue_at
+            + timedelta(seconds=TELEGRAM_LINK_TOKEN_TTL_SECONDS + 5),
         )
     db_session.refresh(candidate_result.token)
     assert collision_exc_info.value.error_code is ErrorCode.TELEGRAM_CHAT_ALREADY_LINKED

@@ -7,6 +7,7 @@ from inspect import getsource, signature
 from threading import Barrier, BrokenBarrierError, Event
 
 import pytest
+from pydantic import SecretStr
 from sqlalchemy import func, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
@@ -16,7 +17,13 @@ from app.auth.error_codes import ErrorCode
 from app.auth.models import User
 from app.customer.models import Customer
 from app.db import create_database_session_factory
-from app.telegram.inbound import VerifiedPrivateTelegramChatIdentity
+from app.settings import Settings
+from app.telegram.client_ip import ResolvedClientIp
+from app.telegram.inbound import (
+    SensitiveTelegramContactPhone,
+    TelegramUserIdentity,
+    VerifiedPrivateTelegramChatIdentity,
+)
 from app.telegram.models import TelegramLink, TelegramLinkEvent, TelegramLinkToken
 from app.telegram.service import (
     TELEGRAM_LINK_TOKEN_TTL_SECONDS,
@@ -24,15 +31,21 @@ from app.telegram.service import (
     TelegramLinkTokenIssueError,
     TelegramStartTokenConsumeOutcome,
     UnlinkedTelegramLink,
+    bind_start_token_for_contact,
     consume_start_token,
 )
 from app.telegram.service import (
     unlink as unlink_telegram,
 )
 from app.telegram.token import RawTelegramLinkToken, hash_telegram_link_token
+from tests.telegram_issue_helpers import (
+    issue_relink_token_in_one_test_transaction as issue_relink_token,
+)
 
 _BARRIER_TIMEOUT_SECONDS = 5
 _FUTURE_TIMEOUT_SECONDS = 15
+_R05_RATE_LIMIT_HMAC_KEY = "r05-rate-limit-hmac-key-at-least-32-characters"
+_CONTACT_BINDING_KEY = SecretStr(_R05_RATE_LIMIT_HMAC_KEY)
 
 
 @dataclass(frozen=True, repr=False)
@@ -149,6 +162,9 @@ def add_link(
         telegram_chat_id=telegram_chat_id,
         linked_at=linked_at,
         unlinked_at=unlinked_at,
+        phone_verified_at=(
+            linked_at if telegram_chat_id is not None and unlinked_at is None else None
+        ),
         updated_at=unlinked_at or linked_at,
     )
     session.add(link)
@@ -176,6 +192,41 @@ def add_token(
     session.add(token)
     session.flush()
     return token
+
+
+def consume_raw(
+    session: Session,
+    *,
+    raw_token: str,
+    telegram_chat_id: int,
+    now: datetime,
+):
+    raw = RawTelegramLinkToken(raw_token)
+    phone = session.scalar(
+        select(User.phone)
+        .join(TelegramLinkToken, TelegramLinkToken.user_id == User.id)
+        .where(TelegramLinkToken.token_hash == hash_telegram_link_token(raw))
+    )
+    assert phone is not None
+    chat_identity = VerifiedPrivateTelegramChatIdentity(telegram_chat_id)
+    sender_identity = TelegramUserIdentity(telegram_chat_id)
+    bind_start_token_for_contact(
+        session,
+        raw,
+        chat_identity,
+        sender_identity,
+        rate_limit_hmac_key=_CONTACT_BINDING_KEY,
+        now=now,
+    )
+    return consume_start_token(
+        session,
+        chat_identity,
+        sender_identity,
+        sender_identity,
+        SensitiveTelegramContactPhone(phone),
+        rate_limit_hmac_key=_CONTACT_BINDING_KEY,
+        now=now,
+    )
 
 
 def count_table(session: Session, model) -> int:
@@ -303,6 +354,7 @@ def test_unlink_active_link_tombstones_invalidates_token_and_writes_event(
         assert result.link.telegram_chat_id is None
         assert result.link.linked_at == linked_at
         assert result.link.unlinked_at == now
+        assert result.link.phone_verified_at is None
         assert result.link.updated_at == now
         assert result.event.user_id == user_id
         assert result.event.action == "unlinked"
@@ -351,6 +403,7 @@ def test_unlink_active_link_tombstones_invalidates_token_and_writes_event(
         assert stored_link.telegram_chat_id is None
         assert stored_link.linked_at == linked_at
         assert stored_link.unlinked_at == now
+        assert stored_link.phone_verified_at is None
         assert stored_link.updated_at == now
         assert stored_token is not None
         assert stored_token.invalidated_at == now
@@ -602,6 +655,7 @@ def test_parallel_double_unlink_has_exactly_one_transition_and_event(
     assert stored_link.telegram_chat_id is None
     assert stored_link.linked_at == linked_at
     assert stored_link.unlinked_at == unlink_at_by_label[winners[0].label]
+    assert stored_link.phone_verified_at is None
     assert stored_link.updated_at == unlink_at_by_label[winners[0].label]
     assert stored_token is not None
     assert stored_token.consumed_at is None
@@ -726,11 +780,11 @@ def test_unlink_then_parallel_relink_consume_rejects_invalidated_token(
                     exception_class="UnlinkTimeout",
                 )
             try:
-                consume_start_token(
+                consume_raw(
                     session,
-                    RawTelegramLinkToken(raw_token),
-                    VerifiedPrivateTelegramChatIdentity(chat_b),
-                    consume_at,
+                    raw_token=raw_token,
+                    telegram_chat_id=chat_b,
+                    now=consume_at,
                 )
             except TelegramLinkTokenConsumeError as exc:
                 error_text = f"{exc!r} {exc} {exc.public_error}"
@@ -794,11 +848,11 @@ def test_unlink_then_parallel_relink_consume_rejects_invalidated_token(
     try:
         replay_error_text = ""
         with pytest.raises(TelegramLinkTokenConsumeError) as replay_exc_info:
-            consume_start_token(
+            consume_raw(
                 verify_session,
-                RawTelegramLinkToken(raw_token),
-                VerifiedPrivateTelegramChatIdentity(chat_b),
-                consume_at + timedelta(seconds=1),
+                raw_token=raw_token,
+                telegram_chat_id=chat_b,
+                now=consume_at + timedelta(seconds=1),
             )
         replay_error_text = (
             f"{replay_exc_info.value!r} {replay_exc_info.value} "
@@ -923,11 +977,11 @@ def test_relink_consume_then_parallel_unlink_finalizes_unlinked_state(
             session.execute(text("SET LOCAL lock_timeout = '5000ms'"))
             session.execute(text("SET LOCAL statement_timeout = '10000ms'"))
             start_barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
-            result = consume_start_token(
+            result = consume_raw(
                 session,
-                RawTelegramLinkToken(raw_token),
-                VerifiedPrivateTelegramChatIdentity(chat_b),
-                relink_at,
+                raw_token=raw_token,
+                telegram_chat_id=chat_b,
+                now=relink_at,
             )
             event_action = result.event.action if result.event is not None else None
             event_at = result.event.occurred_at if result.event is not None else None
@@ -1038,11 +1092,11 @@ def test_relink_consume_then_parallel_unlink_finalizes_unlinked_state(
     try:
         replay_error_text = ""
         with pytest.raises(TelegramLinkTokenConsumeError) as replay_exc_info:
-            consume_start_token(
+            consume_raw(
                 verify_session,
-                RawTelegramLinkToken(raw_token),
-                VerifiedPrivateTelegramChatIdentity(chat_b),
-                unlink_at + timedelta(seconds=1),
+                raw_token=raw_token,
+                telegram_chat_id=chat_b,
+                now=unlink_at + timedelta(seconds=1),
             )
         replay_error_text = (
             f"{replay_exc_info.value!r} {replay_exc_info.value} "
@@ -1123,3 +1177,225 @@ def test_relink_consume_then_parallel_unlink_finalizes_unlinked_state(
         stored_text,
         replay_error_text,
     )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("winner", ("issue", "unlink"))
+def test_relink_token_issue_and_unlink_empty_set_barriers_converge(
+    monkeypatch,
+    m2_test_database: Engine,
+    winner: str,
+) -> None:
+    session_factory = create_database_session_factory(m2_test_database)
+    now = datetime(2026, 8, 2, 17, 1 if winner == "issue" else 2, tzinfo=UTC)
+    settings = Settings(
+        _env_file=None,
+        app_environment="testing",
+        debug=False,
+        database_url=m2_test_database.url.render_as_string(hide_password=False),
+        session_cookie_secure=False,
+        telegram_link_rate_limit_user_attempts=20,
+        telegram_link_rate_limit_phone_attempts=20,
+        telegram_link_rate_limit_ip_attempts=50,
+        rate_limit_hmac_key=_R05_RATE_LIMIT_HMAC_KEY,
+    )
+    setup_session = session_factory()
+    try:
+        user = add_user(
+            setup_session,
+            "+998900014301" if winner == "issue" else "+998900014302",
+        )
+        link = add_link(
+            setup_session,
+            user,
+            telegram_chat_id=12_345_901 if winner == "issue" else 12_345_902,
+            linked_at=now,
+        )
+        user_id = user.id
+        link_id = link.id
+        setup_session.commit()
+    finally:
+        setup_session.close()
+
+    issue_token_insert_entered = Event()
+    issue_token_inserted = Event()
+    unlink_empty_snapshot = Event()
+    issue_committed = Event()
+    original_insert = telegram_service.invalidate_and_insert_telegram_link_token
+    original_token_set_lock = (
+        telegram_service.lock_outstanding_telegram_link_token_set_by_user
+    )
+    original_user_lock = telegram_service._lock_active_user
+
+    def wait_for(event: Event) -> None:
+        if not event.wait(timeout=_BARRIER_TIMEOUT_SECONDS):
+            raise BrokenBarrierError
+
+    def synchronized_insert(*args, **kwargs):
+        session = args[0]
+        if winner == "unlink" and session.info.get("race_actor") == "issue":
+            wait_for(unlink_empty_snapshot)
+            issue_token_insert_entered.set()
+        token = original_insert(*args, **kwargs)
+        if session.info.get("race_actor") == "issue":
+            issue_token_inserted.set()
+            if winner == "issue":
+                wait_for(unlink_empty_snapshot)
+        return token
+
+    def synchronized_token_set_lock(*args, **kwargs):
+        session = args[0]
+        if winner == "issue" and session.info.get("race_actor") == "unlink":
+            wait_for(issue_token_inserted)
+        locked_tokens = original_token_set_lock(*args, **kwargs)
+        if session.info.get("race_actor") == "unlink":
+            assert locked_tokens == ()
+            unlink_empty_snapshot.set()
+        return locked_tokens
+
+    def synchronized_user_lock(*args, **kwargs):
+        session = args[0]
+        actor = session.info.get("race_actor")
+        if winner == "issue" and actor == "unlink":
+            wait_for(issue_committed)
+            return original_user_lock(*args, **kwargs)
+        locked_user = original_user_lock(*args, **kwargs)
+        if winner == "unlink" and actor == "unlink":
+            wait_for(issue_token_insert_entered)
+        return locked_user
+
+    monkeypatch.setattr(
+        telegram_service,
+        "invalidate_and_insert_telegram_link_token",
+        synchronized_insert,
+    )
+    monkeypatch.setattr(
+        telegram_service,
+        "lock_outstanding_telegram_link_token_set_by_user",
+        synchronized_token_set_lock,
+    )
+    monkeypatch.setattr(
+        telegram_service,
+        "_lock_active_user",
+        synchronized_user_lock,
+    )
+
+    def issue_worker() -> tuple[str, str]:
+        session = session_factory()
+        session.info["race_actor"] = "issue"
+        try:
+            session.execute(text("SET LOCAL statement_timeout = '10000ms'"))
+            current_user = session.get(User, user_id)
+            assert current_user is not None
+            try:
+                issue_relink_token(
+                    session,
+                    settings,
+                    current_user,
+                    ResolvedClientIp(
+                        "203.0.113.231" if winner == "issue" else "203.0.113.232"
+                    ),
+                    now + timedelta(seconds=1),
+                    token_generator=lambda _byte_count: (
+                        "r05_issue_wins_empty_set"
+                        if winner == "issue"
+                        else "r05_unlink_wins_empty_set"
+                    ),
+                )
+                outcome = "ISSUED"
+            except TelegramLinkTokenIssueError as exc:
+                outcome = exc.error_code.value
+            session.commit()
+            return "issue", outcome
+        except BrokenBarrierError:
+            session.rollback()
+            return "issue", "BROKEN_BARRIER"
+        except Exception as exc:
+            session.rollback()
+            return "issue", type(exc).__name__
+        finally:
+            issue_committed.set()
+            session.close()
+
+    def unlink_worker() -> tuple[str, str]:
+        session = session_factory()
+        session.info["race_actor"] = "unlink"
+        try:
+            session.execute(text("SET LOCAL statement_timeout = '10000ms'"))
+            current_user = session.get(User, user_id)
+            assert current_user is not None
+            try:
+                unlink_telegram(session, current_user, now + timedelta(seconds=2))
+                outcome = "UNLINKED"
+            except TelegramLinkTokenIssueError as exc:
+                outcome = exc.error_code.value
+            session.commit()
+            return "unlink", outcome
+        except BrokenBarrierError:
+            session.rollback()
+            return "unlink", "BROKEN_BARRIER"
+        except Exception as exc:
+            session.rollback()
+            return "unlink", type(exc).__name__
+        finally:
+            session.close()
+
+    executor = ThreadPoolExecutor(max_workers=2)
+    try:
+        futures = [executor.submit(issue_worker), executor.submit(unlink_worker)]
+        done, not_done = wait(futures, timeout=_FUTURE_TIMEOUT_SECONDS)
+        if not_done:
+            issue_token_insert_entered.set()
+            issue_token_inserted.set()
+            unlink_empty_snapshot.set()
+            issue_committed.set()
+            for future in not_done:
+                future.cancel()
+            pytest.fail("empty-set issue/unlink barrier timed out", pytrace=False)
+        outcomes = dict(future.result(timeout=0) for future in futures)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    expected_outcomes = {
+        "issue": {
+            "issue": "ISSUED",
+            "unlink": ErrorCode.RATE_LIMITED.value,
+        },
+        "unlink": {
+            "issue": ErrorCode.TELEGRAM_NOT_LINKED.value,
+            "unlink": "UNLINKED",
+        },
+    }
+    assert outcomes == expected_outcomes[winner]
+
+    verify_session = session_factory()
+    try:
+        stored_link = verify_session.get(TelegramLink, link_id)
+        stored_tokens = tuple(
+            verify_session.scalars(
+                select(TelegramLinkToken).where(TelegramLinkToken.user_id == user_id)
+            ).all()
+        )
+        event_actions = tuple(
+            verify_session.scalars(
+                select(TelegramLinkEvent.action).where(
+                    TelegramLinkEvent.user_id == user_id
+                )
+            ).all()
+        )
+    finally:
+        verify_session.close()
+
+    assert stored_link is not None
+    if winner == "issue":
+        assert stored_link.telegram_chat_id is not None
+        assert stored_link.unlinked_at is None
+        assert len(stored_tokens) == 1
+        assert stored_tokens[0].consumed_at is None
+        assert stored_tokens[0].invalidated_at is None
+        assert event_actions == ()
+    else:
+        assert stored_link.telegram_chat_id is None
+        assert stored_link.unlinked_at is not None
+        assert stored_tokens == ()
+        assert event_actions == ("unlinked",)

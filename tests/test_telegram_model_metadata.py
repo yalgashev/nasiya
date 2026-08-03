@@ -51,6 +51,7 @@ def test_telegram_tables_have_only_m4_allowed_columns() -> None:
         "telegram_chat_id",
         "linked_at",
         "unlinked_at",
+        "phone_verified_at",
         "updated_at",
     }
     assert set(TelegramLinkToken.__table__.columns.keys()) == {
@@ -61,6 +62,8 @@ def test_telegram_tables_have_only_m4_allowed_columns() -> None:
         "expires_at",
         "consumed_at",
         "invalidated_at",
+        "pending_contact_binding_mac",
+        "contact_requested_at",
     }
     assert set(TelegramLinkEvent.__table__.columns.keys()) == {
         "id",
@@ -100,6 +103,12 @@ def test_telegram_links_columns_and_state_constraints() -> None:
         "(telegram_chat_id IS NOT NULL AND unlinked_at IS NULL) "
         "OR (telegram_chat_id IS NULL AND unlinked_at IS NOT NULL)"
     )
+    assert check_constraints(TelegramLink)[
+        "ck_telegram_links_phone_verification_consistent"
+    ] == (
+        "phone_verified_at IS NULL OR "
+        "(unlinked_at IS NULL AND phone_verified_at = linked_at)"
+    )
 
 
 def test_telegram_links_active_chat_partial_unique_index() -> None:
@@ -133,6 +142,27 @@ def test_telegram_link_tokens_hash_and_lifecycle_constraints() -> None:
         token_constraints["ck_telegram_link_tokens_terminal_state_exclusive"]
         == "NOT (consumed_at IS NOT NULL AND invalidated_at IS NOT NULL)"
     )
+    assert isinstance(columns["pending_contact_binding_mac"].type, String)
+    assert columns["pending_contact_binding_mac"].type.length == 64
+    assert columns["pending_contact_binding_mac"].nullable is True
+    assert token_constraints[
+        "ck_telegram_link_tokens_pending_contact_binding_mac_format"
+    ] == (
+        "pending_contact_binding_mac IS NULL OR "
+        "pending_contact_binding_mac ~ '^[0-9a-f]{64}$'"
+    )
+    assert token_constraints[
+        "ck_telegram_link_tokens_pending_contact_state_consistent"
+    ] == (
+        "(pending_contact_binding_mac IS NULL) = "
+        "(contact_requested_at IS NULL) AND ("
+        "consumed_at IS NULL AND invalidated_at IS NULL "
+        "OR pending_contact_binding_mac IS NULL)"
+    )
+    assert (
+        token_constraints["ck_telegram_link_tokens_pending_contact_timestamp_order"]
+        == "contact_requested_at IS NULL OR contact_requested_at >= created_at"
+    )
 
 
 def test_telegram_link_tokens_one_outstanding_partial_unique_index() -> None:
@@ -144,6 +174,18 @@ def test_telegram_link_tokens_one_outstanding_partial_unique_index() -> None:
     assert {column.name for column in outstanding_index.columns} == {"user_id"}
     assert str(outstanding_index.dialect_options["postgresql"]["where"]) == (
         "consumed_at IS NULL AND invalidated_at IS NULL"
+    )
+
+    pending_contact_index = indexes(TelegramLinkToken)[
+        "uq_telegram_link_tokens_pending_contact_binding_mac_outstanding"
+    ]
+    assert pending_contact_index.unique is True
+    assert {column.name for column in pending_contact_index.columns} == {
+        "pending_contact_binding_mac"
+    }
+    assert str(pending_contact_index.dialect_options["postgresql"]["where"]) == (
+        "pending_contact_binding_mac IS NOT NULL "
+        "AND consumed_at IS NULL AND invalidated_at IS NULL"
     )
 
 
@@ -160,12 +202,18 @@ def test_telegram_link_events_action_check() -> None:
 
 def test_telegram_timestamps_are_timezone_aware() -> None:
     timestamp_columns = {
-        TelegramLink: ("linked_at", "unlinked_at", "updated_at"),
+        TelegramLink: (
+            "linked_at",
+            "unlinked_at",
+            "phone_verified_at",
+            "updated_at",
+        ),
         TelegramLinkToken: (
             "created_at",
             "expires_at",
             "consumed_at",
             "invalidated_at",
+            "contact_requested_at",
         ),
         TelegramLinkEvent: ("occurred_at",),
     }

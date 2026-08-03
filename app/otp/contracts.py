@@ -45,6 +45,7 @@ class OtpChallengeEventAction(StrEnum):
 
 class OtpInternalOutcome(StrEnum):
     OTP_NOT_ELIGIBLE = "OTP_NOT_ELIGIBLE"
+    TELEGRAM_PHONE_NOT_VERIFIED = "TELEGRAM_PHONE_NOT_VERIFIED"
     OTP_PENDING = "OTP_PENDING"
     OTP_INVALID = "OTP_INVALID"
     OTP_EXPIRED = "OTP_EXPIRED"
@@ -79,6 +80,7 @@ class OtpDeliveryFailureCode(StrEnum):
 _GENERIC_ACCEPTED_OUTCOMES: Final = frozenset(
     {
         OtpInternalOutcome.OTP_NOT_ELIGIBLE,
+        OtpInternalOutcome.TELEGRAM_PHONE_NOT_VERIFIED,
         OtpInternalOutcome.OTP_PENDING,
         OtpInternalOutcome.OTP_DELIVERY_FAILED,
         OtpInternalOutcome.OTP_DELIVERY_UNKNOWN,

@@ -36,12 +36,15 @@ from app.telegram.service import (
     TELEGRAM_LINK_TOKEN_TTL_SECONDS,
     TelegramLinkTokenIssueError,
     TelegramLinkTokenIssueInternalError,
-    issue_link_token,
+    issue_link_token_after_rate_limit,
 )
 from app.telegram.token import (
     TELEGRAM_LINK_TOKEN_ENTROPY_BYTES,
     RawTelegramLinkToken,
     hash_telegram_link_token,
+)
+from tests.telegram_issue_helpers import (
+    issue_link_token_in_one_test_transaction as issue_link_token,
 )
 
 TEST_RATE_LIMIT_HMAC_KEY = "test-rate-limit-hmac-key-for-telegram-issue-service"
@@ -271,12 +274,12 @@ def make_generator(raw_values: list[str]):
 
 
 def test_issue_link_token_public_api_has_no_caller_supplied_phone_or_user_id() -> None:
-    parameters = signature(issue_link_token).parameters
+    parameters = signature(issue_link_token_after_rate_limit).parameters
     assert "phone" not in parameters
     assert "user_id" not in parameters
     assert "raw_token" not in parameters
 
-    issue_source = getsource(issue_link_token)
+    issue_source = getsource(issue_link_token_after_rate_limit)
     assert "build_telegram_start_link" not in issue_source
     assert "append_telegram_link_event" not in issue_source
     assert "TelegramLinkEvent" not in issue_source

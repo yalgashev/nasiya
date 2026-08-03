@@ -150,6 +150,7 @@ def add_user_with_link(
             user_id=user.id,
             telegram_chat_id=9_989_000_000 + chat_offset + 1,
             linked_at=NOW,
+            phone_verified_at=NOW,
             updated_at=NOW,
         )
     )

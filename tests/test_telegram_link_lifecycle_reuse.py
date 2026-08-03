@@ -3,6 +3,7 @@ from collections.abc import Callable, Generator
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from pydantic import SecretStr
 from sqlalchemy import func, inspect, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
@@ -12,22 +13,33 @@ from app.auth.models import User
 from app.db import create_database_session_factory
 from app.settings import Settings
 from app.telegram.client_ip import ResolvedClientIp
-from app.telegram.inbound import VerifiedPrivateTelegramChatIdentity
+from app.telegram.inbound import (
+    SensitiveTelegramContactPhone,
+    TelegramUserIdentity,
+    VerifiedPrivateTelegramChatIdentity,
+)
 from app.telegram.models import TelegramLink, TelegramLinkEvent, TelegramLinkToken
 from app.telegram.service import (
     TELEGRAM_LINK_TOKEN_TTL_SECONDS,
     TelegramChatAlreadyLinkedError,
     TelegramLinkTokenConsumeError,
     TelegramStartTokenConsumeOutcome,
+    bind_start_token_for_contact,
     consume_start_token,
-    issue_link_token,
-    issue_relink_token,
 )
 from app.telegram.service import (
     unlink as unlink_telegram,
 )
+from app.telegram.token import RawTelegramLinkToken, hash_telegram_link_token
+from tests.telegram_issue_helpers import (
+    issue_link_token_in_one_test_transaction as issue_link_token,
+)
+from tests.telegram_issue_helpers import (
+    issue_relink_token_in_one_test_transaction as issue_relink_token,
+)
 
 TEST_RATE_LIMIT_HMAC_KEY = "test-rate-limit-hmac-key-for-telegram-lifecycle-reuse"
+CONTACT_BINDING_KEY = SecretStr(TEST_RATE_LIMIT_HMAC_KEY)
 
 
 @pytest.fixture
@@ -118,11 +130,32 @@ def consume_raw(
     telegram_chat_id: int,
     now: datetime,
 ):
+    raw = RawTelegramLinkToken(raw_token)
+    token_hash = hash_telegram_link_token(raw)
+    phone = session.scalar(
+        select(User.phone)
+        .join(TelegramLinkToken, TelegramLinkToken.user_id == User.id)
+        .where(TelegramLinkToken.token_hash == token_hash)
+    )
+    assert phone is not None
+    chat_identity = VerifiedPrivateTelegramChatIdentity(telegram_chat_id)
+    sender_identity = TelegramUserIdentity(telegram_chat_id)
+    bind_start_token_for_contact(
+        session,
+        raw,
+        chat_identity,
+        sender_identity,
+        rate_limit_hmac_key=CONTACT_BINDING_KEY,
+        now=now,
+    )
     return consume_start_token(
         session,
-        raw_token,
-        VerifiedPrivateTelegramChatIdentity(telegram_chat_id),
-        now,
+        chat_identity,
+        sender_identity,
+        sender_identity,
+        SensitiveTelegramContactPhone(phone),
+        rate_limit_hmac_key=CONTACT_BINDING_KEY,
+        now=now,
     )
 
 

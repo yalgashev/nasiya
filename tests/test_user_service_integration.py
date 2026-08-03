@@ -3,6 +3,7 @@ from collections.abc import Generator
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.auth import password_service
@@ -76,6 +77,26 @@ def test_create_user_duplicate_phone_returns_domain_result(
 
     assert result.user is None
     assert result.error == CreateUserError.DUPLICATE_PHONE
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "noncanonical_phone",
+    (
+        "+997901234567",
+        "+99890123456",
+        "+998-01234567",
+        "+۹۹۸۹۰۱۲۳۴۵۶۷",
+    ),
+)
+def test_users_phone_database_check_rejects_noncanonical_or_non_ascii_values(
+    db_session: Session,
+    noncanonical_phone: str,
+) -> None:
+    with pytest.raises(IntegrityError):
+        with db_session.begin_nested():
+            db_session.add(User(phone=noncanonical_phone))
+            db_session.flush()
 
 
 @pytest.mark.integration

@@ -72,8 +72,10 @@ LOGIN_PATH = "/auth/login"
 _SAFE_QUERY_ERROR_CODES = frozenset(
     {
         ErrorCode.CSRF_FAILED,
+        ErrorCode.OTP_INVALID,
         ErrorCode.RATE_LIMITED,
         ErrorCode.TELEGRAM_NOT_LINKED,
+        ErrorCode.TELEGRAM_PHONE_NOT_VERIFIED,
         ErrorCode.OFFER_UNAVAILABLE,
         ErrorCode.REGISTRATION_OFFER_NOT_ACCEPTED,
         ErrorCode.CUSTOMER_DRAFT_REQUIRED,

@@ -125,6 +125,7 @@ def add_link(
         user_id=user.id,
         telegram_chat_id=telegram_chat_id,
         linked_at=linked_at,
+        phone_verified_at=linked_at,
         updated_at=linked_at,
     )
     session.add(link)

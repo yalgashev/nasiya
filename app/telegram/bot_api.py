@@ -9,7 +9,11 @@ import httpx
 
 from app.settings import TelegramWorkerCredentials
 from app.telegram.bot import TelegramBotUsername
-from app.telegram.inbound import VerifiedPrivateTelegramChatIdentity
+from app.telegram.inbound import (
+    SensitiveTelegramContactPhone,
+    TelegramUserIdentity,
+    VerifiedPrivateTelegramChatIdentity,
+)
 
 TELEGRAM_API_BASE_URL = "https://api.telegram.org"
 TELEGRAM_LONG_POLL_SECONDS = 25
@@ -32,6 +36,12 @@ class TelegramApiErrorCode(StrEnum):
     TRANSIENT_RATE_LIMIT = "TELEGRAM_API_TRANSIENT_RATE_LIMIT"
     TRANSIENT_SERVER = "TELEGRAM_API_TRANSIENT_SERVER"
     TRANSIENT_NETWORK = "TELEGRAM_API_TRANSIENT_NETWORK"
+
+
+class TelegramFixedReplyMarkup(StrEnum):
+    REQUEST_CONTACT_UZ_LATN = "REQUEST_CONTACT_UZ_LATN"
+    REQUEST_CONTACT_RU = "REQUEST_CONTACT_RU"
+    REMOVE_KEYBOARD = "REMOVE_KEYBOARD"
 
 
 _TRANSIENT_API_CODES = frozenset(
@@ -87,13 +97,21 @@ class TelegramMessageEnvelope:
     text: str | None
     structurally_valid: bool
     language_code: str | None = None
+    sender_identity: TelegramUserIdentity | None = None
+    contact_present: bool = False
+    is_forwarded: bool = False
+    contact_identity: TelegramUserIdentity | None = None
+    contact_phone: SensitiveTelegramContactPhone | None = None
 
     def __repr__(self) -> str:
         return (
             "TelegramMessageEnvelope("
             "chat_id=<redacted>, chat_type=<redacted>, text=<redacted>, "
             f"structurally_valid={self.structurally_valid!r}, "
-            "language_code=<redacted>)"
+            "language_code=<redacted>, sender_identity=<redacted>, "
+            f"contact_present={self.contact_present!r}, "
+            f"is_forwarded={self.is_forwarded!r}, "
+            "contact_identity=<redacted>, contact_phone=<redacted>)"
         )
 
 
@@ -235,16 +253,25 @@ class TelegramBotApiClient:
         chat_id: VerifiedPrivateTelegramChatIdentity,
         text: str,
         timeout_seconds: float | None = None,
+        reply_markup: TelegramFixedReplyMarkup | None = None,
     ) -> None:
         if not isinstance(text, str) or not text.strip() or len(text) > 4096:
             raise ValueError("Telegram message text must be non-empty and bounded")
 
+        payload: dict[str, object] = {
+            "chat_id": chat_id.as_bigint(),
+            "text": text,
+        }
+        if reply_markup is not None:
+            if not isinstance(reply_markup, TelegramFixedReplyMarkup):
+                raise ValueError(
+                    "Telegram reply markup must use an approved fixed type"
+                )
+            payload["reply_markup"] = _fixed_reply_markup_payload(reply_markup)
+
         result = await self._post(
             "sendMessage",
-            {
-                "chat_id": chat_id.as_bigint(),
-                "text": text,
-            },
+            payload,
             timeout_seconds=timeout_seconds,
         )
         if not isinstance(result, Mapping):
@@ -502,9 +529,34 @@ def _parse_message_envelope(
     chat_type = raw_chat.get("type")
     text = raw_message.get("text")
     raw_sender = raw_message.get("from")
+    sender_identity = _parse_telegram_user_identity(
+        raw_sender.get("id") if isinstance(raw_sender, Mapping) else None
+    )
     language_code = (
         raw_sender.get("language_code") if isinstance(raw_sender, Mapping) else None
     )
+    contact_present = "contact" in raw_message
+    is_forwarded = any(
+        field in raw_message
+        for field in (
+            "forward_origin",
+            "forward_date",
+            "forward_from",
+            "forward_from_chat",
+            "forward_sender_name",
+        )
+    )
+    raw_contact = raw_message.get("contact")
+    contact_identity: TelegramUserIdentity | None = None
+    contact_phone: SensitiveTelegramContactPhone | None = None
+    if contact_present and isinstance(raw_contact, Mapping):
+        contact_identity = _parse_telegram_user_identity(raw_contact.get("user_id"))
+        raw_contact_phone = raw_contact.get("phone_number")
+        if isinstance(raw_contact_phone, str):
+            try:
+                contact_phone = SensitiveTelegramContactPhone(raw_contact_phone)
+            except ValueError:
+                contact_phone = None
     if (
         not isinstance(language_code, str)
         or not language_code
@@ -524,6 +576,11 @@ def _parse_message_envelope(
         text=text,
         structurally_valid=True,
         language_code=language_code,
+        sender_identity=sender_identity,
+        contact_present=contact_present,
+        is_forwarded=is_forwarded,
+        contact_identity=contact_identity,
+        contact_phone=contact_phone,
     )
 
 
@@ -535,6 +592,32 @@ def _malformed_message_envelope() -> TelegramMessageEnvelope:
         structurally_valid=False,
         language_code=None,
     )
+
+
+def _parse_telegram_user_identity(raw_value: object) -> TelegramUserIdentity | None:
+    try:
+        return TelegramUserIdentity(raw_value)  # type: ignore[arg-type]
+    except ValueError:
+        return None
+
+
+def _fixed_reply_markup_payload(
+    reply_markup: TelegramFixedReplyMarkup,
+) -> Mapping[str, object]:
+    if reply_markup is TelegramFixedReplyMarkup.REMOVE_KEYBOARD:
+        return {"remove_keyboard": True}
+
+    button_text = {
+        TelegramFixedReplyMarkup.REQUEST_CONTACT_UZ_LATN: (
+            "O'zimning Telegram kontaktimni yuborish"
+        ),
+        TelegramFixedReplyMarkup.REQUEST_CONTACT_RU: ("Отправить мой контакт Telegram"),
+    }[reply_markup]
+    return {
+        "keyboard": [[{"text": button_text, "request_contact": True}]],
+        "resize_keyboard": True,
+        "one_time_keyboard": True,
+    }
 
 
 def _extract_retry_after(response: httpx.Response) -> float | None:

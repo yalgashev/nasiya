@@ -1,9 +1,11 @@
+import ast
 import asyncio
 import logging
 from collections.abc import Awaitable
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from pydantic import SecretStr
 from sqlalchemy import event, func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
@@ -15,6 +17,7 @@ from app.telegram.bot_api import (
     TelegramMessageEnvelope,
     TelegramUpdateEnvelope,
 )
+from app.telegram.inbound import SensitiveTelegramContactPhone, TelegramUserIdentity
 from app.telegram.models import (
     TelegramLink,
     TelegramLinkEvent,
@@ -34,8 +37,10 @@ from app.telegram.update_processing import (
     TelegramTxBTransientError,
     TelegramUpdateOutcomeCode,
     TelegramUpdateProcessor,
-    process_telegram_update_tx_a,
     record_poison_failure_tx_b,
+)
+from app.telegram.update_processing import (
+    process_telegram_update_tx_a as _process_telegram_update_tx_a,
 )
 from app.telegram.worker import (
     PollingUpdateOutcome,
@@ -44,10 +49,21 @@ from app.telegram.worker import (
 )
 
 NOW = datetime(2026, 7, 28, 5, 0, tzinfo=UTC)
+RATE_LIMIT_HMAC_KEY = SecretStr(
+    "test-update-processing-rate-limit-key-at-least-32-characters"
+)
 
 
 def run(coroutine: Awaitable[object]):
     return asyncio.run(coroutine)
+
+
+def process_telegram_update_tx_a(*args, **kwargs):
+    return _process_telegram_update_tx_a(
+        *args,
+        rate_limit_hmac_key=RATE_LIMIT_HMAC_KEY,
+        **kwargs,
+    )
 
 
 def make_update(
@@ -63,6 +79,36 @@ def make_update(
             chat_type="private",
             text=text,
             structurally_valid=True,
+            sender_identity=TelegramUserIdentity(chat_id),
+        ),
+    )
+
+
+def make_contact_update(
+    update_id: int,
+    *,
+    chat_id: int,
+    phone: str,
+    sender_user_id: int | None = None,
+    contact_user_id: int | None = None,
+    is_forwarded: bool = False,
+) -> TelegramUpdateEnvelope:
+    resolved_sender_id = sender_user_id if sender_user_id is not None else chat_id
+    resolved_contact_id = (
+        contact_user_id if contact_user_id is not None else resolved_sender_id
+    )
+    return TelegramUpdateEnvelope(
+        update_id=update_id,
+        message=TelegramMessageEnvelope(
+            chat_id=chat_id,
+            chat_type="private",
+            text=None,
+            structurally_valid=True,
+            sender_identity=TelegramUserIdentity(resolved_sender_id),
+            contact_present=True,
+            is_forwarded=is_forwarded,
+            contact_identity=TelegramUserIdentity(resolved_contact_id),
+            contact_phone=SensitiveTelegramContactPhone(phone),
         ),
     )
 
@@ -139,6 +185,7 @@ def test_expected_terminal_invalid_token_advances_without_poison(
                     chat_type="group",
                     text="/start group_token",
                     structurally_valid=True,
+                    sender_identity=TelegramUserIdentity(100),
                 ),
             ),
             TelegramUpdateOutcomeCode.NON_PRIVATE_CHAT,
@@ -151,6 +198,7 @@ def test_expected_terminal_invalid_token_advances_without_poison(
                     chat_type="private",
                     text="/start malformed token",
                     structurally_valid=True,
+                    sender_identity=TelegramUserIdentity(123),
                 ),
             ),
             TelegramUpdateOutcomeCode.MALFORMED_START,
@@ -179,7 +227,7 @@ def test_parser_a_outcomes_advance_without_reply_or_poison(
 
 
 @pytest.mark.integration
-def test_link_event_failure_cleanup_and_cursor_commit_in_one_tx_a(
+def test_start_binding_failure_cleanup_and_cursor_commit_in_one_tx_a(
     m2_test_database: Engine,
 ) -> None:
     raw_token = "atomic_link_token"
@@ -198,7 +246,7 @@ def test_link_event_failure_cleanup_and_cursor_commit_in_one_tx_a(
                 failure_code=TELEGRAM_TX_FAILURE_CODE,
                 now=NOW - timedelta(seconds=4 - attempt),
             )
-        user_id = user.id
+        assert user.id is not None
         token_id = token.id
 
     result = process_telegram_update_tx_a(
@@ -211,25 +259,206 @@ def test_link_event_failure_cleanup_and_cursor_commit_in_one_tx_a(
         now=NOW,
     )
 
-    assert result.outcome is TelegramUpdateOutcomeCode.LINKED
+    assert result.outcome is TelegramUpdateOutcomeCode.CONTACT_REQUIRED
     assert result.reply_intent is not None
-    assert result.reply_intent.reply_key is BotReplyKey.LINKED
+    assert result.reply_intent.reply_key is BotReplyKey.CONTACT_REQUIRED
+    with session_factory() as session:
+        stored_token = session.get(TelegramLinkToken, token_id)
+        assert stored_token is not None
+        assert stored_token.consumed_at is None
+        assert stored_token.invalidated_at is None
+        assert stored_token.pending_contact_binding_mac is not None
+        assert stored_token.contact_requested_at == NOW
+        assert session.scalar(select(func.count()).select_from(TelegramLink)) == 0
+        assert session.scalar(select(func.count()).select_from(TelegramLinkEvent)) == 0
+        assert session.get(TelegramUpdateFailure, 20) is None
+        assert get_next_offset(session) == 21
+
+
+@pytest.mark.integration
+def test_matching_contact_creates_one_verified_generation_and_replay_is_zero_write(
+    m2_test_database: Engine,
+) -> None:
+    raw_token = "verified_contact_token"
+    chat_id = 80011
+    account_phone = "+998900080011"
+    contact_time = NOW + timedelta(seconds=1)
+    session_factory = create_database_session_factory(m2_test_database)
+    with session_factory.begin() as session:
+        load_or_create_polling_state(session)
+        user, token = seed_token(
+            session,
+            phone=account_phone,
+            raw_token=raw_token,
+        )
+        user_id = user.id
+        token_id = token.id
+
+    start_result = process_telegram_update_tx_a(
+        session_factory,
+        update=make_update(
+            23,
+            chat_id=chat_id,
+            text=f"/start {raw_token}",
+        ),
+        now=NOW,
+    )
+    contact_result = process_telegram_update_tx_a(
+        session_factory,
+        update=make_contact_update(
+            24,
+            chat_id=chat_id,
+            phone=account_phone,
+        ),
+        now=contact_time,
+    )
+
+    assert start_result.outcome is TelegramUpdateOutcomeCode.CONTACT_REQUIRED
+    assert contact_result.outcome is TelegramUpdateOutcomeCode.CONTACT_VERIFIED
+    assert contact_result.reply_intent is not None
+    assert contact_result.reply_intent.reply_key is BotReplyKey.CONTACT_VERIFIED
     with session_factory() as session:
         stored_token = session.get(TelegramLinkToken, token_id)
         link = session.scalar(
             select(TelegramLink).where(TelegramLink.user_id == user_id)
         )
-        event_row = session.scalar(
-            select(TelegramLinkEvent).where(TelegramLinkEvent.user_id == user_id)
-        )
         assert stored_token is not None
-        assert stored_token.consumed_at == NOW
+        assert stored_token.consumed_at == contact_time
+        assert stored_token.invalidated_at is None
+        assert stored_token.pending_contact_binding_mac is None
+        assert stored_token.contact_requested_at is None
         assert link is not None
-        assert link.telegram_chat_id == 80001
-        assert event_row is not None
-        assert event_row.action == "linked"
-        assert session.get(TelegramUpdateFailure, 20) is None
-        assert get_next_offset(session) == 21
+        assert link.telegram_chat_id == chat_id
+        assert link.linked_at == contact_time
+        assert link.phone_verified_at == contact_time
+        assert link.unlinked_at is None
+        link_id = link.id
+        assert session.scalar(select(func.count()).select_from(TelegramLinkEvent)) == 1
+        assert get_next_offset(session) == 25
+
+    replay_result = process_telegram_update_tx_a(
+        session_factory,
+        update=make_contact_update(
+            25,
+            chat_id=chat_id,
+            phone=account_phone,
+        ),
+        now=contact_time + timedelta(seconds=1),
+    )
+
+    assert replay_result.outcome is TelegramUpdateOutcomeCode.CONTACT_FAILED
+    assert replay_result.reply_intent is not None
+    assert replay_result.reply_intent.reply_key is BotReplyKey.CONTACT_FAILED
+    with session_factory() as session:
+        stored_token = session.get(TelegramLinkToken, token_id)
+        link = session.get(TelegramLink, link_id)
+        assert stored_token is not None
+        assert stored_token.consumed_at == contact_time
+        assert stored_token.pending_contact_binding_mac is None
+        assert stored_token.contact_requested_at is None
+        assert link is not None
+        assert link.linked_at == contact_time
+        assert link.phone_verified_at == contact_time
+        assert session.scalar(select(func.count()).select_from(TelegramLink)) == 1
+        assert session.scalar(select(func.count()).select_from(TelegramLinkEvent)) == 1
+        assert get_next_offset(session) == 26
+
+
+@pytest.mark.integration
+def test_contact_phone_mismatch_is_generic_zero_write_and_keeps_token_pending(
+    m2_test_database: Engine,
+) -> None:
+    raw_token = "mismatching_contact_token"
+    chat_id = 80012
+    session_factory = create_database_session_factory(m2_test_database)
+    with session_factory.begin() as session:
+        load_or_create_polling_state(session)
+        _user, token = seed_token(
+            session,
+            phone="+998900080012",
+            raw_token=raw_token,
+        )
+        token_id = token.id
+
+    process_telegram_update_tx_a(
+        session_factory,
+        update=make_update(
+            26,
+            chat_id=chat_id,
+            text=f"/start {raw_token}",
+        ),
+        now=NOW,
+    )
+    with session_factory() as session:
+        pending_token = session.get(TelegramLinkToken, token_id)
+        assert pending_token is not None
+        assert pending_token.pending_contact_binding_mac is not None
+        binding_before = pending_token.pending_contact_binding_mac
+        requested_before = pending_token.contact_requested_at
+
+    mismatch_result = process_telegram_update_tx_a(
+        session_factory,
+        update=make_contact_update(
+            27,
+            chat_id=chat_id,
+            phone="+998900080099",
+        ),
+        now=NOW + timedelta(seconds=1),
+    )
+
+    assert mismatch_result.outcome is TelegramUpdateOutcomeCode.CONTACT_FAILED
+    assert mismatch_result.reply_intent is not None
+    assert mismatch_result.reply_intent.reply_key is BotReplyKey.CONTACT_FAILED
+    with session_factory() as session:
+        pending_token = session.get(TelegramLinkToken, token_id)
+        assert pending_token is not None
+        binding_unchanged = pending_token.pending_contact_binding_mac == binding_before
+        assert binding_unchanged
+        assert pending_token.contact_requested_at == requested_before
+        assert pending_token.consumed_at is None
+        assert pending_token.invalidated_at is None
+        assert session.scalar(select(func.count()).select_from(TelegramLink)) == 0
+        assert session.scalar(select(func.count()).select_from(TelegramLinkEvent)) == 0
+        assert get_next_offset(session) == 28
+
+
+@pytest.mark.integration
+def test_private_malformed_contact_returns_fixed_safe_failure_and_zero_domain_write(
+    m2_test_database: Engine,
+) -> None:
+    raw_phone = "+998900080013"
+    session_factory = create_database_session_factory(m2_test_database)
+    with session_factory.begin() as session:
+        load_or_create_polling_state(session)
+
+    result = process_telegram_update_tx_a(
+        session_factory,
+        update=TelegramUpdateEnvelope(
+            update_id=28,
+            message=TelegramMessageEnvelope(
+                chat_id=80013,
+                chat_type="private",
+                text=None,
+                structurally_valid=True,
+                language_code="ru-RU",
+                sender_identity=TelegramUserIdentity(80013),
+                contact_present=True,
+                contact_identity=TelegramUserIdentity(80014),
+                contact_phone=SensitiveTelegramContactPhone(raw_phone),
+            ),
+        ),
+        now=NOW,
+    )
+
+    assert result.outcome is TelegramUpdateOutcomeCode.CONTACT_FAILED
+    assert result.reply_intent is not None
+    assert result.reply_intent.reply_key is BotReplyKey.CONTACT_FAILED
+    assert raw_phone not in repr(result)
+    with session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(TelegramLinkToken)) == 0
+        assert session.scalar(select(func.count()).select_from(TelegramLink)) == 0
+        assert session.scalar(select(func.count()).select_from(TelegramLinkEvent)) == 0
+        assert get_next_offset(session) == 29
 
 
 @pytest.mark.integration
@@ -264,9 +493,9 @@ def test_same_chat_is_terminal_idempotent_without_second_event(
         now=NOW,
     )
 
-    assert result.outcome is (TelegramUpdateOutcomeCode.ALREADY_LINKED_TO_THIS_CHAT)
+    assert result.outcome is TelegramUpdateOutcomeCode.CONTACT_REQUIRED
     assert result.reply_intent is not None
-    assert result.reply_intent.reply_key is BotReplyKey.ALREADY_LINKED
+    assert result.reply_intent.reply_key is BotReplyKey.CONTACT_REQUIRED
     with session_factory() as session:
         assert session.scalar(select(func.count()).select_from(TelegramLink)) == 1
         assert session.scalar(select(func.count()).select_from(TelegramLinkEvent)) == 0
@@ -309,13 +538,15 @@ def test_chat_collision_is_terminal_no_takeover_with_private_reply_key(
         now=NOW,
     )
 
-    assert result.outcome is TelegramUpdateOutcomeCode.LINK_REJECTED
+    assert result.outcome is TelegramUpdateOutcomeCode.CONTACT_REQUIRED
     assert result.reply_intent is not None
-    assert result.reply_intent.reply_key is BotReplyKey.LINK_FAILED
+    assert result.reply_intent.reply_key is BotReplyKey.CONTACT_REQUIRED
     with session_factory() as session:
         stored_token = session.get(TelegramLinkToken, token_id)
         assert stored_token is not None
         assert stored_token.consumed_at is None
+        assert stored_token.pending_contact_binding_mac is not None
+        assert stored_token.contact_requested_at == NOW
         assert session.scalar(select(func.count()).select_from(TelegramLink)) == 1
         assert session.scalar(select(func.count()).select_from(TelegramLinkEvent)) == 0
         assert get_next_offset(session) == 23
@@ -362,6 +593,8 @@ def test_cursor_failure_rolls_back_domain_event_token_and_cleanup(
         token = session.get(TelegramLinkToken, token_id)
         assert token is not None
         assert token.consumed_at is None
+        assert token.pending_contact_binding_mac is None
+        assert token.contact_requested_at is None
         assert session.scalar(select(func.count()).select_from(TelegramLink)) == 0
         assert session.scalar(select(func.count()).select_from(TelegramLinkEvent)) == 0
         assert session.get(TelegramUpdateFailure, 30) is not None
@@ -377,10 +610,14 @@ def test_cursor_failure_rolls_back_domain_event_token_and_cleanup(
         ),
         now=NOW + timedelta(seconds=1),
     )
-    assert retry_result.outcome is TelegramUpdateOutcomeCode.LINKED
+    assert retry_result.outcome is TelegramUpdateOutcomeCode.CONTACT_REQUIRED
     with session_factory() as session:
-        assert session.scalar(select(func.count()).select_from(TelegramLink)) == 1
-        assert session.scalar(select(func.count()).select_from(TelegramLinkEvent)) == 1
+        assert session.scalar(select(func.count()).select_from(TelegramLink)) == 0
+        assert session.scalar(select(func.count()).select_from(TelegramLinkEvent)) == 0
+        token = session.get(TelegramLinkToken, token_id)
+        assert token is not None
+        assert token.pending_contact_binding_mac is not None
+        assert token.contact_requested_at == NOW + timedelta(seconds=1)
         assert session.get(TelegramUpdateFailure, 30) is None
         assert get_next_offset(session) == 31
 
@@ -450,6 +687,8 @@ def test_commit_failure_returns_no_intent_and_rolls_back(
         token = session.get(TelegramLinkToken, token_id)
         assert token is not None
         assert token.consumed_at is None
+        assert token.pending_contact_binding_mac is None
+        assert token.contact_requested_at is None
         assert session.scalar(select(func.count()).select_from(TelegramLink)) == 0
         assert get_next_offset(session) == 0
 
@@ -558,6 +797,7 @@ def test_processor_unknown_tx_a_failure_persists_attempts_then_quarantines(
     )
     processor = TelegramUpdateProcessor(
         session_factory,
+        rate_limit_hmac_key=RATE_LIMIT_HMAC_KEY,
         now_factory=lambda: NOW,
         sleeper=sleeper,
     )
@@ -653,6 +893,7 @@ def test_out_of_order_batch_duplicate_and_restart_mutate_domain_once(
 
     base_processor = TelegramUpdateProcessor(
         session_factory,
+        rate_limit_hmac_key=RATE_LIMIT_HMAC_KEY,
         now_factory=lambda: NOW,
     )
     processed = []
@@ -682,8 +923,16 @@ def test_out_of_order_batch_duplicate_and_restart_mutate_domain_once(
     assert duplicate_result.outcome is TelegramUpdateOutcomeCode.DUPLICATE
     with session_factory() as session:
         assert get_next_offset(session) == 92
-        assert session.scalar(select(func.count()).select_from(TelegramLink)) == 2
-        assert session.scalar(select(func.count()).select_from(TelegramLinkEvent)) == 2
+        assert session.scalar(select(func.count()).select_from(TelegramLink)) == 0
+        assert session.scalar(select(func.count()).select_from(TelegramLinkEvent)) == 0
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(TelegramLinkToken)
+                .where(TelegramLinkToken.pending_contact_binding_mac.is_not(None))
+            )
+            == 2
+        )
 
 
 def test_processing_source_never_logs_or_persists_raw_failure_material() -> None:
@@ -696,3 +945,23 @@ def test_processing_source_never_logs_or_persists_raw_failure_material() -> None
     assert "traceback" not in source
     assert "failure_code=str" not in source
     assert "logger.exception" not in source.casefold()
+    assert "bind_start_token_for_contact" in source
+    parsed_source = ast.parse(source)
+    consume_calls = tuple(
+        node
+        for node in ast.walk(parsed_source)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "consume_start_token"
+    )
+    assert consume_calls
+    assert all(
+        not any(
+            isinstance(argument, ast.Attribute)
+            and isinstance(argument.value, ast.Name)
+            and argument.value.id == "parsed"
+            and argument.attr == "raw_token"
+            for argument in call.args
+        )
+        for call in consume_calls
+    )

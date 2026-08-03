@@ -20,6 +20,7 @@ CUSTOMER_ACTIVATION_PUBLIC_ERROR_CODES: Final = (
     ErrorCode.RATE_LIMITED,
     ErrorCode.CUSTOMER_DRAFT_REQUIRED,
     ErrorCode.TELEGRAM_NOT_LINKED,
+    ErrorCode.TELEGRAM_PHONE_NOT_VERIFIED,
     ErrorCode.OFFER_UNAVAILABLE,
     ErrorCode.OTP_INVALID,
     ErrorCode.REGISTRATION_OFFER_NOT_ACCEPTED,
@@ -97,7 +98,7 @@ _UZ_LATN_COPY: Final = CustomerActivationWebCopy(
     page_title="Mijozni faollashtirish",
     heading="Mijozni faollashtirish",
     intro="Faollashtirishdan oldin tayyorgarlik bosqichlarini tekshiring.",
-    telegram_link_label="Telegram bog'langan",
+    telegram_link_label="Telegram kontakti tasdiqlangan",
     current_offer_label="Joriy taklif qabul qilingan",
     customer_identity_label="Shaxsiy ma'lumotlar to'liq",
     current_document_label="Joriy hujjat mavjud",
@@ -123,7 +124,7 @@ _RU_COPY: Final = CustomerActivationWebCopy(
     page_title="Активация клиента",
     heading="Активация клиента",
     intro="Перед активацией проверьте этапы готовности.",
-    telegram_link_label="Telegram подключен",
+    telegram_link_label="Контакт Telegram подтверждён",
     current_offer_label="Текущее предложение принято",
     customer_identity_label="Персональные данные заполнены",
     current_document_label="Текущий документ загружен",
@@ -160,6 +161,9 @@ _UZ_LATN_ERRORS: Final[Mapping[ErrorCode, str]] = MappingProxyType(
         ErrorCode.RATE_LIMITED: "Juda ko'p urinish. Keyinroq qayta urinib ko'ring.",
         ErrorCode.CUSTOMER_DRAFT_REQUIRED: "Mijoz qoralamasi talab qilinadi.",
         ErrorCode.TELEGRAM_NOT_LINKED: "Avval Telegram akkauntingizni bog'lang.",
+        ErrorCode.TELEGRAM_PHONE_NOT_VERIFIED: (
+            "Telegram orqali o'zingizning kontaktingizni tasdiqlang."
+        ),
         ErrorCode.OFFER_UNAVAILABLE: "Joriy taklif hozir mavjud emas.",
         ErrorCode.OTP_INVALID: "Kod noto'g'ri yoki muddati tugagan.",
         ErrorCode.REGISTRATION_OFFER_NOT_ACCEPTED: (
@@ -184,6 +188,9 @@ _RU_ERRORS: Final[Mapping[ErrorCode, str]] = MappingProxyType(
         ErrorCode.RATE_LIMITED: "Слишком много попыток. Повторите позже.",
         ErrorCode.CUSTOMER_DRAFT_REQUIRED: "Требуется черновик клиента.",
         ErrorCode.TELEGRAM_NOT_LINKED: "Сначала подключите аккаунт Telegram.",
+        ErrorCode.TELEGRAM_PHONE_NOT_VERIFIED: (
+            "Подтвердите свой контакт через Telegram."
+        ),
         ErrorCode.OFFER_UNAVAILABLE: "Текущее предложение сейчас недоступно.",
         ErrorCode.OTP_INVALID: "Код неверный или срок его действия истек.",
         ErrorCode.REGISTRATION_OFFER_NOT_ACCEPTED: (

@@ -20,8 +20,12 @@ from app.telegram.repository import (
     get_telegram_link_by_user_for_update,
     get_telegram_link_status,
     has_active_telegram_link,
-    link_verified_private_chat,
-    relink_verified_private_chat,
+    has_otp_eligible_telegram_link,
+    is_otp_eligible_telegram_link,
+    link_phone_verified_private_chat_from_prelocked_state,
+    link_unverified_private_chat,
+    relink_phone_verified_private_chat_from_prelocked_state,
+    relink_unverified_private_chat,
     unlink_verified_private_chat,
 )
 
@@ -83,12 +87,14 @@ def add_link(
     telegram_chat_id: int | None,
     linked_at: datetime,
     unlinked_at: datetime | None = None,
+    phone_verified_at: datetime | None = None,
 ) -> TelegramLink:
     link = TelegramLink(
         user_id=user.id,
         telegram_chat_id=telegram_chat_id,
         linked_at=linked_at,
         unlinked_at=unlinked_at,
+        phone_verified_at=phone_verified_at,
         updated_at=unlinked_at or linked_at,
     )
     session.add(link)
@@ -143,8 +149,8 @@ def test_link_repository_public_api_uses_current_user_and_verified_identity() ->
         get_telegram_link_by_user,
         get_telegram_link_by_user_for_update,
         get_other_active_telegram_link_by_chat_identity_for_update,
-        link_verified_private_chat,
-        relink_verified_private_chat,
+        link_unverified_private_chat,
+        relink_unverified_private_chat,
         unlink_verified_private_chat,
         get_telegram_link_status,
     )
@@ -200,6 +206,36 @@ def test_link_lookup_and_status_are_own_user_scoped(db_session: Session) -> None
     assert missing is None
     assert other_link.user_id == other_user.id
     assert other_link is not own_link
+
+
+@pytest.mark.integration
+def test_otp_link_policy_requires_exact_owner_and_verified_generation(
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 8, 3, 9, 0, tzinfo=UTC)
+    owner = add_user(db_session, "+998900008021")
+    other_user = add_user(db_session, "+998900008022")
+    link = add_link(
+        db_session,
+        owner,
+        telegram_chat_id=8022,
+        linked_at=now,
+        phone_verified_at=now,
+    )
+
+    assert is_otp_eligible_telegram_link(link, expected_user_id=owner.id)
+    assert not is_otp_eligible_telegram_link(
+        link,
+        expected_user_id=other_user.id,
+    )
+    assert has_otp_eligible_telegram_link(db_session, owner)
+    assert not has_otp_eligible_telegram_link(db_session, other_user)
+
+    link.phone_verified_at = None
+    db_session.flush()
+
+    assert not is_otp_eligible_telegram_link(link, expected_user_id=owner.id)
+    assert not has_otp_eligible_telegram_link(db_session, owner)
 
 
 @pytest.mark.integration
@@ -281,7 +317,7 @@ def test_first_link_creates_active_row_without_token_or_event_side_effects(
     user = add_user(db_session, "+998900008007")
 
     with caplog.at_level(logging.INFO):
-        link = link_verified_private_chat(
+        link = link_unverified_private_chat(
             db_session,
             user,
             VerifiedPrivateTelegramChatIdentity(8007),
@@ -292,6 +328,7 @@ def test_first_link_creates_active_row_without_token_or_event_side_effects(
     assert link.user_id == user.id
     assert link.telegram_chat_id == 8007
     assert link.linked_at == now
+    assert link.phone_verified_at is None
     assert link.unlinked_at is None
     assert link.updated_at == now
     assert count_table(db_session, TelegramLink) == 1
@@ -314,7 +351,7 @@ def test_first_link_reactivates_existing_tombstone_row(db_session: Session) -> N
         unlinked_at=unlinked_at,
     )
 
-    link = link_verified_private_chat(
+    link = link_unverified_private_chat(
         db_session,
         user,
         VerifiedPrivateTelegramChatIdentity(8008),
@@ -324,6 +361,7 @@ def test_first_link_reactivates_existing_tombstone_row(db_session: Session) -> N
     assert link is tombstone
     assert link.telegram_chat_id == 8008
     assert link.linked_at == relinked_at
+    assert link.phone_verified_at is None
     assert link.unlinked_at is None
     assert link.updated_at == relinked_at
     assert count_table(db_session, TelegramLink) == 1
@@ -344,7 +382,7 @@ def test_first_link_does_not_replace_existing_active_chat(
         linked_at=now,
     )
 
-    link = link_verified_private_chat(
+    link = link_unverified_private_chat(
         db_session,
         user,
         VerifiedPrivateTelegramChatIdentity(8010),
@@ -370,9 +408,10 @@ def test_relink_updates_current_active_chat_only(db_session: Session) -> None:
         user,
         telegram_chat_id=8011,
         linked_at=first_linked_at,
+        phone_verified_at=first_linked_at,
     )
 
-    link = relink_verified_private_chat(
+    link = relink_unverified_private_chat(
         db_session,
         user,
         VerifiedPrivateTelegramChatIdentity(8012),
@@ -382,6 +421,7 @@ def test_relink_updates_current_active_chat_only(db_session: Session) -> None:
     assert link is active_link
     assert link.telegram_chat_id == 8012
     assert link.linked_at == relinked_at
+    assert link.phone_verified_at is None
     assert link.unlinked_at is None
     assert link.updated_at == relinked_at
     assert count_table(db_session, TelegramLink) == 1
@@ -402,13 +442,13 @@ def test_relink_returns_none_without_active_link(db_session: Session) -> None:
         unlinked_at=now + timedelta(minutes=1),
     )
 
-    no_link_result = relink_verified_private_chat(
+    no_link_result = relink_unverified_private_chat(
         db_session,
         no_link_user,
         VerifiedPrivateTelegramChatIdentity(8013),
         now + timedelta(minutes=2),
     )
-    tombstone_result = relink_verified_private_chat(
+    tombstone_result = relink_unverified_private_chat(
         db_session,
         tombstone_user,
         VerifiedPrivateTelegramChatIdentity(8014),
@@ -433,6 +473,7 @@ def test_unlink_active_row_sets_tombstone_state(db_session: Session) -> None:
         user,
         telegram_chat_id=8015,
         linked_at=linked_at,
+        phone_verified_at=linked_at,
     )
 
     link = unlink_verified_private_chat(db_session, user, unlinked_at)
@@ -441,10 +482,43 @@ def test_unlink_active_row_sets_tombstone_state(db_session: Session) -> None:
     assert link.telegram_chat_id is None
     assert link.linked_at == linked_at
     assert link.unlinked_at == unlinked_at
+    assert link.phone_verified_at is None
     assert link.updated_at == unlinked_at
     assert count_table(db_session, TelegramLink) == 1
     assert count_table(db_session, TelegramLinkToken) == 0
     assert count_table(db_session, TelegramLinkEvent) == 0
+
+
+@pytest.mark.integration
+def test_phone_verified_generation_helpers_set_exact_shared_timestamp(
+    db_session: Session,
+) -> None:
+    linked_at = datetime(2026, 8, 2, 19, 0, tzinfo=UTC)
+    relinked_at = linked_at + timedelta(minutes=1)
+    user = add_user(db_session, "+998900008020")
+
+    link = link_phone_verified_private_chat_from_prelocked_state(
+        db_session,
+        user,
+        VerifiedPrivateTelegramChatIdentity(8020),
+        linked_at,
+        existing_link=None,
+    )
+    assert link is not None
+    assert link.linked_at == linked_at
+    assert link.phone_verified_at == linked_at
+
+    relinked = relink_phone_verified_private_chat_from_prelocked_state(
+        db_session,
+        user,
+        VerifiedPrivateTelegramChatIdentity(8021),
+        relinked_at,
+        existing_link=link,
+    )
+    assert relinked is link
+    assert relinked.linked_at == relinked_at
+    assert relinked.phone_verified_at == relinked_at
+    assert relinked.updated_at == relinked_at
 
 
 @pytest.mark.integration
@@ -483,7 +557,7 @@ def test_active_chat_uniqueness_remains_database_owned(
     now = datetime(2026, 7, 24, 17, 45, tzinfo=UTC)
     first_user = add_user(db_session, "+998900008016")
     second_user = add_user(db_session, "+998900008017")
-    link_verified_private_chat(
+    link_unverified_private_chat(
         db_session,
         first_user,
         VerifiedPrivateTelegramChatIdentity(8016),
@@ -492,7 +566,7 @@ def test_active_chat_uniqueness_remains_database_owned(
 
     with pytest.raises(IntegrityError):
         with db_session.begin_nested():
-            link_verified_private_chat(
+            link_unverified_private_chat(
                 db_session,
                 second_user,
                 VerifiedPrivateTelegramChatIdentity(8016),
@@ -518,13 +592,13 @@ def test_link_repository_does_not_commit_rollback_or_close(
     try:
         user = add_user(first_session, "+998900008019")
 
-        created = link_verified_private_chat(
+        created = link_unverified_private_chat(
             session_spy,
             user,
             VerifiedPrivateTelegramChatIdentity(8017),
             linked_at,
         )
-        relinked = relink_verified_private_chat(
+        relinked = relink_unverified_private_chat(
             session_spy,
             user,
             VerifiedPrivateTelegramChatIdentity(8018),

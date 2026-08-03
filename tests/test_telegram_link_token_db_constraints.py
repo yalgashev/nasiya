@@ -42,6 +42,8 @@ def add_token(
     expires_at: datetime | None = None,
     consumed_at: datetime | None = None,
     invalidated_at: datetime | None = None,
+    pending_contact_binding_mac: str | None = None,
+    contact_requested_at: datetime | None = None,
 ) -> TelegramLinkToken:
     token = TelegramLinkToken(
         user_id=user.id,
@@ -50,6 +52,8 @@ def add_token(
         expires_at=expires_at or created_at + timedelta(minutes=10),
         consumed_at=consumed_at,
         invalidated_at=invalidated_at,
+        pending_contact_binding_mac=pending_contact_binding_mac,
+        contact_requested_at=contact_requested_at,
     )
     session.add(token)
     session.flush()
@@ -298,3 +302,122 @@ def test_parent_user_delete_is_restricted_when_token_exists(
 
     assert db_session.get(User, user.id) is not None
     assert db_session.get(TelegramLinkToken, token.id) is not None
+
+
+@pytest.mark.integration
+def test_valid_pending_contact_binding_insert_works(db_session: Session) -> None:
+    now = datetime(2026, 8, 2, 11, 55, tzinfo=UTC)
+    user = add_user(db_session, "+998900002013")
+
+    token = add_token(
+        db_session,
+        user,
+        token_hash="a" * 63 + "b",
+        created_at=now,
+        pending_contact_binding_mac="c" * 64,
+        contact_requested_at=now,
+    )
+
+    assert token.pending_contact_binding_mac is not None
+    assert token.contact_requested_at == now
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("binding_mac", "requested_at"),
+    [
+        ("A" * 64, datetime(2026, 8, 2, 12, 0, tzinfo=UTC)),
+        ("a" * 63, datetime(2026, 8, 2, 12, 0, tzinfo=UTC)),
+        ("g" * 64, datetime(2026, 8, 2, 12, 0, tzinfo=UTC)),
+        ("b" * 64, None),
+        (None, datetime(2026, 8, 2, 12, 0, tzinfo=UTC)),
+    ],
+)
+def test_invalid_pending_contact_binding_state_is_rejected(
+    db_session: Session,
+    binding_mac: str | None,
+    requested_at: datetime | None,
+) -> None:
+    now = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+    user = add_user(db_session, "+998900002014")
+
+    with pytest.raises(IntegrityError):
+        with db_session.begin_nested():
+            add_token(
+                db_session,
+                user,
+                token_hash="d" * 64,
+                created_at=now,
+                pending_contact_binding_mac=binding_mac,
+                contact_requested_at=requested_at,
+            )
+
+
+@pytest.mark.integration
+def test_pending_contact_timestamp_cannot_precede_token_creation(
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 8, 2, 12, 5, tzinfo=UTC)
+    user = add_user(db_session, "+998900002015")
+
+    with pytest.raises(IntegrityError):
+        with db_session.begin_nested():
+            add_token(
+                db_session,
+                user,
+                token_hash="e" * 64,
+                created_at=now,
+                pending_contact_binding_mac="f" * 64,
+                contact_requested_at=now - timedelta(microseconds=1),
+            )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("terminal_field", ["consumed_at", "invalidated_at"])
+def test_terminal_token_cannot_retain_pending_contact_binding(
+    db_session: Session,
+    terminal_field: str,
+) -> None:
+    now = datetime(2026, 8, 2, 12, 10, tzinfo=UTC)
+    user = add_user(db_session, "+998900002016")
+    terminal_kwargs = {terminal_field: now + timedelta(minutes=1)}
+
+    with pytest.raises(IntegrityError):
+        with db_session.begin_nested():
+            add_token(
+                db_session,
+                user,
+                token_hash="1" * 64,
+                created_at=now,
+                pending_contact_binding_mac="2" * 64,
+                contact_requested_at=now,
+                **terminal_kwargs,
+            )
+
+
+@pytest.mark.integration
+def test_pending_contact_binding_mac_is_unique_across_outstanding_tokens(
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 8, 2, 12, 15, tzinfo=UTC)
+    first_user = add_user(db_session, "+998900002017")
+    second_user = add_user(db_session, "+998900002018")
+    add_token(
+        db_session,
+        first_user,
+        token_hash="3" * 64,
+        created_at=now,
+        pending_contact_binding_mac="4" * 64,
+        contact_requested_at=now,
+    )
+
+    with pytest.raises(IntegrityError):
+        with db_session.begin_nested():
+            add_token(
+                db_session,
+                second_user,
+                token_hash="5" * 64,
+                created_at=now,
+                pending_contact_binding_mac="4" * 64,
+                contact_requested_at=now,
+            )

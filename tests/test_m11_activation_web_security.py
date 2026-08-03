@@ -44,6 +44,9 @@ M11_ERROR_CODES = (
     ErrorCode.REGISTRATION_OFFER_NOT_ACCEPTED,
     ErrorCode.CUSTOMER_ACTIVATION_CHANGED,
     ErrorCode.TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER,
+    ErrorCode.TELEGRAM_CONTACT_REQUIRED,
+    ErrorCode.TELEGRAM_PHONE_MISMATCH,
+    ErrorCode.TELEGRAM_PHONE_NOT_VERIFIED,
 )
 ACTIVATION_TEMPLATE = Path("app/templates/customer/activation.html")
 APPLICATION_CSS = Path("app/static/css/app.css")
@@ -90,6 +93,9 @@ def test_m11_error_catalog_additions_have_safe_stable_status_and_message() -> No
         ErrorCode.REGISTRATION_OFFER_NOT_ACCEPTED: HTTPStatus.CONFLICT,
         ErrorCode.CUSTOMER_ACTIVATION_CHANGED: HTTPStatus.CONFLICT,
         ErrorCode.TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER: HTTPStatus.CONFLICT,
+        ErrorCode.TELEGRAM_CONTACT_REQUIRED: HTTPStatus.CONFLICT,
+        ErrorCode.TELEGRAM_PHONE_MISMATCH: HTTPStatus.CONFLICT,
+        ErrorCode.TELEGRAM_PHONE_NOT_VERIFIED: HTTPStatus.CONFLICT,
     }
 
     for code in M11_ERROR_CODES:
@@ -224,6 +230,7 @@ def test_activation_error_copy_is_complete_localized_and_code_free() -> None:
         ErrorCode.RATE_LIMITED,
         ErrorCode.CUSTOMER_DRAFT_REQUIRED,
         ErrorCode.TELEGRAM_NOT_LINKED,
+        ErrorCode.TELEGRAM_PHONE_NOT_VERIFIED,
         ErrorCode.OFFER_UNAVAILABLE,
         ErrorCode.OTP_INVALID,
         ErrorCode.REGISTRATION_OFFER_NOT_ACCEPTED,
@@ -290,6 +297,7 @@ def test_activation_templates_autoescape_and_csp_forbid_inline_code() -> None:
 
 
 def test_activation_prg_urls_flash_and_headers_are_no_store_and_secret_free() -> None:
+    assert ErrorCode.OTP_INVALID in activation_router_module._SAFE_QUERY_ERROR_CODES
     forbidden_values = (
         "004271",
         "+998900001488",

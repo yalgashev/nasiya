@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
@@ -42,6 +43,14 @@ class TelegramReauthRateLimitPolicy:
         client_ip: ResolvedClientIp,
         now: datetime,
     ) -> TelegramReauthRateLimitResult:
+        return self.check_for_user_id(current_user.id, client_ip, now)
+
+    def check_for_user_id(
+        self,
+        user_id: UUID,
+        client_ip: ResolvedClientIp,
+        now: datetime,
+    ) -> TelegramReauthRateLimitResult:
         limiter = AuthRateLimiter(self.db, self.settings)
         return _from_results(
             tuple(
@@ -52,7 +61,10 @@ class TelegramReauthRateLimitPolicy:
                     limit,
                     TELEGRAM_REAUTH_WINDOW_SECONDS,
                 )
-                for scope, raw_key, limit in _buckets(current_user, client_ip)
+                for scope, raw_key, limit in _buckets_for_user_id(
+                    user_id,
+                    client_ip,
+                )
             )
         )
 
@@ -62,8 +74,16 @@ class TelegramReauthRateLimitPolicy:
         client_ip: ResolvedClientIp,
         now: datetime,
     ) -> TelegramReauthRateLimitResult:
+        return self.record_failure_for_user_id(current_user.id, client_ip, now)
+
+    def record_failure_for_user_id(
+        self,
+        user_id: UUID,
+        client_ip: ResolvedClientIp,
+        now: datetime,
+    ) -> TelegramReauthRateLimitResult:
         limiter = AuthRateLimiter(self.db, self.settings)
-        buckets = _buckets(current_user, client_ip)
+        buckets = _buckets_for_user_id(user_id, client_ip)
         checked = tuple(
             limiter.check(
                 scope,
@@ -90,21 +110,24 @@ class TelegramReauthRateLimitPolicy:
         return _from_results(recorded)
 
     def clear_user_failures_after_success(self, current_user: User) -> bool:
+        return self.clear_user_failures_after_success_for_user_id(current_user.id)
+
+    def clear_user_failures_after_success_for_user_id(self, user_id: UUID) -> bool:
         limiter = AuthRateLimiter(self.db, self.settings)
         return limiter.clear_key(
             TELEGRAM_REAUTH_USER_SCOPE,
-            _user_key(current_user),
+            _user_key(user_id),
         )
 
 
-def _buckets(
-    current_user: User,
+def _buckets_for_user_id(
+    user_id: UUID,
     client_ip: ResolvedClientIp,
 ) -> tuple[tuple[str, str, int], ...]:
     return (
         (
             TELEGRAM_REAUTH_USER_SCOPE,
-            _user_key(current_user),
+            _user_key(user_id),
             TELEGRAM_REAUTH_USER_ATTEMPTS,
         ),
         (
@@ -115,8 +138,8 @@ def _buckets(
     )
 
 
-def _user_key(current_user: User) -> str:
-    return f"{_TELEGRAM_REAUTH_USER_KEY_PREFIX}{current_user.id}"
+def _user_key(user_id: UUID) -> str:
+    return f"{_TELEGRAM_REAUTH_USER_KEY_PREFIX}{user_id}"
 
 
 def _from_results(

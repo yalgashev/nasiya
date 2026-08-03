@@ -3,6 +3,7 @@ from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from pydantic import SecretStr
 from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
@@ -10,17 +11,26 @@ from sqlalchemy.orm import Session
 from app.auth.error_codes import ErrorCode
 from app.auth.models import User
 from app.db import create_database_session_factory
-from app.telegram.inbound import VerifiedPrivateTelegramChatIdentity
+from app.telegram.inbound import (
+    SensitiveTelegramContactPhone,
+    TelegramUserIdentity,
+    VerifiedPrivateTelegramChatIdentity,
+)
 from app.telegram.models import TelegramLink, TelegramLinkEvent, TelegramLinkToken
 from app.telegram.service import (
     TelegramLinkTokenConsumeError,
     TelegramStartTokenConsumeOutcome,
+    bind_start_token_for_contact,
     consume_start_token,
 )
 from app.telegram.service import (
     unlink as unlink_telegram,
 )
 from app.telegram.token import RawTelegramLinkToken, hash_telegram_link_token
+
+CONTACT_BINDING_KEY = SecretStr(
+    "test-sequential-replay-contact-binding-key-at-least-32-characters"
+)
 
 
 @pytest.fixture
@@ -52,6 +62,7 @@ def add_active_link(
         user_id=user.id,
         telegram_chat_id=telegram_chat_id,
         linked_at=linked_at,
+        phone_verified_at=linked_at,
         updated_at=linked_at,
     )
     session.add(link)
@@ -102,6 +113,39 @@ def event_snapshot(
     ]
 
 
+def consume_raw(
+    session: Session,
+    *,
+    raw_token: RawTelegramLinkToken,
+    chat_identity: VerifiedPrivateTelegramChatIdentity,
+    now: datetime,
+):
+    phone = session.scalar(
+        select(User.phone)
+        .join(TelegramLinkToken, TelegramLinkToken.user_id == User.id)
+        .where(TelegramLinkToken.token_hash == hash_telegram_link_token(raw_token))
+    )
+    assert phone is not None
+    sender_identity = TelegramUserIdentity(chat_identity.as_bigint())
+    bind_start_token_for_contact(
+        session,
+        raw_token,
+        chat_identity,
+        sender_identity,
+        rate_limit_hmac_key=CONTACT_BINDING_KEY,
+        now=now,
+    )
+    return consume_start_token(
+        session,
+        chat_identity,
+        sender_identity,
+        sender_identity,
+        SensitiveTelegramContactPhone(phone),
+        rate_limit_hmac_key=CONTACT_BINDING_KEY,
+        now=now,
+    )
+
+
 def assert_invalid_replay_is_safe(
     session: Session,
     *,
@@ -110,7 +154,12 @@ def assert_invalid_replay_is_safe(
     now: datetime,
 ) -> TelegramLinkTokenConsumeError:
     with pytest.raises(TelegramLinkTokenConsumeError) as exc_info:
-        consume_start_token(session, raw_token, chat_identity, now)
+        consume_raw(
+            session,
+            raw_token=raw_token,
+            chat_identity=chat_identity,
+            now=now,
+        )
 
     error = exc_info.value
     assert error.error_code is ErrorCode.LINK_TOKEN_INVALID
@@ -141,11 +190,11 @@ def test_first_link_token_sequential_replay_is_exactly_once(
     )
 
     with caplog.at_level(logging.DEBUG):
-        first_result = consume_start_token(
+        first_result = consume_raw(
             db_session,
-            raw_token,
-            chat_identity,
-            consumed_at,
+            raw_token=raw_token,
+            chat_identity=chat_identity,
+            now=consumed_at,
         )
         link_after_first = link_snapshot(first_result.link)
         events_after_first = event_snapshot(db_session, user)
@@ -161,6 +210,7 @@ def test_first_link_token_sequential_replay_is_exactly_once(
 
     assert first_result.outcome is TelegramStartTokenConsumeOutcome.LINKED
     assert token.consumed_at == consumed_at
+    assert first_result.link.phone_verified_at == consumed_at
     assert link_snapshot(first_result.link) == link_after_first
     assert first_result.link.telegram_chat_id == chat_identity.as_bigint()
     assert (
@@ -182,11 +232,7 @@ def test_first_link_token_sequential_replay_is_exactly_once(
     ("target_chat_id", "expected_outcome", "expected_event_actions"),
     [
         (17_003, TelegramStartTokenConsumeOutcome.RELINKED, ["relinked"]),
-        (
-            17_002,
-            TelegramStartTokenConsumeOutcome.ALREADY_LINKED_TO_THIS_CHAT,
-            [],
-        ),
+        (17_002, TelegramStartTokenConsumeOutcome.RELINKED, ["relinked"]),
     ],
     ids=["different-chat", "same-chat"],
 )
@@ -220,11 +266,11 @@ def test_relink_token_sequential_replay_is_exactly_once(
     )
 
     with caplog.at_level(logging.DEBUG):
-        first_result = consume_start_token(
+        first_result = consume_raw(
             db_session,
-            raw_token,
-            target_identity,
-            consumed_at,
+            raw_token=raw_token,
+            chat_identity=target_identity,
+            now=consumed_at,
         )
         link_after_first = link_snapshot(link)
         events_after_first = event_snapshot(db_session, user)
@@ -240,6 +286,7 @@ def test_relink_token_sequential_replay_is_exactly_once(
 
     assert first_result.outcome is expected_outcome
     assert token.consumed_at == consumed_at
+    assert link.phone_verified_at == consumed_at
     assert link_snapshot(link) == link_after_first
     assert link.telegram_chat_id == target_chat_id
     assert (
@@ -301,6 +348,7 @@ def test_unlink_invalidated_token_cannot_be_replayed(
     assert link.telegram_chat_id is None
     assert link.linked_at == linked_at
     assert link.unlinked_at == unlinked_at
+    assert link.phone_verified_at is None
     assert (
         db_session.scalar(
             select(func.count())

@@ -97,7 +97,8 @@ from app.telegram.client_ip import ResolvedClientIp
 from app.telegram.models import TelegramLink
 from app.telegram.repository import (
     get_telegram_link_by_user_for_update,
-    has_active_telegram_link,
+    has_otp_eligible_telegram_link,
+    is_otp_eligible_telegram_link,
 )
 
 _REGISTRATION_DUMMY_CHALLENGE_ID: Final = UUID("00000000-0000-4000-8000-000000000201")
@@ -361,6 +362,10 @@ def recheck_registration_activation_snapshot(
         or link.telegram_chat_id is None
         or link.unlinked_at is not None
         or link.linked_at != challenge.telegram_linked_at
+        or not is_otp_eligible_telegram_link(
+            link,
+            expected_user_id=user.id,
+        )
     ):
         return _link_changed(candidate)
 
@@ -724,6 +729,10 @@ def _issue_registration_otp(
     link = get_telegram_link_by_user_for_update(session, user)
     if link is None or link.telegram_chat_id is None or link.unlinked_at is not None:
         return _prerequisite_failed(RegistrationPrerequisiteError.TELEGRAM_NOT_LINKED)
+    if not is_otp_eligible_telegram_link(link, expected_user_id=user.id):
+        return _prerequisite_failed(
+            RegistrationPrerequisiteError.TELEGRAM_PHONE_NOT_VERIFIED
+        )
     customer = lock_existing_own_customer_for_update(
         session,
         actor_user_id=context.actor.user_id,
@@ -840,7 +849,9 @@ def get_registration_readiness(
     customer_id = None if customer is None else customer.id
     component_statuses = {
         RegistrationReadinessComponent.TELEGRAM_LINK: (
-            active_user and user is not None and has_active_telegram_link(session, user)
+            active_user
+            and user is not None
+            and has_otp_eligible_telegram_link(session, user)
         ),
         RegistrationReadinessComponent.OFFER_ACCEPTANCE: (
             active_user

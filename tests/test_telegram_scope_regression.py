@@ -13,8 +13,13 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 import app.main as app_main
-from app.auth.deps import get_current_time, validate_csrf
+from app.auth.deps import (
+    get_current_time,
+    get_detached_mutation_session_context,
+    validate_csrf,
+)
 from app.auth.models import User
+from app.auth.router import get_detached_otp_mutation_context
 from app.auth.sessions import create_authenticated_session
 from app.customer.models import CUSTOMER_ONBOARDING_STATUS_DRAFT, Customer
 from app.customer_activation.router import validate_activation_csrf
@@ -121,7 +126,13 @@ def iter_dependency_calls(dependant: Dependant) -> Iterator[object]:
 
 def route_has_csrf_dependency(route: APIRoute) -> bool:
     return any(
-        dependency_call in {validate_csrf, validate_activation_csrf}
+        dependency_call
+        in {
+            validate_csrf,
+            validate_activation_csrf,
+            get_detached_mutation_session_context,
+            get_detached_otp_mutation_context,
+        }
         for dependency_call in iter_dependency_calls(route.dependant)
     )
 

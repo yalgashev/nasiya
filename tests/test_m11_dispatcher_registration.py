@@ -11,8 +11,9 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
+import app.otp.dispatch_service as dispatch_service_module
 from app.auth.models import AuthRateLimit, User
 from app.customer.models import Customer
 from app.customer_activation.contracts import (
@@ -41,7 +42,7 @@ from app.otp.dispatch_service import (
     record_otp_delivery_result,
     recover_stale_prepared_dispatches,
 )
-from app.otp.dispatcher import build_parser
+from app.otp.dispatcher import ShutdownController, build_parser, run_dispatch_loop
 from app.otp.models import OtpChallenge, OtpChallengeEvent, OtpDispatch
 from app.otp.provider import (
     OtpDeliverySendResult,
@@ -158,8 +159,11 @@ def test_dispatcher_prepares_typed_registration_message_after_live_recheck(
         dispatch = session.get(OtpDispatch, dispatch_id)
         events = tuple(
             session.scalars(
-                select(OtpChallengeEvent).where(
-                    OtpChallengeEvent.challenge_id == challenge_id
+                select(OtpChallengeEvent)
+                .where(OtpChallengeEvent.challenge_id == challenge_id)
+                .order_by(
+                    OtpChallengeEvent.occurred_at.asc(),
+                    OtpChallengeEvent.id.asc(),
                 )
             )
         )
@@ -215,6 +219,10 @@ def test_dispatcher_prepares_typed_registration_message_after_live_recheck(
             OtpChallengeEventAction.INVALIDATED_BY_LINK_CHANGE,
         ),
         (
+            "phone_verification",
+            OtpChallengeEventAction.INVALIDATED_BY_LINK_CHANGE,
+        ),
+        (
             "customer",
             OtpChallengeEventAction.INVALIDATED_BY_REGISTRATION_STATE_CHANGE,
         ),
@@ -234,6 +242,12 @@ def test_registration_dispatcher_state_change_cancels_without_send(
             assert link is not None
             link.telegram_chat_id = None
             link.unlinked_at = NOW + timedelta(seconds=1)
+            link.phone_verified_at = None
+            link.updated_at = NOW + timedelta(seconds=1)
+        elif changed_state == "phone_verification":
+            link = session.get(TelegramLink, challenge.telegram_link_id)
+            assert link is not None
+            link.phone_verified_at = None
             link.updated_at = NOW + timedelta(seconds=1)
         else:
             customer = session.get(Customer, challenge.customer_id)
@@ -271,6 +285,130 @@ def test_registration_dispatcher_state_change_cancels_without_send(
     assert dispatch is not None
     assert dispatch.status == OtpDispatchStatus.CANCELLED.value
     assert [row.action for row in events] == [expected_action.value]
+
+
+def test_registration_dispatcher_cross_owner_cancels_before_code_or_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    m2_test_database: Engine,
+    test_database_url: str,
+) -> None:
+    with Session(m2_test_database) as session, session.begin():
+        challenge, dispatch = seed_pending_registration(session)
+        challenge_id = challenge.id
+        dispatch_id = dispatch.id
+        link = session.get(TelegramLink, challenge.telegram_link_id)
+        assert link is not None
+        other_user = User(
+            phone="+998900001498",
+            password_hash=None,
+            is_active=True,
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        session.add(other_user)
+        session.flush()
+        link.user_id = other_user.id
+        link.updated_at = NOW + timedelta(seconds=1)
+
+    code_generator_calls: list[object] = []
+
+    def code_generator_canary(*args: object, **kwargs: object) -> object:
+        code_generator_calls.append((args, kwargs))
+        raise AssertionError("Cross-owner dispatch reached OTP generation")
+
+    monkeypatch.setattr(
+        dispatch_service_module,
+        "generate_otp_code",
+        code_generator_canary,
+    )
+
+    class StopAfterFirstIdle(ShutdownController):
+        async def wait_async(self, seconds: float) -> bool:
+            _ = seconds
+            self.request()
+            return True
+
+    class ProviderCanary:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def send_otp(self, **kwargs: object) -> OtpDeliverySendResult:
+            self.calls.append(kwargs)
+            raise AssertionError("Cross-owner dispatch reached Telegram provider")
+
+    provider = ProviderCanary()
+    asyncio.run(
+        run_dispatch_loop(
+            provider,  # type: ignore[arg-type]
+            session_factory=sessionmaker(
+                bind=m2_test_database,
+                expire_on_commit=False,
+            ),
+            otp_hmac_key=OTP_HMAC_KEY,
+            settings=registration_settings(test_database_url),
+            shutdown=StopAfterFirstIdle(),
+            now_factory=lambda: NOW + timedelta(seconds=2),
+        )
+    )
+
+    with Session(m2_test_database) as session:
+        challenge = session.get(OtpChallenge, challenge_id)
+        dispatch = session.get(OtpDispatch, dispatch_id)
+        events = tuple(
+            session.scalars(
+                select(OtpChallengeEvent)
+                .where(OtpChallengeEvent.challenge_id == challenge_id)
+                .order_by(
+                    OtpChallengeEvent.occurred_at.asc(),
+                    OtpChallengeEvent.id.asc(),
+                )
+            )
+        )
+        assert challenge is not None
+        assert dispatch is not None
+
+    assert (
+        challenge.status,
+        challenge.failed_attempts,
+        challenge.code_mac,
+        challenge.activated_at,
+        challenge.expires_at,
+        challenge.consumed_at,
+        challenge.terminal_at,
+    ) == (
+        OtpChallengeStatus.INVALIDATED.value,
+        0,
+        None,
+        None,
+        None,
+        None,
+        NOW + timedelta(seconds=2),
+    )
+    assert (
+        dispatch.status,
+        dispatch.claimed_at,
+        dispatch.prepared_at,
+        dispatch.sent_at,
+        dispatch.terminal_at,
+        dispatch.failure_code,
+        dispatch.updated_at,
+    ) == (
+        OtpDispatchStatus.CANCELLED.value,
+        NOW + timedelta(seconds=2),
+        None,
+        None,
+        NOW + timedelta(seconds=2),
+        None,
+        NOW + timedelta(seconds=2),
+    )
+    assert [(row.action, row.safe_code) for row in events] == [
+        (
+            OtpChallengeEventAction.INVALIDATED_BY_LINK_CHANGE.value,
+            "OTP_LINK_CHANGED",
+        )
+    ]
+    assert code_generator_calls == []
+    assert provider.calls == []
 
 
 @dataclass
@@ -574,6 +712,7 @@ def test_post_send_link_change_does_not_activate_or_revalidate_result(
         assert link is not None
         link.telegram_chat_id = None
         link.unlinked_at = NOW + timedelta(seconds=2)
+        link.phone_verified_at = None
         link.updated_at = NOW + timedelta(seconds=2)
     with Session(m2_test_database) as session, session.begin():
         assert record_otp_delivery_result(

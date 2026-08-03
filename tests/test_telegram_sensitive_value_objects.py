@@ -10,16 +10,24 @@ import app.telegram.inbound as inbound_module
 import app.telegram.token as token_module
 from app.telegram.bot import TelegramBotUsername
 from app.telegram.client_ip import ResolvedClientIp
-from app.telegram.inbound import VerifiedPrivateTelegramChatIdentity
+from app.telegram.inbound import (
+    SensitiveTelegramContactPhone,
+    TelegramUserIdentity,
+    VerifiedPrivateTelegramChatIdentity,
+)
 from app.telegram.token import (
     RawTelegramLinkToken,
     TelegramBotUsernameNotConfigured,
+    TelegramContactBindingMac,
     build_telegram_start_link,
 )
 
 RAW_TOKEN = "deterministic_token-123"
 RAW_IP = "203.0.113.10"
 RAW_CHAT_ID = 123_456_789
+RAW_TELEGRAM_USER_ID = 987_654_321
+RAW_CONTACT_PHONE = "+998 90 456 78 90"
+RAW_BINDING_MAC = "a" * 64
 CANONICAL_BOT_USERNAME = "nasiya_linkbot"
 FULL_START_LINK = f"https://t.me/{CANONICAL_BOT_USERNAME}?start={RAW_TOKEN}"
 
@@ -40,6 +48,9 @@ FULL_START_LINK = f"https://t.me/{CANONICAL_BOT_USERNAME}?start={RAW_TOKEN}"
             VerifiedPrivateTelegramChatIdentity(RAW_CHAT_ID),
             str(RAW_CHAT_ID),
         ),
+        (TelegramUserIdentity(RAW_TELEGRAM_USER_ID), str(RAW_TELEGRAM_USER_ID)),
+        (SensitiveTelegramContactPhone(RAW_CONTACT_PHONE), RAW_CONTACT_PHONE),
+        (TelegramContactBindingMac(RAW_BINDING_MAC), RAW_BINDING_MAC),
     ],
 )
 def test_sensitive_value_objects_repr_and_str_are_redacted(
@@ -85,6 +96,21 @@ def test_telegram_start_link_repr_and_str_do_not_reveal_raw_token() -> None:
             -100_123_456_789,
             "Verified private Telegram chat identity",
         ),
+        (
+            TelegramUserIdentity,
+            -987_654_321,
+            "Telegram user identity",
+        ),
+        (
+            SensitiveTelegramContactPhone,
+            "x" * 65,
+            "Telegram contact phone",
+        ),
+        (
+            TelegramContactBindingMac,
+            "A" * 64,
+            "Telegram contact binding MAC",
+        ),
     ],
 )
 def test_validation_exceptions_do_not_echo_sensitive_input(
@@ -123,6 +149,9 @@ def test_start_link_not_configured_exception_does_not_reveal_raw_token() -> None
             VerifiedPrivateTelegramChatIdentity(RAW_CHAT_ID),
             str(RAW_CHAT_ID),
         ),
+        (TelegramUserIdentity(RAW_TELEGRAM_USER_ID), str(RAW_TELEGRAM_USER_ID)),
+        (SensitiveTelegramContactPhone(RAW_CONTACT_PHONE), RAW_CONTACT_PHONE),
+        (TelegramContactBindingMac(RAW_BINDING_MAC), RAW_BINDING_MAC),
     ],
 )
 def test_logging_objects_does_not_reveal_sensitive_values(
@@ -165,6 +194,9 @@ def test_logging_start_link_object_does_not_reveal_raw_token(caplog) -> None:
         ),
         ResolvedClientIp(RAW_IP),
         VerifiedPrivateTelegramChatIdentity(RAW_CHAT_ID),
+        TelegramUserIdentity(RAW_TELEGRAM_USER_ID),
+        SensitiveTelegramContactPhone(RAW_CONTACT_PHONE),
+        TelegramContactBindingMac(RAW_BINDING_MAC),
         TelegramBotUsername("Nasiya_LinkBot"),
     ],
 )
@@ -186,12 +218,18 @@ def test_explicit_reveal_methods_are_narrowly_named() -> None:
     )
     resolved_ip = ResolvedClientIp(RAW_IP)
     verified_chat_identity = VerifiedPrivateTelegramChatIdentity(RAW_CHAT_ID)
+    telegram_user_identity = TelegramUserIdentity(RAW_TELEGRAM_USER_ID)
+    contact_phone = SensitiveTelegramContactPhone(RAW_CONTACT_PHONE)
+    binding_mac = TelegramContactBindingMac(RAW_BINDING_MAC)
     bot_username = TelegramBotUsername("Nasiya_LinkBot")
 
     assert raw_token.as_internal_value() == RAW_TOKEN
     assert start_link.as_delivery_url() == FULL_START_LINK
     assert resolved_ip.as_hmac_input() == RAW_IP
     assert verified_chat_identity.as_bigint() == RAW_CHAT_ID
+    assert telegram_user_identity.as_bigint() == RAW_TELEGRAM_USER_ID
+    assert contact_phone.as_normalization_input() == RAW_CONTACT_PHONE
+    assert binding_mac.as_stored_value() == RAW_BINDING_MAC
     assert bot_username.as_username() == CANONICAL_BOT_USERNAME
 
     for value_object in (
@@ -199,6 +237,9 @@ def test_explicit_reveal_methods_are_narrowly_named() -> None:
         start_link,
         resolved_ip,
         verified_chat_identity,
+        telegram_user_identity,
+        contact_phone,
+        binding_mac,
         bot_username,
     ):
         assert not hasattr(value_object, "value")
@@ -234,10 +275,15 @@ def test_sensitive_wrappers_are_not_used_in_templates() -> None:
         "TelegramStartLink",
         "ResolvedClientIp",
         "VerifiedPrivateTelegramChatIdentity",
+        "TelegramUserIdentity",
+        "SensitiveTelegramContactPhone",
+        "TelegramContactBindingMac",
         "as_internal_value",
         "as_delivery_url",
         "as_hmac_input",
         "as_bigint",
+        "as_normalization_input",
+        "as_stored_value",
     }
 
     for forbidden_template_term in forbidden_template_terms:

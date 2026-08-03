@@ -24,6 +24,7 @@ from app.telegram.bot_api import (
     TelegramApiErrorCode,
     TelegramBackoffPolicy,
     TelegramBotApiClient,
+    TelegramFixedReplyMarkup,
     TelegramPreflightCode,
     TelegramPreflightStatus,
     classify_telegram_http_error,
@@ -270,7 +271,7 @@ def test_get_updates_sends_exact_contract_and_preserves_batch_for_worker_sort() 
                         "update_id": 12,
                         "message": {
                             "chat": {"id": 9912, "type": "private"},
-                            "from": {"language_code": "ru-RU"},
+                            "from": {"id": 9912, "language_code": "ru-RU"},
                             "text": "/start safe_token",
                             "ignored": True,
                         },
@@ -295,6 +296,8 @@ def test_get_updates_sends_exact_contract_and_preserves_batch_for_worker_sort() 
     assert updates[0].message.chat_type == "private"
     assert updates[0].message.text == "/start safe_token"
     assert updates[0].message.language_code == "ru-RU"
+    assert updates[0].message.sender_identity is not None
+    assert updates[0].message.sender_identity.as_bigint() == 9912
     assert updates[1].message is None
     assert captured_payload == {
         "offset": 10,
@@ -316,6 +319,168 @@ def test_get_updates_accepts_empty_result() -> None:
         )
 
     assert run(with_client(handler, scenario)) == ()
+
+
+def test_get_updates_parses_only_redacted_sender_and_contact_fields() -> None:
+    sender_id = 77665544
+    raw_phone = "+998 90 765 43 21"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return json_response(
+            200,
+            {
+                "ok": True,
+                "result": [
+                    {
+                        "update_id": 13,
+                        "message": {
+                            "chat": {"id": 445566, "type": "private"},
+                            "from": {
+                                "id": sender_id,
+                                "language_code": "uz",
+                                "username": "ignored-sensitive-user",
+                            },
+                            "contact": {
+                                "phone_number": raw_phone,
+                                "user_id": sender_id,
+                                "first_name": "ignored-sensitive-name",
+                                "last_name": "ignored-sensitive-last-name",
+                                "vcard": "ignored-sensitive-vcard",
+                            },
+                        },
+                    }
+                ],
+            },
+        )
+
+    async def scenario(client: TelegramBotApiClient):
+        return await client.get_updates(
+            offset=13,
+            timeout=TELEGRAM_LONG_POLL_SECONDS,
+            allowed_updates=TELEGRAM_ALLOWED_UPDATES,
+        )
+
+    updates = run(with_client(handler, scenario))
+    message = updates[0].message
+
+    assert message is not None
+    assert message.sender_identity is not None
+    assert message.contact_present is True
+    assert message.contact_identity is not None
+    assert message.contact_phone is not None
+    assert message.sender_identity.as_bigint() == sender_id
+    assert message.contact_identity.as_bigint() == sender_id
+    assert message.contact_phone.as_normalization_input() == raw_phone
+    rendered = f"{updates[0]!r} {message!r}"
+    for forbidden in (
+        str(sender_id),
+        raw_phone,
+        "ignored-sensitive-user",
+        "ignored-sensitive-name",
+        "ignored-sensitive-last-name",
+        "ignored-sensitive-vcard",
+    ):
+        assert forbidden not in rendered
+
+
+@pytest.mark.parametrize(
+    "forward_field",
+    [
+        "forward_origin",
+        "forward_date",
+        "forward_from",
+        "forward_from_chat",
+        "forward_sender_name",
+    ],
+)
+def test_get_updates_marks_forwarded_contact_without_retaining_origin(
+    forward_field: str,
+) -> None:
+    raw_forward_value = "forwarded-sensitive-origin"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return json_response(
+            200,
+            {
+                "ok": True,
+                "result": [
+                    {
+                        "update_id": 15,
+                        "message": {
+                            "chat": {"id": 5, "type": "private"},
+                            "from": {"id": 5},
+                            "contact": {
+                                "user_id": 5,
+                                "phone_number": "+998901234567",
+                            },
+                            forward_field: raw_forward_value,
+                        },
+                    }
+                ],
+            },
+        )
+
+    async def scenario(client: TelegramBotApiClient):
+        return await client.get_updates(
+            offset=15,
+            timeout=TELEGRAM_LONG_POLL_SECONDS,
+            allowed_updates=TELEGRAM_ALLOWED_UPDATES,
+        )
+
+    message = run(with_client(handler, scenario))[0].message
+
+    assert message is not None
+    assert message.contact_present is True
+    assert message.is_forwarded is True
+    assert raw_forward_value not in repr(message)
+    assert not hasattr(message, forward_field)
+
+
+@pytest.mark.parametrize(
+    "raw_contact",
+    [
+        "not-an-object",
+        {},
+        {"user_id": 5},
+        {"phone_number": "+998901234567"},
+        {"user_id": True, "phone_number": "+998901234567"},
+        {"user_id": 5, "phone_number": "x" * 65},
+    ],
+)
+def test_get_updates_keeps_malformed_contact_redacted_for_parser_rejection(
+    raw_contact: object,
+) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return json_response(
+            200,
+            {
+                "ok": True,
+                "result": [
+                    {
+                        "update_id": 14,
+                        "message": {
+                            "chat": {"id": 5, "type": "private"},
+                            "from": {"id": 5},
+                            "contact": raw_contact,
+                        },
+                    }
+                ],
+            },
+        )
+
+    async def scenario(client: TelegramBotApiClient):
+        return await client.get_updates(
+            offset=14,
+            timeout=TELEGRAM_LONG_POLL_SECONDS,
+            allowed_updates=TELEGRAM_ALLOWED_UPDATES,
+        )
+
+    message = run(with_client(handler, scenario))[0].message
+
+    assert message is not None
+    assert message.contact_present is True
+    assert message.contact_identity is None or message.contact_phone is None
+    assert "998901234567" not in repr(message)
 
 
 @pytest.mark.parametrize(
@@ -404,6 +569,101 @@ def test_send_message_posts_only_chat_and_localized_text() -> None:
         "write": 4,
         "pool": 4,
     }
+
+
+@pytest.mark.parametrize(
+    ("reply_markup", "expected_markup"),
+    [
+        (
+            TelegramFixedReplyMarkup.REQUEST_CONTACT_UZ_LATN,
+            {
+                "keyboard": [
+                    [
+                        {
+                            "text": "O'zimning Telegram kontaktimni yuborish",
+                            "request_contact": True,
+                        }
+                    ]
+                ],
+                "resize_keyboard": True,
+                "one_time_keyboard": True,
+            },
+        ),
+        (
+            TelegramFixedReplyMarkup.REQUEST_CONTACT_RU,
+            {
+                "keyboard": [
+                    [
+                        {
+                            "text": "Отправить мой контакт Telegram",
+                            "request_contact": True,
+                        }
+                    ]
+                ],
+                "resize_keyboard": True,
+                "one_time_keyboard": True,
+            },
+        ),
+        (
+            TelegramFixedReplyMarkup.REMOVE_KEYBOARD,
+            {"remove_keyboard": True},
+        ),
+    ],
+)
+def test_send_message_posts_only_approved_fixed_reply_markup(
+    reply_markup: TelegramFixedReplyMarkup,
+    expected_markup: dict[str, object],
+) -> None:
+    captured_payload: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_payload.update(json.loads(request.content))
+        return json_response(200, {"ok": True, "result": {"message_id": 78}})
+
+    async def scenario(client: TelegramBotApiClient):
+        return await client.send_message(
+            chat_id=VerifiedPrivateTelegramChatIdentity(99887766),
+            text="Safe fixed copy",
+            reply_markup=reply_markup,
+        )
+
+    assert run(with_client(handler, scenario)) is None
+    assert captured_payload == {
+        "chat_id": 99887766,
+        "text": "Safe fixed copy",
+        "reply_markup": expected_markup,
+    }
+
+
+@pytest.mark.parametrize(
+    "unapproved_markup",
+    [
+        "REQUEST_CONTACT_UZ_LATN",
+        {"keyboard": [[{"text": "unsafe", "request_contact": True}]]},
+    ],
+)
+def test_send_message_rejects_arbitrary_reply_markup_before_transport(
+    unapproved_markup: object,
+) -> None:
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return json_response(200, {"ok": True, "result": {"message_id": 79}})
+
+    async def scenario(client: TelegramBotApiClient):
+        return await client.send_message(
+            chat_id=VerifiedPrivateTelegramChatIdentity(99887766),
+            text="Safe fixed copy",
+            reply_markup=unapproved_markup,  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(ValueError) as exc_info:
+        run(with_client(handler, scenario))
+
+    assert calls == 0
+    assert "unsafe" not in str(exc_info.value)
 
 
 def test_send_message_rejects_malformed_success() -> None:

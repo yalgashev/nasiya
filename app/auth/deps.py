@@ -69,9 +69,30 @@ class CurrentSessionContext:
     def __repr__(self) -> str:
         return (
             "CurrentSessionContext("
-            f"status={self.status!s}, session_id={self.session_id}, "
-            f"user_id={self.user_id}"
+            f"status={self.status!s}, session_id=<UUID | None>, "
+            "user_id=<UUID | None>"
             ")"
+        )
+
+
+@dataclass(frozen=True, repr=False)
+class DetachedMutationSessionContext:
+    """Request authority detached from the closed authentication transaction."""
+
+    status: CurrentSessionStatus
+    user_id: UUID | None = None
+
+    @property
+    def is_authenticated(self) -> bool:
+        return (
+            self.status == CurrentSessionStatus.AUTHENTICATED
+            and self.user_id is not None
+        )
+
+    def __repr__(self) -> str:
+        return (
+            "DetachedMutationSessionContext("
+            f"status={self.status!s}, user_id=<UUID | None>)"
         )
 
 
@@ -179,6 +200,24 @@ async def validate_csrf(
     submitted_token = await _get_submitted_csrf_token(request)
     if not verify_csrf_token(session, submitted_token, now):
         raise_csrf_failed()
+
+
+async def get_detached_mutation_session_context(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings)],
+    now: Annotated[datetime, Depends(get_current_time)],
+) -> DetachedMutationSessionContext:
+    """Authenticate, touch, and validate CSRF in a closed short transaction."""
+
+    session_factory = request.app.state.database_session_factory
+    with session_factory.begin() as db:
+        context = get_current_session_context(request, db, settings, now)
+        await validate_csrf(request, context, now)
+        detached = DetachedMutationSessionContext(
+            status=context.status,
+            user_id=context.user_id,
+        )
+    return detached
 
 
 def _get_unresolved_session_context(

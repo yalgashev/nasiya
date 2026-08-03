@@ -45,6 +45,7 @@ from app.otp.repository import (
 )
 from app.telegram.inbound import VerifiedPrivateTelegramChatIdentity
 from app.telegram.models import TelegramLink
+from app.telegram.repository import is_otp_eligible_telegram_link
 
 
 @dataclass(frozen=True, repr=False)
@@ -291,6 +292,10 @@ def _validate_challenge_target(
         or link.telegram_chat_id is None
         or link.unlinked_at is not None
         or link.linked_at != challenge.telegram_linked_at
+        or not is_otp_eligible_telegram_link(
+            link,
+            expected_user_id=user.id,
+        )
     ):
         invalidate_challenge(session, challenge=challenge, now=now)
         cancel_dispatch(session, dispatch=dispatch, now=now)

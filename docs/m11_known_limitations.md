@@ -1,6 +1,6 @@
 # Nasiya M11 Known Limitations
 
-Status: authoritative pre-implementation residual boundary for M11.
+Status: authoritative CR-M11-03 recovery-amended residual boundary for M11.
 Baseline: M10 docs-only closeout
 `17ebbe166d63a32e3b7eaa3eb3838f578d9b7780`.
 
@@ -16,8 +16,9 @@ remain outside M11.
 
 ## KL-M11-02 — Telegram Is The Only Registration OTP Transport
 
-Registration OTP uses the already-linked active Telegram chat and the existing
-durable dispatcher. There is no SMS, email, Web Push, alternate delivery,
+Registration OTP uses an active self-phone-verified Telegram generation and
+the existing durable dispatcher. A legacy/chat-control-only link is not an OTP
+transport. There is no SMS, email, Web Push, alternate delivery,
 fallback transport, sync web send, broker or second dispatcher. Dispatcher
 degradation leaves activation incomplete while existing web/password behavior
 continues safely.
@@ -30,7 +31,8 @@ or grace keyring. Raw or reversible OTP persistence is absent.
 
 ## KL-M11-04 — Activation Requires Exact Point-In-Time Evidence
 
-An outstanding challenge becomes invalid when link generation, current offer
+An outstanding challenge becomes invalid when verified link generation,
+including same-phone re-verification, current offer
 or acceptance, identity revision, current document, or object availability no
 longer matches. M11 requires a new code; it has no automatic reissue, retry,
 notification or recovery workflow.
@@ -56,9 +58,11 @@ registry verification. Current evidence remains private under M10 rules.
 
 ## KL-M11-08 — Active Customers Cannot Ordinarily Unlink Telegram
 
-To preserve the active-with-Telegram invariant, ordinary unlink is denied for
-an active customer. Token-protected atomic relink remains available; M11 has no
-deactivation-before-unlink or account-recovery alternative.
+To preserve the active-with-verified-Telegram invariant, ordinary unlink is
+denied for an active customer. Token-protected atomic relink/re-verification
+requires matching self-contact and remains available; a mismatch preserves the
+old verified link. M11 has no deactivation-before-unlink or alternate account-
+recovery path.
 
 ## KL-M11-09 — Session Rotation Is Current-Browser Only
 
@@ -87,14 +91,51 @@ coordination or provider-level abuse service.
 
 ## KL-M11-13 — Manual Acceptance Uses Synthetic Development Data
 
-Real Chrome and development/test Telegram acceptance must use synthetic
-identity and document data. M11 neither requires nor permits real PII,
-production bot credentials in reports, production object storage or
-destructive production testing.
+Real Chrome and development/test Telegram acceptance uses synthetic identity
+and document data plus a tester-controlled Nasiya phone and Telegram account
+with the same number. That controlled phone is operation-only sensitive test
+data and never report evidence. Random-phone fixtures cannot be activated with
+an unrelated Telegram account. M11 neither requires nor permits production
+PII, bot credentials in reports, production object storage or destructive
+production testing.
+
+## KL-M11-14 — Legacy Links Require Explicit Re-Verification
+
+Every pre-recovery link remains visible but receives
+`phone_verified_at = NULL`. It cannot issue or receive LOGIN/REGISTRATION OTP
+and cannot activate a customer until the user completes the approved self-
+contact flow. There is no administrative/shop bypass, fabricated backfill or
+automatic trust upgrade. Users without the approved authenticated recovery
+entry path require a later explicitly authorized support policy.
+
+## KL-M11-15 — Contact Evidence Is Deliberately Minimal
+
+Pending verification stores only a domain-separated binding MAC and request
+timestamp. The raw Telegram phone, pending chat ID and pending sender ID are
+not retained. A verified link stores only its existing chat relation and one
+generation timestamp. M11 adds no contact history, phone digest, Telegram
+profile, identity registry, support search or arbitrary bot-keyboard platform.
+
+## KL-M11-16 — Recovery Downgrade Requires Explicit Cleanup
+
+The CR-M11-02 revision refuses downgrade while a pending binding or verified
+link exists. It never clears verification silently or marks legacy links
+verified. The original M11 active-customer downgrade guard remains separate;
+both guards require explicit safe operator cleanup before schema reversal.
+
+## KL-M11-17 — Phone Mutation Remains Deferred
+
+The current product has no `User.phone` mutation flow. Any future explicitly
+authorized phone-change capability must atomically invalidate the current
+phone-verified Telegram generation and stale every outstanding LOGIN and
+REGISTRATION OTP under the FINAL global order. This recovery does not create a
+phone-change route, support override, automatic relink or administrative
+bypass.
 
 ## Explicit OUT Scope, Not Gaps To Fill
 
 Debt, payment, rating, disclosure, notification, scheduler, public bootstrap,
 lead, shop linkage, SMS/Web Push, OCR/biometric/registry, generic activation or
-OTP infrastructure, new table/worker/dispatcher/broker and M12 product work are
-OUT. Any need for them triggers the M11 stop condition.
+OTP/contact infrastructure, arbitrary reply markup, raw pending Telegram
+identity persistence, new table/worker/dispatcher/broker and M12 product work
+are OUT. Any need for them triggers the M11 stop condition.

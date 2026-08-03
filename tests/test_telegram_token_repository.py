@@ -24,7 +24,10 @@ from app.telegram.repository import (
     has_active_telegram_link,
     insert_telegram_link_token,
     invalidate_and_insert_telegram_link_token,
+    invalidate_locked_outstanding_telegram_link_tokens,
     invalidate_outstanding_telegram_link_tokens,
+    lock_outstanding_telegram_link_token_set_by_user,
+    lock_telegram_link_token_set_by_ids,
 )
 
 
@@ -107,6 +110,8 @@ def add_token(
     expires_at: datetime | None = None,
     consumed_at: datetime | None = None,
     invalidated_at: datetime | None = None,
+    pending_contact_binding_mac: str | None = None,
+    contact_requested_at: datetime | None = None,
 ) -> TelegramLinkToken:
     token = TelegramLinkToken(
         user_id=user.id,
@@ -115,6 +120,8 @@ def add_token(
         expires_at=expires_at or created_at + timedelta(minutes=10),
         consumed_at=consumed_at,
         invalidated_at=invalidated_at,
+        pending_contact_binding_mac=pending_contact_binding_mac,
+        contact_requested_at=contact_requested_at,
     )
     session.add(token)
     session.flush()
@@ -371,6 +378,70 @@ def test_invalidate_outstanding_tokens_updates_current_user_only(
     assert consumed.invalidated_at is None
     assert already_invalidated.invalidated_at == now + timedelta(minutes=2)
     assert other_outstanding.invalidated_at is None
+
+
+@pytest.mark.integration
+def test_token_lock_sets_are_uuid_ascending_and_locked_mutation_clears_binding(
+    db_session: Session,
+) -> None:
+    now = datetime(2026, 8, 2, 15, 17, tzinfo=UTC)
+    user = add_user(db_session, "+998900006090")
+    terminal = add_token(
+        db_session,
+        user,
+        token_hash_value=token_hash(90),
+        created_at=now - timedelta(minutes=2),
+        consumed_at=now - timedelta(minutes=1),
+    )
+    outstanding = add_token(
+        db_session,
+        user,
+        token_hash_value=token_hash(91),
+        created_at=now,
+        pending_contact_binding_mac="a" * 64,
+        contact_requested_at=now,
+    )
+
+    locked_by_ids = lock_telegram_link_token_set_by_ids(
+        db_session,
+        token_ids=(outstanding.id, terminal.id, outstanding.id),
+    )
+    locked_outstanding = lock_outstanding_telegram_link_token_set_by_user(
+        db_session,
+        user_id=user.id,
+    )
+    invalidated_count = invalidate_locked_outstanding_telegram_link_tokens(
+        db_session,
+        locked_tokens=locked_outstanding,
+        now=now + timedelta(minutes=1),
+    )
+
+    assert tuple(token.id for token in locked_by_ids) == tuple(
+        sorted((terminal.id, outstanding.id))
+    )
+    assert locked_outstanding == (outstanding,)
+    assert invalidated_count == 1
+    assert outstanding.invalidated_at == now + timedelta(minutes=1)
+    assert outstanding.pending_contact_binding_mac is None
+    assert outstanding.contact_requested_at is None
+
+
+def test_every_multi_token_for_update_query_orders_by_uuid_without_workarounds() -> (
+    None
+):
+    lock_sources = "\n".join(
+        (
+            getsource(lock_outstanding_telegram_link_token_set_by_user),
+            getsource(lock_telegram_link_token_set_by_ids),
+            getsource(
+                telegram_repository.delete_telegram_link_tokens_eligible_for_purge
+            ),
+        )
+    )
+
+    assert lock_sources.count(".order_by(TelegramLinkToken.id.asc())") == 3
+    for forbidden in ("nowait", "sleep(", "retry", "lock_timeout"):
+        assert forbidden not in lock_sources
 
 
 @pytest.mark.integration

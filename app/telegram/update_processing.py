@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Final
 
+from pydantic import SecretStr
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.orm import Session, sessionmaker
@@ -23,8 +24,9 @@ from app.telegram.polling_repository import (
 )
 from app.telegram.service import (
     TelegramChatAlreadyLinkedError,
-    TelegramLinkOutcome,
+    TelegramContactVerificationError,
     TelegramLinkTokenConsumeError,
+    bind_start_token_for_contact,
     consume_start_token,
 )
 from app.telegram.update_parser import (
@@ -53,6 +55,10 @@ class TelegramUpdateOutcomeCode(StrEnum):
     UNSUPPORTED_UPDATE = "UNSUPPORTED_UPDATE"
     NON_PRIVATE_CHAT = "NON_PRIVATE_CHAT"
     MALFORMED_START = "MALFORMED_START"
+    MALFORMED_CONTACT = "MALFORMED_CONTACT"
+    CONTACT_REQUIRED = "CONTACT_REQUIRED"
+    CONTACT_VERIFIED = "CONTACT_VERIFIED"
+    CONTACT_FAILED = "CONTACT_FAILED"
     LINKED = "LINKED"
     RELINKED = "RELINKED"
     ALREADY_LINKED_TO_THIS_CHAT = "ALREADY_LINKED_TO_THIS_CHAT"
@@ -65,6 +71,9 @@ class BotReplyKey(StrEnum):
     LINKED = "LINKED"
     ALREADY_LINKED = "ALREADY_LINKED"
     LINK_FAILED = "LINK_FAILED"
+    CONTACT_REQUIRED = "CONTACT_REQUIRED"
+    CONTACT_VERIFIED = "CONTACT_VERIFIED"
+    CONTACT_FAILED = "CONTACT_FAILED"
 
 
 class TelegramReplyLanguage(StrEnum):
@@ -129,6 +138,7 @@ def process_telegram_update_tx_a(
     session_factory: sessionmaker[Session],
     *,
     update: TelegramUpdateEnvelope,
+    rate_limit_hmac_key: SecretStr,
     now: datetime,
 ) -> TelegramTxAResult:
     current_time = _as_utc(now)
@@ -144,6 +154,7 @@ def process_telegram_update_tx_a(
             pending_result = _apply_terminal_update(
                 session,
                 update=update,
+                rate_limit_hmac_key=rate_limit_hmac_key,
                 now=current_time,
             )
             delete_non_quarantined_update_failure(
@@ -220,12 +231,14 @@ class TelegramUpdateProcessor:
         self,
         session_factory: sessionmaker[Session],
         *,
+        rate_limit_hmac_key: SecretStr,
         now_factory: Callable[[], datetime] = lambda: datetime.now(UTC),
         sleeper: Callable[[float], Awaitable[bool]] | None = None,
         reply_delivery: Callable[[BotReplyIntent | None], Awaitable[object]]
         | None = None,
     ) -> None:
         self._session_factory = session_factory
+        self._rate_limit_hmac_key = rate_limit_hmac_key
         self._now_factory = now_factory
         self._sleeper = sleeper
         self._reply_delivery = reply_delivery
@@ -238,6 +251,7 @@ class TelegramUpdateProcessor:
             tx_a_result = process_telegram_update_tx_a(
                 self._session_factory,
                 update=update,
+                rate_limit_hmac_key=self._rate_limit_hmac_key,
                 now=now,
             )
         except asyncio.CancelledError:
@@ -286,9 +300,64 @@ def _apply_terminal_update(
     session: Session,
     *,
     update: TelegramUpdateEnvelope,
+    rate_limit_hmac_key: SecretStr,
     now: datetime,
 ) -> _PendingTelegramTxAResult:
     parsed = parse_telegram_update(update)
+    if parsed.code is TelegramUpdateParseCode.MALFORMED_CONTACT:
+        return _PendingTelegramTxAResult(
+            outcome=TelegramUpdateOutcomeCode.CONTACT_FAILED,
+            reply=(
+                None
+                if parsed.chat_identity is None
+                else _PendingBotReply(
+                    parsed.chat_identity,
+                    BotReplyKey.CONTACT_FAILED,
+                    _reply_language(parsed.language_code),
+                )
+            ),
+        )
+    if parsed.code is TelegramUpdateParseCode.PRIVATE_CONTACT:
+        if (
+            parsed.chat_identity is None
+            or parsed.sender_identity is None
+            or parsed.contact_identity is None
+            or parsed.contact_phone is None
+        ):
+            raise RuntimeError("Private Telegram contact parser invariant failed")
+        reply_language = _reply_language(parsed.language_code)
+        try:
+            consume_start_token(
+                session,
+                parsed.chat_identity,
+                parsed.sender_identity,
+                parsed.contact_identity,
+                parsed.contact_phone,
+                rate_limit_hmac_key=rate_limit_hmac_key,
+                now=now,
+            )
+        except (
+            TelegramChatAlreadyLinkedError,
+            TelegramContactVerificationError,
+            TelegramLinkTokenConsumeError,
+        ):
+            return _PendingTelegramTxAResult(
+                outcome=TelegramUpdateOutcomeCode.CONTACT_FAILED,
+                reply=_PendingBotReply(
+                    parsed.chat_identity,
+                    BotReplyKey.CONTACT_FAILED,
+                    reply_language,
+                ),
+            )
+        return _PendingTelegramTxAResult(
+            outcome=TelegramUpdateOutcomeCode.CONTACT_VERIFIED,
+            reply=_PendingBotReply(
+                parsed.chat_identity,
+                BotReplyKey.CONTACT_VERIFIED,
+                reply_language,
+            ),
+        )
+
     parse_outcome = {
         TelegramUpdateParseCode.UNSUPPORTED_UPDATE: (
             TelegramUpdateOutcomeCode.UNSUPPORTED_UPDATE
@@ -303,15 +372,21 @@ def _apply_terminal_update(
     if parse_outcome is not None:
         return _PendingTelegramTxAResult(outcome=parse_outcome, reply=None)
 
-    if parsed.chat_identity is None or parsed.raw_token is None:
+    if (
+        parsed.chat_identity is None
+        or parsed.sender_identity is None
+        or parsed.raw_token is None
+    ):
         raise RuntimeError("Private Telegram start parser invariant failed")
     reply_language = _reply_language(parsed.language_code)
     try:
-        consumed = consume_start_token(
+        bind_start_token_for_contact(
             session,
             parsed.raw_token,
             parsed.chat_identity,
-            now,
+            parsed.sender_identity,
+            rate_limit_hmac_key=rate_limit_hmac_key,
+            now=now,
         )
     except TelegramLinkTokenConsumeError as exc:
         if exc.error_code is not ErrorCode.LINK_TOKEN_INVALID:
@@ -324,35 +399,11 @@ def _apply_terminal_update(
                 reply_language,
             ),
         )
-    except TelegramChatAlreadyLinkedError as exc:
-        if exc.error_code is not ErrorCode.TELEGRAM_CHAT_ALREADY_LINKED:
-            raise
-        return _PendingTelegramTxAResult(
-            outcome=TelegramUpdateOutcomeCode.LINK_REJECTED,
-            reply=_PendingBotReply(
-                parsed.chat_identity,
-                BotReplyKey.LINK_FAILED,
-                reply_language,
-            ),
-        )
-
-    outcome = {
-        TelegramLinkOutcome.LINKED: TelegramUpdateOutcomeCode.LINKED,
-        TelegramLinkOutcome.RELINKED: TelegramUpdateOutcomeCode.RELINKED,
-        TelegramLinkOutcome.ALREADY_LINKED_TO_THIS_CHAT: (
-            TelegramUpdateOutcomeCode.ALREADY_LINKED_TO_THIS_CHAT
-        ),
-    }[consumed.outcome]
-    reply_key = (
-        BotReplyKey.ALREADY_LINKED
-        if consumed.outcome is TelegramLinkOutcome.ALREADY_LINKED_TO_THIS_CHAT
-        else BotReplyKey.LINKED
-    )
     return _PendingTelegramTxAResult(
-        outcome=outcome,
+        outcome=TelegramUpdateOutcomeCode.CONTACT_REQUIRED,
         reply=_PendingBotReply(
             parsed.chat_identity,
-            reply_key,
+            BotReplyKey.CONTACT_REQUIRED,
             reply_language,
         ),
     )

@@ -2,18 +2,21 @@ import inspect
 import re
 from collections.abc import Callable, Generator
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 import app.auth.router as auth_router_module
+import app.otp.issuance as issuance_module
 from app.auth.csrf import get_csrf_token
 from app.auth.deps import get_current_time, validate_csrf
+from app.auth.models import AuthRateLimit, User
 from app.auth.models import Session as AuthSession
-from app.auth.models import User
+from app.auth.rate_limit import hash_rate_limit_key
 from app.auth.sessions import (
     CreatedSession,
     create_authenticated_session,
@@ -31,11 +34,74 @@ from app.otp.models import OtpChallenge, OtpChallengeEvent, OtpDispatch
 from app.otp.repository import create_pending_challenge, create_pending_dispatch
 from app.security_headers import AUTH_NO_STORE_CACHE_CONTROL, CONTENT_SECURITY_POLICY
 from app.settings import Settings
+from app.telegram.client_ip import ResolvedClientIp
 from app.telegram.models import TelegramLink
 
 NOW = datetime(2026, 7, 29, 21, 0, tzinfo=UTC)
 TEST_RATE_LIMIT_HMAC_KEY = "test-rate-limit-hmac-key-for-otp-new-code-post"
 TEST_OTP_HMAC_KEY = "test-otp-hmac-key-for-otp-new-code-post-at-least-32"
+CLIENT_IP = ResolvedClientIp("203.0.113.80")
+
+
+class _TrackingSession(Session):
+    def __init__(
+        self,
+        *args: Any,
+        lifecycle: "_SessionLifecycle",
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.lifecycle = lifecycle
+        self.tracking_closed = False
+        lifecycle.sessions.append(self)
+
+    def close(self) -> None:
+        try:
+            super().close()
+        finally:
+            self.tracking_closed = True
+
+
+class _SessionLifecycle:
+    def __init__(self) -> None:
+        self.sessions: list[_TrackingSession] = []
+        self.domain_entries = 0
+
+    def enter_domain(
+        self,
+        session: Session,
+        *,
+        call_start: int,
+        predecessor_count: int,
+    ) -> None:
+        assert isinstance(session, _TrackingSession)
+        current_call = self.sessions[call_start:]
+        assert current_call[-1] is session
+        assert len(current_call) == predecessor_count + 1
+        assert all(candidate.tracking_closed for candidate in current_call[:-1])
+        assert all(not candidate.in_transaction() for candidate in current_call[:-1])
+        assert not session.tracking_closed
+        assert session.in_transaction()
+        assert len({id(candidate) for candidate in current_call}) == len(current_call)
+        self.domain_entries += 1
+
+    def assert_all_closed(self, *, call_start: int = 0) -> None:
+        selected = self.sessions[call_start:]
+        assert selected
+        assert all(candidate.tracking_closed for candidate in selected)
+        assert all(not candidate.in_transaction() for candidate in selected)
+        assert len({id(candidate) for candidate in selected}) == len(selected)
+
+
+def tracking_session_factory(
+    engine: Engine,
+    lifecycle: _SessionLifecycle,
+) -> sessionmaker[Session]:
+    return sessionmaker(
+        bind=engine,
+        class_=_TrackingSession,
+        lifecycle=lifecycle,
+    )
 
 
 @pytest.fixture
@@ -169,6 +235,7 @@ def add_user_and_link(
         user_id=user.id,
         telegram_chat_id=9_986_000_601,
         linked_at=NOW,
+        phone_verified_at=NOW,
         updated_at=NOW,
     )
     session.add(link)
@@ -209,6 +276,43 @@ def seed_pending_challenge(
 
 def count_table(session: Session, model) -> int:
     return session.scalar(select(func.count()).select_from(model)) or 0
+
+
+def seed_rate_limit(
+    session: Session,
+    settings: Settings,
+    *,
+    scope: str,
+    raw_key: str,
+    attempt_count: int,
+) -> None:
+    session.add(
+        AuthRateLimit(
+            scope=scope,
+            key_hash=hash_rate_limit_key(settings, raw_key),
+            window_started_at=NOW,
+            attempt_count=attempt_count,
+            updated_at=NOW,
+        )
+    )
+
+
+def rate_limit_attempt_count(
+    session: Session,
+    settings: Settings,
+    *,
+    scope: str,
+    raw_key: str,
+) -> int:
+    record = session.get(
+        AuthRateLimit,
+        {
+            "scope": scope,
+            "key_hash": hash_rate_limit_key(settings, raw_key),
+        },
+    )
+    assert record is not None
+    return record.attempt_count
 
 
 def outstanding_challenges(session: Session) -> list[OtpChallenge]:
@@ -456,6 +560,226 @@ def test_post_new_code_requires_csrf_before_mutation(
     assert count_table(db_session, OtpDispatch) == 0
 
 
+@pytest.mark.integration
+def test_post_new_code_http_cooldown_and_closed_rate_to_domain_phases(
+    m2_test_database: Engine,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert m2_test_database.dialect.name == "postgresql"
+    now_state, now_provider = mutable_now()
+    client, settings = make_client(m2_test_database, now_provider)
+    csrf_token, raw_cookie = get_verify_form(client, settings)
+    anonymous_session = fetch_session_by_cookie(db_session, raw_cookie)
+    old_challenge = seed_pending_challenge(
+        db_session,
+        settings,
+        anonymous_session,
+        created_at=NOW,
+    )
+    assert old_challenge.user_id is not None
+    ip_key = f"otp-login-new-code:ip:{CLIENT_IP.as_hmac_input()}"
+    user_key = f"otp-login-new-code:user:{old_challenge.user_id}"
+    seed_rate_limit(
+        db_session,
+        settings,
+        scope=issuance_module.OTP_LOGIN_NEW_CODE_IP_SCOPE,
+        raw_key=ip_key,
+        attempt_count=1,
+    )
+    seed_rate_limit(
+        db_session,
+        settings,
+        scope=issuance_module.OTP_LOGIN_NEW_CODE_USER_SCOPE,
+        raw_key=user_key,
+        attempt_count=1,
+    )
+    db_session.commit()
+
+    lifecycle = _SessionLifecycle()
+    client.app.state.database_session_factory = tracking_session_factory(
+        m2_test_database,
+        lifecycle,
+    )
+    domain_call_start = {"value": 0}
+    original_domain = issuance_module._request_new_login_code_domain
+
+    def tracked_domain(session: Session, **kwargs: Any):
+        lifecycle.enter_domain(
+            session,
+            call_start=domain_call_start["value"],
+            predecessor_count=3,
+        )
+        return original_domain(session, **kwargs)
+
+    monkeypatch.setattr(
+        issuance_module,
+        "_request_new_login_code_domain",
+        tracked_domain,
+    )
+    now_state["now"] = NOW + timedelta(seconds=59)
+
+    early = post_new_code(client, csrf_token=csrf_token)
+
+    assert_new_code_redirect(early)
+    assert lifecycle.domain_entries == 0
+    assert len(lifecycle.sessions) == 2
+    lifecycle.assert_all_closed()
+    db_session.expire_all()
+    assert (
+        rate_limit_attempt_count(
+            db_session,
+            settings,
+            scope=issuance_module.OTP_LOGIN_NEW_CODE_IP_SCOPE,
+            raw_key=ip_key,
+        )
+        == 1
+    )
+    assert (
+        rate_limit_attempt_count(
+            db_session,
+            settings,
+            scope=issuance_module.OTP_LOGIN_NEW_CODE_USER_SCOPE,
+            raw_key=user_key,
+        )
+        == 1
+    )
+    assert count_table(db_session, OtpChallenge) == 1
+    assert count_table(db_session, OtpDispatch) == 1
+    assert count_table(db_session, OtpChallengeEvent) == 0
+
+    domain_call_start["value"] = len(lifecycle.sessions)
+    now_state["now"] = NOW + timedelta(seconds=60)
+    allowed = post_new_code(client, csrf_token=csrf_token)
+
+    assert_new_code_redirect(allowed)
+    assert (
+        allowed.status_code,
+        allowed.headers["location"],
+        allowed.text,
+        allowed.headers["cache-control"],
+    ) == (
+        early.status_code,
+        early.headers["location"],
+        early.text,
+        early.headers["cache-control"],
+    )
+    assert lifecycle.domain_entries == 1
+    assert len(lifecycle.sessions[domain_call_start["value"] :]) == 4
+    lifecycle.assert_all_closed(call_start=domain_call_start["value"])
+    db_session.expire_all()
+    assert (
+        rate_limit_attempt_count(
+            db_session,
+            settings,
+            scope=issuance_module.OTP_LOGIN_NEW_CODE_IP_SCOPE,
+            raw_key=ip_key,
+        )
+        == 2
+    )
+    assert (
+        rate_limit_attempt_count(
+            db_session,
+            settings,
+            scope=issuance_module.OTP_LOGIN_NEW_CODE_USER_SCOPE,
+            raw_key=user_key,
+        )
+        == 2
+    )
+    persisted_old = db_session.get(OtpChallenge, old_challenge.id)
+    assert persisted_old is not None
+    assert persisted_old.status == OtpChallengeStatus.SUPERSEDED.value
+    assert count_table(db_session, OtpChallenge) == 2
+    assert count_table(db_session, OtpDispatch) == 2
+    assert count_table(db_session, OtpChallengeEvent) == 2
+
+
+@pytest.mark.integration
+def test_post_new_code_http_rate_denial_never_enters_domain(
+    m2_test_database: Engine,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert m2_test_database.dialect.name == "postgresql"
+    client, settings = make_client(
+        m2_test_database,
+        fixed_now(),
+        user_attempts=3,
+        ip_attempts=20,
+    )
+    csrf_token, raw_cookie = get_verify_form(client, settings)
+    anonymous_session = fetch_session_by_cookie(db_session, raw_cookie)
+    old_challenge = seed_pending_challenge(db_session, settings, anonymous_session)
+    assert old_challenge.user_id is not None
+    ip_key = f"otp-login-new-code:ip:{CLIENT_IP.as_hmac_input()}"
+    user_key = f"otp-login-new-code:user:{old_challenge.user_id}"
+    seed_rate_limit(
+        db_session,
+        settings,
+        scope=issuance_module.OTP_LOGIN_NEW_CODE_IP_SCOPE,
+        raw_key=ip_key,
+        attempt_count=1,
+    )
+    seed_rate_limit(
+        db_session,
+        settings,
+        scope=issuance_module.OTP_LOGIN_NEW_CODE_USER_SCOPE,
+        raw_key=user_key,
+        attempt_count=settings.otp_login_rate_limit_user_attempts - 1,
+    )
+    db_session.commit()
+
+    lifecycle = _SessionLifecycle()
+    client.app.state.database_session_factory = tracking_session_factory(
+        m2_test_database,
+        lifecycle,
+    )
+    domain_calls: list[None] = []
+    original_domain = issuance_module._request_new_login_code_domain
+
+    def forbidden_domain(session: Session, **kwargs: Any):
+        domain_calls.append(None)
+        return original_domain(session, **kwargs)
+
+    monkeypatch.setattr(
+        issuance_module,
+        "_request_new_login_code_domain",
+        forbidden_domain,
+    )
+
+    response = post_new_code(client, csrf_token=csrf_token)
+
+    assert_new_code_redirect(response)
+    assert domain_calls == []
+    assert len(lifecycle.sessions) == 3
+    lifecycle.assert_all_closed()
+    db_session.expire_all()
+    assert (
+        rate_limit_attempt_count(
+            db_session,
+            settings,
+            scope=issuance_module.OTP_LOGIN_NEW_CODE_IP_SCOPE,
+            raw_key=ip_key,
+        )
+        == 2
+    )
+    assert (
+        rate_limit_attempt_count(
+            db_session,
+            settings,
+            scope=issuance_module.OTP_LOGIN_NEW_CODE_USER_SCOPE,
+            raw_key=user_key,
+        )
+        == settings.otp_login_rate_limit_user_attempts
+    )
+    persisted_old = db_session.get(OtpChallenge, old_challenge.id)
+    assert persisted_old is not None
+    assert persisted_old.status == OtpChallengeStatus.PENDING_DISPATCH.value
+    assert count_table(db_session, OtpChallenge) == 1
+    assert count_table(db_session, OtpDispatch) == 1
+    assert count_table(db_session, OtpChallengeEvent) == 0
+
+
 def test_post_new_code_route_has_csrf_dependency() -> None:
     route = next(
         route
@@ -464,7 +788,11 @@ def test_post_new_code_route_has_csrf_dependency() -> None:
     )
 
     dependency_calls = [dependency.call for dependency in route.dependant.dependencies]
-    assert validate_csrf in dependency_calls
+    assert auth_router_module.get_detached_otp_mutation_context in dependency_calls
+    detached_source = inspect.getsource(
+        auth_router_module.get_detached_otp_mutation_context
+    )
+    assert f"await {validate_csrf.__name__}(" in detached_source
 
 
 def test_post_new_code_route_has_no_phone_delivery_or_shop_scope() -> None:

@@ -56,6 +56,18 @@ def test_users_phone_is_unique_and_indexed() -> None:
     assert phone_column.index is True
 
 
+def test_users_phone_has_exact_ascii_canonical_check() -> None:
+    check_constraints = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in User.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert check_constraints["ck_users_phone_canonical_uz_e164"] == (
+        "phone ~ '^\\+998[0-9]{9}$'"
+    )
+
+
 def test_users_table_has_no_raw_password_column() -> None:
     assert "password" not in User.__table__.columns
 

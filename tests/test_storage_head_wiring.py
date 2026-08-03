@@ -8,10 +8,21 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 M8_REVISION = "f8a9b0c1d2e3"
 M9_REVISION = "a9b0c1d2e3f4"
 M10_REVISION = "b0c1d2e3f4a5"
-INHERITED_CLEANUP_ORDER = (
+M11_ORIGINAL_REVISION = "c1d2e3f4a5b6"
+M11_RECOVERY_REVISION = "d2e3f4a5b6c7"
+M11_CLEANUP_PREFIX = (
     "otp_challenge_events",
     "otp_dispatches",
     "otp_challenges",
+    "customer_documents",
+    "customer_identities",
+    "audit_log",
+    "offer_acceptances",
+    "offer_texts",
+    "offer_versions",
+    "object_files",
+)
+INHERITED_CLEANUP_ORDER = (
     "otp_dispatcher_state",
     "telegram_update_failures",
     "telegram_polling_state",
@@ -27,23 +38,16 @@ INHERITED_CLEANUP_ORDER = (
     "shops",
     "users",
 )
-M10_CLEANUP_PREFIX = (
-    "customer_documents",
-    "customer_identities",
-    "audit_log",
-    "offer_acceptances",
-    "offer_texts",
-    "offer_versions",
-    "object_files",
-)
 
 
-def test_code_and_ci_are_wired_to_exact_m10_head_with_m9_parent() -> None:
+def test_code_and_ci_are_wired_to_exact_recovery_head() -> None:
     workflow = (PROJECT_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
-    assert get_alembic_head() == M10_REVISION
-    assert "Verify Alembic M10 head" in workflow
-    assert f'test "$current_revision" = "{M10_REVISION}"' in workflow
+    assert get_alembic_head() == M11_RECOVERY_REVISION
+    assert "Verify Alembic M11 recovery head" in workflow
+    assert f'test "$current_revision" = "{M11_RECOVERY_REVISION}"' in workflow
+    assert f'test "$current_revision" = "{M11_ORIGINAL_REVISION}"' not in workflow
+    assert f'test "$current_revision" = "{M10_REVISION}"' not in workflow
     assert f'test "$current_revision" = "{M9_REVISION}"' not in workflow
     assert f'test "$current_revision" = "{M8_REVISION}"' not in workflow
     assert 'test "$current_revision" = "e7f8a9b0c1d2"' not in workflow
@@ -58,9 +62,15 @@ def test_alembic_metadata_has_minimal_storage_model_import() -> None:
     assert env_source.count("app.storage") == 1
 
 
-def test_cleanup_adds_m10_children_before_m9_m8_and_inherited_order() -> None:
-    assert M2_CLEANUP_TABLE_NAMES[:7] == M10_CLEANUP_PREFIX
-    assert M2_CLEANUP_TABLE_NAMES[7:] == INHERITED_CLEANUP_ORDER
+def test_cleanup_keeps_m11_children_before_referenced_inherited_rows() -> None:
+    assert M2_CLEANUP_TABLE_NAMES[:10] == M11_CLEANUP_PREFIX
+    assert M2_CLEANUP_TABLE_NAMES[10:] == INHERITED_CLEANUP_ORDER
+    assert M2_CLEANUP_TABLE_NAMES.index("telegram_link_tokens") < (
+        M2_CLEANUP_TABLE_NAMES.index("telegram_links")
+    )
+    assert M2_CLEANUP_TABLE_NAMES.index("telegram_links") < (
+        M2_CLEANUP_TABLE_NAMES.index("users")
+    )
     assert len(M2_CLEANUP_TABLE_NAMES) == len(set(M2_CLEANUP_TABLE_NAMES))
 
 

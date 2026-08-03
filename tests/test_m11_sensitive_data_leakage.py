@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from app.auth.csrf import get_csrf_token
 from app.auth.deps import get_current_time
 from app.auth.error_codes import ErrorCode
 from app.auth.models import AuthRateLimit, User
+from app.auth.models import Session as AuthSession
 from app.auth.sessions import (
     CreatedSession,
     create_authenticated_session,
@@ -45,7 +47,26 @@ from app.settings import Settings
 from app.shop.enums import ShopRole
 from app.shop.models import Shop, ShopStaff
 from app.telegram.bot_api import TelegramApiError, TelegramApiErrorCode
-from app.telegram.inbound import VerifiedPrivateTelegramChatIdentity
+from app.telegram.client_ip import ResolvedClientIp
+from app.telegram.inbound import (
+    SensitiveTelegramContactPhone,
+    TelegramUserIdentity,
+    VerifiedPrivateTelegramChatIdentity,
+)
+from app.telegram.models import TelegramLink, TelegramLinkEvent, TelegramLinkToken
+from app.telegram.service import (
+    TelegramContactVerificationError,
+    bind_start_token_for_contact,
+    consume_start_token,
+)
+from app.telegram.token import (
+    RawTelegramLinkToken,
+    derive_telegram_contact_binding_mac,
+    hash_telegram_link_token,
+)
+from tests.telegram_issue_helpers import (
+    issue_link_token_in_one_test_transaction as issue_link_token,
+)
 
 _NOW = datetime(2026, 8, 2, 15, 0, tzinfo=UTC)
 _OTP_KEY = SecretStr("synthetic-activation-csrf-otp-key-at-least-32-characters")
@@ -521,6 +542,197 @@ def test_registration_forbidden_values_never_reach_db_audit_log_error_html_url_o
     )
     assert all(value not in rendered for value in forbidden_values)
     assert "<script" not in response.text.casefold()
+
+
+@pytest.mark.integration
+def test_contact_phone_chat_user_token_binding_mac_and_secret_never_reach_forbidden_sinks(  # noqa: E501
+    caplog: pytest.LogCaptureFixture,
+    m2_test_database: Engine,
+) -> None:
+    settings = _settings(m2_test_database)
+    application = create_app(settings)
+    application.dependency_overrides[get_current_time] = lambda: _NOW
+    account_phone = "+998900001498"
+    raw_contact_phone = "+998 (90) 777-66-55"
+    raw_token_text = "m11_cr02_forbidden_sink_token"
+    raw_chat_id = 8_700_000_041_111
+    raw_sender_id = 8_700_000_041_112
+    raw_client_ip = "203.0.113.198"
+    raw_secret = settings.rate_limit_hmac_key.get_secret_value()
+    raw_token = RawTelegramLinkToken(raw_token_text)
+    chat_identity = VerifiedPrivateTelegramChatIdentity(raw_chat_id)
+    sender_identity = TelegramUserIdentity(raw_sender_id)
+    contact_phone = SensitiveTelegramContactPhone(raw_contact_phone)
+    binding_mac = derive_telegram_contact_binding_mac(
+        rate_limit_hmac_key=settings.rate_limit_hmac_key,
+        chat_identity=chat_identity,
+        sender_identity=sender_identity,
+    ).as_stored_value()
+    token_hash = hash_telegram_link_token(raw_token)
+
+    with caplog.at_level(logging.DEBUG):
+        with Session(m2_test_database) as session, session.begin():
+            user, created = _created_session(
+                session,
+                settings=settings,
+                phone=account_phone,
+            )
+            session_token = created.raw_token.as_cookie_value()
+            csrf_token = _csrf_value(created)
+            issued = issue_link_token(
+                session,
+                settings,
+                user,
+                ResolvedClientIp(raw_client_ip),
+                _NOW,
+                token_generator=lambda _byte_count: raw_token_text,
+            )
+            pending = bind_start_token_for_contact(
+                session,
+                issued.raw_token,
+                chat_identity,
+                sender_identity,
+                rate_limit_hmac_key=settings.rate_limit_hmac_key,
+                now=_NOW + timedelta(seconds=1),
+            )
+            with pytest.raises(TelegramContactVerificationError) as exc_info:
+                consume_start_token(
+                    session,
+                    chat_identity,
+                    sender_identity,
+                    sender_identity,
+                    contact_phone,
+                    rate_limit_hmac_key=settings.rate_limit_hmac_key,
+                    now=_NOW + timedelta(seconds=2),
+                )
+            session.flush()
+
+            stored_token = session.get(TelegramLinkToken, issued.token.id)
+            assert stored_token is not None
+            assert stored_token.token_hash == token_hash
+            assert stored_token.pending_contact_binding_mac == binding_mac
+            assert stored_token.contact_requested_at == _NOW + timedelta(seconds=1)
+            assert stored_token.consumed_at is None
+            assert stored_token.invalidated_at is None
+            assert session.scalar(select(func.count()).select_from(TelegramLink)) == 0
+            assert (
+                session.scalar(select(func.count()).select_from(TelegramLinkEvent)) == 0
+            )
+            assert session.scalar(select(func.count()).select_from(AuditLog)) == 0
+            assert session.scalar(select(func.count()).select_from(OtpChallenge)) == 0
+            assert session.scalar(select(func.count()).select_from(OtpDispatch)) == 0
+
+            approved_token_row_text = repr(
+                (
+                    stored_token.token_hash,
+                    stored_token.pending_contact_binding_mac,
+                    stored_token.contact_requested_at,
+                )
+            )
+            non_token_persistence_text = repr(
+                {
+                    "users": tuple(
+                        (row.id, row.phone, row.password_hash)
+                        for row in session.scalars(select(User))
+                    ),
+                    "sessions": tuple(
+                        (row.id, row.token_hash, row.csrf_secret)
+                        for row in session.scalars(select(AuthSession))
+                    ),
+                    "rate_limits": tuple(
+                        (row.scope, row.key_hash, row.attempt_count)
+                        for row in session.scalars(select(AuthRateLimit))
+                    ),
+                    "links": tuple(session.scalars(select(TelegramLink))),
+                    "link_events": tuple(session.scalars(select(TelegramLinkEvent))),
+                    "otp_challenges": tuple(session.scalars(select(OtpChallenge))),
+                    "otp_dispatches": tuple(session.scalars(select(OtpDispatch))),
+                    "audit": tuple(session.scalars(select(AuditLog))),
+                }
+            )
+            error_text = " ".join(
+                (
+                    repr(exc_info.value),
+                    str(exc_info.value),
+                    repr(exc_info.value.public_error),
+                )
+            )
+            object_repr_text = " ".join(
+                repr(value)
+                for value in (
+                    settings,
+                    raw_token,
+                    chat_identity,
+                    sender_identity,
+                    contact_phone,
+                    issued,
+                    pending,
+                    stored_token,
+                )
+            )
+
+        with TestClient(application, client=("203.0.113.146", 50_000)) as client:
+            _set_cookie(client, settings, created)
+            response = client.get(
+                "/customer/activation",
+                params={"error": ErrorCode.TELEGRAM_PHONE_NOT_VERIFIED.value},
+                follow_redirects=False,
+            )
+
+    application.state.database_engine.dispose()
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert exc_info.value.error_code is ErrorCode.TELEGRAM_PHONE_MISMATCH
+    for raw_value in (
+        raw_contact_phone,
+        raw_token_text,
+        str(raw_chat_id),
+        str(raw_sender_id),
+        raw_client_ip,
+        raw_secret,
+    ):
+        assert raw_value not in approved_token_row_text
+    for internal_value in (token_hash, binding_mac):
+        assert internal_value not in non_token_persistence_text
+
+    forbidden_output_values = (
+        account_phone,
+        raw_contact_phone,
+        raw_token_text,
+        token_hash,
+        str(raw_chat_id),
+        str(raw_sender_id),
+        raw_client_ip,
+        binding_mac,
+        raw_secret,
+        session_token,
+        csrf_token,
+    )
+    output_text = " ".join(
+        (
+            error_text,
+            object_repr_text,
+            caplog.text,
+            response.text,
+            str(response.url),
+            " ".join(f"{key}: {value}" for key, value in response.headers.items()),
+        )
+    )
+    assert all(value not in output_text for value in forbidden_output_values)
+    forbidden_telegram_columns = {
+        "contact_phone",
+        "telegram_user_id",
+        "sender_id",
+        "raw_token",
+        "rate_limit_hmac_key",
+    }
+    assert forbidden_telegram_columns.isdisjoint(TelegramLink.__table__.columns.keys())
+    assert forbidden_telegram_columns.isdisjoint(
+        TelegramLinkToken.__table__.columns.keys()
+    )
+    assert forbidden_telegram_columns.isdisjoint(
+        TelegramLinkEvent.__table__.columns.keys()
+    )
 
 
 class _FailingTelegramTransport:

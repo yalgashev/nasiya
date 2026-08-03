@@ -14,6 +14,9 @@ class ErrorCode(StrEnum):
     VALIDATION_ERROR = "VALIDATION_ERROR"
     TELEGRAM_ALREADY_LINKED = "TELEGRAM_ALREADY_LINKED"
     TELEGRAM_NOT_LINKED = "TELEGRAM_NOT_LINKED"
+    TELEGRAM_CONTACT_REQUIRED = "TELEGRAM_CONTACT_REQUIRED"
+    TELEGRAM_PHONE_MISMATCH = "TELEGRAM_PHONE_MISMATCH"
+    TELEGRAM_PHONE_NOT_VERIFIED = "TELEGRAM_PHONE_NOT_VERIFIED"
     TELEGRAM_CHAT_ALREADY_LINKED = "TELEGRAM_CHAT_ALREADY_LINKED"
     LINK_TOKEN_INVALID = "LINK_TOKEN_INVALID"
     FORBIDDEN = "FORBIDDEN"
@@ -84,6 +87,21 @@ ERROR_CATALOG: Final[Mapping[ErrorCode, ErrorDefinition]] = MappingProxyType(
         ErrorCode.TELEGRAM_NOT_LINKED: ErrorDefinition(
             code=ErrorCode.TELEGRAM_NOT_LINKED,
             user_message="Telegram akkauntingiz bog'lanmagan.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.TELEGRAM_CONTACT_REQUIRED: ErrorDefinition(
+            code=ErrorCode.TELEGRAM_CONTACT_REQUIRED,
+            user_message="Telegram orqali o'zingizning kontaktingizni yuboring.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.TELEGRAM_PHONE_MISMATCH: ErrorDefinition(
+            code=ErrorCode.TELEGRAM_PHONE_MISMATCH,
+            user_message="Telegram kontaktini tasdiqlab bo'lmadi.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.TELEGRAM_PHONE_NOT_VERIFIED: ErrorDefinition(
+            code=ErrorCode.TELEGRAM_PHONE_NOT_VERIFIED,
+            user_message="Telegram kontaktingizni tasdiqlang.",
             http_status=HTTPStatus.CONFLICT,
         ),
         ErrorCode.TELEGRAM_CHAT_ALREADY_LINKED: ErrorDefinition(

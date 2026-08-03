@@ -1,29 +1,60 @@
+import hmac
 import logging
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 from inspect import signature
-from uuid import UUID
 
 import pytest
+from pydantic import SecretStr
 from sqlalchemy import func, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-import app.telegram.service as telegram_service
+import app.shop.models  # noqa: F401
 from app.auth.error_codes import ErrorCode
+from app.auth.models import Session as AuthSession
 from app.auth.models import User
-from app.customer.models import Customer
+from app.customer.models import CUSTOMER_ONBOARDING_STATUS_ACTIVE, Customer
 from app.db import create_database_session_factory
-from app.telegram.inbound import VerifiedPrivateTelegramChatIdentity
+from app.otp.contracts import (
+    OtpChallengeEventAction,
+    OtpChallengeStatus,
+    OtpDispatchStatus,
+    OtpPurpose,
+)
+from app.otp.models import OtpChallenge, OtpChallengeEvent, OtpDispatch
+from app.otp.repository import (
+    create_pending_challenge,
+    create_pending_dispatch,
+    create_pending_registration_challenge,
+)
+from app.telegram.inbound import (
+    SensitiveTelegramContactPhone,
+    TelegramUserIdentity,
+    VerifiedPrivateTelegramChatIdentity,
+)
 from app.telegram.models import TelegramLink, TelegramLinkEvent, TelegramLinkToken
 from app.telegram.service import (
     ConsumedTelegramStartToken,
+    PendingTelegramContactBinding,
     TelegramChatAlreadyLinkedError,
+    TelegramContactVerificationError,
+    TelegramLinkOutcome,
     TelegramLinkTokenConsumeError,
-    TelegramStartTokenConsumeOutcome,
+    bind_start_token_for_contact,
     consume_start_token,
 )
-from app.telegram.token import RawTelegramLinkToken, hash_telegram_link_token
+from app.telegram.token import (
+    RawTelegramLinkToken,
+    derive_telegram_contact_binding_mac,
+    hash_telegram_link_token,
+)
+from tests.m11_seed import NOW as SNAPSHOT_NOW
+from tests.m11_seed import seed_registration_snapshot
+
+CONTACT_BINDING_KEY = SecretStr(
+    "test-contact-binding-rate-limit-key-at-least-32-characters"
+)
 
 
 @pytest.fixture
@@ -63,36 +94,19 @@ def add_token(
     return token
 
 
-def add_tombstone_link(
-    session: Session,
-    user: User,
-    *,
-    linked_at: datetime,
-    unlinked_at: datetime,
-) -> TelegramLink:
-    link = TelegramLink(
-        user_id=user.id,
-        telegram_chat_id=None,
-        linked_at=linked_at,
-        unlinked_at=unlinked_at,
-        updated_at=unlinked_at,
-    )
-    session.add(link)
-    session.flush()
-    return link
-
-
 def add_active_link(
     session: Session,
     user: User,
     *,
     telegram_chat_id: int,
     linked_at: datetime,
+    phone_verified: bool = True,
 ) -> TelegramLink:
     link = TelegramLink(
         user_id=user.id,
         telegram_chat_id=telegram_chat_id,
         linked_at=linked_at,
+        phone_verified_at=linked_at if phone_verified else None,
         updated_at=linked_at,
     )
     session.add(link)
@@ -104,208 +118,228 @@ def count_table(session: Session, model) -> int:
     return session.scalar(select(func.count()).select_from(model)) or 0
 
 
-def stored_token_text(session: Session) -> str:
-    rows = session.execute(
-        text(
-            "SELECT token_hash, created_at::text, expires_at::text, "
-            "consumed_at::text, invalidated_at::text FROM telegram_link_tokens"
-        )
-    ).all()
-    return "|".join(str(value) for row in rows for value in row)
-
-
-def stored_link_and_event_text(session: Session) -> str:
-    queries = (
-        (
-            "telegram_links",
-            "SELECT telegram_chat_id::text, linked_at::text, "
-            "unlinked_at::text, updated_at::text FROM telegram_links",
-        ),
-        (
-            "telegram_link_events",
-            "SELECT action, occurred_at::text FROM telegram_link_events",
-        ),
+def _bind_contact(
+    session: Session,
+    *,
+    token: TelegramLinkToken,
+    raw_token: str,
+    chat_identity: VerifiedPrivateTelegramChatIdentity,
+    sender_identity: TelegramUserIdentity,
+    now: datetime,
+) -> str:
+    result = bind_start_token_for_contact(
+        session,
+        RawTelegramLinkToken(raw_token),
+        chat_identity,
+        sender_identity,
+        rate_limit_hmac_key=CONTACT_BINDING_KEY,
+        now=now,
     )
-    values: list[str] = []
-    for table_name, query in queries:
-        for row in session.execute(text(query)).all():
-            values.append(table_name)
-            values.extend(str(value) for value in row)
-    return "|".join(values)
+    session.refresh(token)
+    assert isinstance(result, PendingTelegramContactBinding)
+    assert token.pending_contact_binding_mac is not None
+    assert token.contact_requested_at == now
+    return token.pending_contact_binding_mac
 
 
-def seed_committed_user_and_token(
-    engine: Engine,
+def _consume_contact(
+    session: Session,
     *,
-    phone: str,
-    raw_token: str,
-    created_at: datetime,
-    expires_at: datetime,
-) -> tuple[UUID, UUID]:
-    session_factory = create_database_session_factory(engine)
-    session = session_factory()
-    try:
-        user = add_user(session, phone)
-        token = add_token(
-            session,
-            user,
-            raw_token=raw_token,
-            created_at=created_at,
-            expires_at=expires_at,
-        )
-        user_id = user.id
-        token_id = token.id
-        session.commit()
-        return user_id, token_id
-    finally:
-        session.close()
+    chat_identity: VerifiedPrivateTelegramChatIdentity,
+    sender_identity: TelegramUserIdentity,
+    contact_identity: TelegramUserIdentity | None = None,
+    contact_phone: str,
+    now: datetime,
+) -> ConsumedTelegramStartToken:
+    return consume_start_token(
+        session,
+        chat_identity,
+        sender_identity,
+        contact_identity or sender_identity,
+        SensitiveTelegramContactPhone(contact_phone),
+        rate_limit_hmac_key=CONTACT_BINDING_KEY,
+        now=now,
+    )
 
 
-def seed_committed_user_link_and_token(
-    engine: Engine,
+def _assert_pending_mac_unchanged(
+    token: TelegramLinkToken,
+    expected_mac: str,
+) -> None:
+    if token.pending_contact_binding_mac is None or not hmac.compare_digest(
+        token.pending_contact_binding_mac,
+        expected_mac,
+    ):
+        pytest.fail("pending contact binding changed", pytrace=False)
+
+
+def _assert_zero_contact_domain_side_effects(session: Session) -> None:
+    assert count_table(session, TelegramLink) == 0
+    assert count_table(session, TelegramLinkEvent) == 0
+    assert count_table(session, OtpChallenge) == 0
+    assert count_table(session, OtpDispatch) == 0
+    assert count_table(session, OtpChallengeEvent) == 0
+    assert count_table(session, Customer) == 0
+    assert session.scalar(text("SELECT count(*) FROM sessions")) == 0
+    assert session.scalar(text("SELECT count(*) FROM audit_log")) == 0
+    assert session.scalar(text("SELECT count(*) FROM auth_rate_limits")) == 0
+
+
+def _seed_both_pending_otp_purposes(
+    session: Session,
     *,
-    phone: str,
-    telegram_chat_id: int,
-    raw_token: str,
-    linked_at: datetime,
-    created_at: datetime,
-    expires_at: datetime,
-) -> tuple[UUID, UUID, UUID]:
-    session_factory = create_database_session_factory(engine)
-    session = session_factory()
-    try:
-        user = add_user(session, phone)
-        link = add_active_link(
-            session,
-            user,
-            telegram_chat_id=telegram_chat_id,
-            linked_at=linked_at,
-        )
-        token = add_token(
-            session,
-            user,
-            raw_token=raw_token,
-            created_at=created_at,
-            expires_at=expires_at,
-        )
-        user_id = user.id
-        link_id = link.id
-        token_id = token.id
-        session.commit()
-        return user_id, link_id, token_id
-    finally:
-        session.close()
+    snapshot,
+    now: datetime,
+) -> tuple[OtpChallenge, OtpDispatch, OtpChallenge, OtpDispatch]:
+    registration = create_pending_registration_challenge(
+        session,
+        snapshot=snapshot,
+        now=now,
+    )
+    registration_dispatch = create_pending_dispatch(
+        session,
+        challenge_id=registration.id,
+        locale="uz-Latn",
+        now=now,
+    )
+    login = create_pending_challenge(
+        session,
+        browser_binding_digest="b" * 64,
+        now=now,
+        purpose=OtpPurpose.LOGIN,
+        user_id=snapshot.user_id,
+        telegram_link_id=snapshot.telegram_link_id,
+        telegram_linked_at=snapshot.telegram_linked_at,
+    )
+    login_dispatch = create_pending_dispatch(
+        session,
+        challenge_id=login.id,
+        locale="ru",
+        now=now,
+    )
+    return registration, registration_dispatch, login, login_dispatch
 
 
-def test_consume_start_token_public_api_has_no_external_user_or_payload() -> None:
+def test_consume_start_token_public_api_has_only_typed_contact_authority() -> None:
     parameters = signature(consume_start_token).parameters
 
-    assert list(parameters) == ["session", "raw_token", "chat_identity", "now"]
-    assert "user_id" not in parameters
-    assert "current_user" not in parameters
-    assert "chat_id" not in parameters
-    assert "telegram_chat_id" not in parameters
-    assert "request" not in parameters
-    assert "payload" not in parameters
-    assert "update_json" not in parameters
+    assert list(parameters) == [
+        "session",
+        "chat_identity",
+        "sender_identity",
+        "contact_identity",
+        "contact_phone",
+        "rate_limit_hmac_key",
+        "now",
+    ]
+    for forbidden in (
+        "raw_token",
+        "user_id",
+        "current_user",
+        "chat_id",
+        "telegram_chat_id",
+        "request",
+        "payload",
+        "update_json",
+    ):
+        assert forbidden not in parameters
 
 
 @pytest.mark.integration
-def test_consume_start_token_first_link_creates_state_consumes_token_and_event(
+def test_matching_self_contact_consumes_bound_token_and_creates_verified_link(
     caplog,
     m2_test_database: Engine,
 ) -> None:
-    raw_token = "first_successful_link_token"
-    token_hash = hash_telegram_link_token(RawTelegramLinkToken(raw_token))
-    issued_at = datetime(2026, 7, 24, 18, 45, tzinfo=UTC)
-    now = issued_at + timedelta(minutes=2)
-    user_id, token_id = seed_committed_user_and_token(
-        m2_test_database,
-        phone="+998900011001",
-        raw_token=raw_token,
-        created_at=issued_at,
-        expires_at=issued_at + timedelta(minutes=10),
-    )
     session_factory = create_database_session_factory(m2_test_database)
-    first_session = session_factory()
-    second_session = session_factory()
-    try:
-        with caplog.at_level(logging.INFO):
-            result = consume_start_token(
-                first_session,
-                RawTelegramLinkToken(raw_token),
-                VerifiedPrivateTelegramChatIdentity(11_001),
-                now,
-            )
-        token_in_transaction = first_session.get(TelegramLinkToken, token_id)
+    raw_token = "matching_self_contact_token"
+    stored_phone = "+998900011121"
+    submitted_phone = "+998 (90) 001-11-21"
+    issued_at = datetime(2026, 8, 2, 19, 0, tzinfo=UTC)
+    bound_at = issued_at + timedelta(seconds=1)
+    verified_at = issued_at + timedelta(seconds=2)
+    chat_identity = VerifiedPrivateTelegramChatIdentity(19_121)
+    sender_identity = TelegramUserIdentity(19_121)
 
-        assert isinstance(result, ConsumedTelegramStartToken)
-        assert result.token is token_in_transaction
+    with session_factory.begin() as session:
+        user = add_user(session, stored_phone)
+        token = add_token(
+            session,
+            user,
+            raw_token=raw_token,
+            created_at=issued_at,
+            expires_at=issued_at + timedelta(minutes=10),
+        )
+        user_id = user.id
+        token_id = token.id
+        _bind_contact(
+            session,
+            token=token,
+            raw_token=raw_token,
+            chat_identity=chat_identity,
+            sender_identity=sender_identity,
+            now=bound_at,
+        )
+
+    with session_factory.begin() as session, caplog.at_level(logging.INFO):
+        result = _consume_contact(
+            session,
+            chat_identity=chat_identity,
+            sender_identity=sender_identity,
+            contact_phone=submitted_phone,
+            now=verified_at,
+        )
+
+        assert result.outcome is TelegramLinkOutcome.LINKED
         assert result.token.id == token_id
         assert result.token.user_id == user_id
-        assert result.token.token_hash == token_hash
-        assert result.token.consumed_at == now
+        assert result.token.consumed_at == verified_at
         assert result.token.invalidated_at is None
+        assert result.token.pending_contact_binding_mac is None
+        assert result.token.contact_requested_at is None
         assert result.link.user_id == user_id
-        assert result.link.telegram_chat_id == 11_001
-        assert result.link.linked_at == now
-        assert result.link.updated_at == now
+        assert result.link.telegram_chat_id == chat_identity.as_bigint()
+        assert result.link.linked_at == verified_at
+        assert result.link.phone_verified_at == verified_at
+        assert result.link.updated_at == verified_at
         assert result.link.unlinked_at is None
-        assert result.event.user_id == user_id
+        assert result.event is not None
         assert result.event.action == "linked"
-        assert result.event.occurred_at == now
-        assert result.outcome is TelegramStartTokenConsumeOutcome.LINKED
-        assert count_table(first_session, TelegramLink) == 1
-        assert count_table(first_session, TelegramLinkEvent) == 1
-        assert count_table(first_session, Customer) == 0
-        assert count_table(second_session, TelegramLink) == 0
-        assert count_table(second_session, TelegramLinkEvent) == 0
-        assert second_session.get(TelegramLinkToken, token_id).consumed_at is None
-        assert raw_token not in stored_token_text(first_session)
-        assert raw_token not in repr(result)
-        assert raw_token not in caplog.text
-        assert "11001" not in caplog.text
+        assert result.event.occurred_at == verified_at
+        assert count_table(session, TelegramLink) == 1
+        assert count_table(session, TelegramLinkEvent) == 1
+        assert count_table(session, Customer) == 0
+        rendered = f"{result!r} {caplog.text}"
+        for forbidden in (
+            raw_token,
+            submitted_phone,
+            str(chat_identity.as_bigint()),
+        ):
+            assert forbidden not in rendered
 
-        first_session.commit()
-    finally:
-        first_session.close()
-        second_session.close()
-
-    verify_session = session_factory()
-    try:
-        stored_token = verify_session.get(TelegramLinkToken, token_id)
-        stored_link = verify_session.scalar(
+    with session_factory() as session:
+        token = session.get(TelegramLinkToken, token_id)
+        link = session.scalar(
             select(TelegramLink).where(TelegramLink.user_id == user_id)
         )
-        stored_events = verify_session.scalars(
-            select(TelegramLinkEvent).where(TelegramLinkEvent.user_id == user_id)
-        ).all()
-
-        assert stored_token is not None
-        assert stored_token.consumed_at == now
-        assert stored_link is not None
-        assert stored_link.telegram_chat_id == 11_001
-        assert stored_link.linked_at == now
-        assert stored_link.updated_at == now
-        assert stored_link.unlinked_at is None
-        assert len(stored_events) == 1
-        assert stored_events[0].action == "linked"
-        assert stored_events[0].occurred_at == now
-        assert count_table(verify_session, Customer) == 0
-    finally:
-        verify_session.rollback()
-        verify_session.close()
+        assert token is not None
+        assert token.consumed_at == verified_at
+        assert token.pending_contact_binding_mac is None
+        assert token.contact_requested_at is None
+        assert link is not None
+        assert link.linked_at == link.phone_verified_at == verified_at
+        assert count_table(session, TelegramLinkEvent) == 1
 
 
 @pytest.mark.integration
-def test_consume_start_token_first_link_reactivates_tombstone_row(
+def test_contact_phone_mismatch_is_generic_and_zero_write(
+    caplog,
     db_session: Session,
 ) -> None:
-    raw_token = "first_link_tombstone_token"
-    issued_at = datetime(2026, 7, 24, 18, 50, tzinfo=UTC)
-    unlinked_at = issued_at - timedelta(minutes=5)
-    now = issued_at + timedelta(minutes=1)
-    user = add_user(db_session, "+998900011002")
+    raw_token = "mismatching_contact_token"
+    mismatch_phone = "+998 (90) 999-88-77"
+    issued_at = datetime(2026, 8, 2, 19, 10, tzinfo=UTC)
+    bound_at = issued_at + timedelta(seconds=1)
+    user = add_user(db_session, "+998900011122")
     token = add_token(
         db_session,
         user,
@@ -313,534 +347,753 @@ def test_consume_start_token_first_link_reactivates_tombstone_row(
         created_at=issued_at,
         expires_at=issued_at + timedelta(minutes=10),
     )
-    tombstone = add_tombstone_link(
+    chat_identity = VerifiedPrivateTelegramChatIdentity(19_122)
+    sender_identity = TelegramUserIdentity(19_122)
+    pending_mac = _bind_contact(
         db_session,
-        user,
-        linked_at=issued_at - timedelta(minutes=10),
-        unlinked_at=unlinked_at,
-    )
-
-    result = consume_start_token(
-        db_session,
-        RawTelegramLinkToken(raw_token),
-        VerifiedPrivateTelegramChatIdentity(11_002),
-        now,
-    )
-    events = db_session.scalars(select(TelegramLinkEvent)).all()
-
-    assert result.token is token
-    assert result.link is tombstone
-    assert token.consumed_at == now
-    assert tombstone.telegram_chat_id == 11_002
-    assert tombstone.linked_at == now
-    assert tombstone.updated_at == now
-    assert tombstone.unlinked_at is None
-    assert len(events) == 1
-    assert events[0] is result.event
-    assert events[0].action == "linked"
-    assert events[0].occurred_at == now
-    assert result.outcome is TelegramStartTokenConsumeOutcome.LINKED
-    assert count_table(db_session, TelegramLink) == 1
-    assert count_table(db_session, TelegramLinkToken) == 1
-    assert count_table(db_session, Customer) == 0
-
-
-@pytest.mark.integration
-def test_consume_start_token_relinks_active_chat_consumes_token_and_event(
-    caplog,
-    m2_test_database: Engine,
-) -> None:
-    raw_token = "successful_relink_token"
-    token_hash = hash_telegram_link_token(RawTelegramLinkToken(raw_token))
-    chat_a = 98_765_431
-    chat_b = 98_765_432
-    linked_at = datetime(2026, 7, 24, 19, 0, tzinfo=UTC)
-    issued_at = linked_at + timedelta(minutes=3)
-    now = issued_at + timedelta(minutes=2)
-    user_id, link_id, token_id = seed_committed_user_link_and_token(
-        m2_test_database,
-        phone="+998900011003",
-        telegram_chat_id=chat_a,
+        token=token,
         raw_token=raw_token,
-        linked_at=linked_at,
-        created_at=issued_at,
-        expires_at=issued_at + timedelta(minutes=10),
-    )
-    session_factory = create_database_session_factory(m2_test_database)
-    first_session = session_factory()
-    second_session = session_factory()
-    try:
-        with caplog.at_level(logging.INFO):
-            result = consume_start_token(
-                first_session,
-                RawTelegramLinkToken(raw_token),
-                VerifiedPrivateTelegramChatIdentity(chat_b),
-                now,
-            )
-        token_in_transaction = first_session.get(TelegramLinkToken, token_id)
-        link_in_transaction = first_session.get(TelegramLink, link_id)
-        old_chat_count_in_transaction = first_session.scalar(
-            select(func.count())
-            .select_from(TelegramLink)
-            .where(TelegramLink.telegram_chat_id == chat_a)
-        )
-
-        assert isinstance(result, ConsumedTelegramStartToken)
-        assert result.token is token_in_transaction
-        assert result.link is link_in_transaction
-        assert result.token.id == token_id
-        assert result.token.user_id == user_id
-        assert result.token.token_hash == token_hash
-        assert result.token.consumed_at == now
-        assert result.token.invalidated_at is None
-        assert result.link.id == link_id
-        assert result.link.user_id == user_id
-        assert result.link.telegram_chat_id == chat_b
-        assert result.link.linked_at == now
-        assert result.link.updated_at == now
-        assert result.link.unlinked_at is None
-        assert result.event.user_id == user_id
-        assert result.event.action == "relinked"
-        assert result.event.occurred_at == now
-        assert result.outcome is TelegramStartTokenConsumeOutcome.RELINKED
-        assert old_chat_count_in_transaction == 0
-        assert count_table(first_session, TelegramLink) == 1
-        assert count_table(first_session, TelegramLinkEvent) == 1
-        assert count_table(first_session, Customer) == 0
-        assert str(chat_a) not in stored_link_and_event_text(first_session)
-        assert raw_token not in stored_token_text(first_session)
-        assert raw_token not in repr(result)
-        assert raw_token not in caplog.text
-        assert str(chat_a) not in caplog.text
-        assert str(chat_b) not in caplog.text
-
-        second_session_token = second_session.get(TelegramLinkToken, token_id)
-        second_session_link = second_session.get(TelegramLink, link_id)
-        assert second_session_token is not None
-        assert second_session_token.consumed_at is None
-        assert second_session_link is not None
-        assert second_session_link.telegram_chat_id == chat_a
-        assert count_table(second_session, TelegramLinkEvent) == 0
-
-        first_session.commit()
-    finally:
-        first_session.close()
-        second_session.close()
-
-    verify_session = session_factory()
-    try:
-        stored_token = verify_session.get(TelegramLinkToken, token_id)
-        stored_link = verify_session.get(TelegramLink, link_id)
-        stored_events = verify_session.scalars(
-            select(TelegramLinkEvent).where(TelegramLinkEvent.user_id == user_id)
-        ).all()
-        old_chat_count = verify_session.scalar(
-            select(func.count())
-            .select_from(TelegramLink)
-            .where(TelegramLink.telegram_chat_id == chat_a)
-        )
-
-        assert stored_token is not None
-        assert stored_token.consumed_at == now
-        assert stored_link is not None
-        assert stored_link.telegram_chat_id == chat_b
-        assert stored_link.linked_at == now
-        assert stored_link.updated_at == now
-        assert stored_link.unlinked_at is None
-        assert old_chat_count == 0
-        assert len(stored_events) == 1
-        assert stored_events[0].action == "relinked"
-        assert stored_events[0].occurred_at == now
-        assert str(chat_a) not in stored_link_and_event_text(verify_session)
-        assert count_table(verify_session, Customer) == 0
-    finally:
-        verify_session.rollback()
-        verify_session.close()
-
-
-@pytest.mark.integration
-def test_consume_start_token_same_chat_relink_consumes_token_without_event(
-    caplog,
-    m2_test_database: Engine,
-) -> None:
-    raw_token = "same_chat_relink_token"
-    token_hash = hash_telegram_link_token(RawTelegramLinkToken(raw_token))
-    chat_id = 98_765_433
-    linked_at = datetime(2026, 7, 24, 19, 20, tzinfo=UTC)
-    issued_at = linked_at + timedelta(minutes=2)
-    now = issued_at + timedelta(minutes=1)
-    user_id, link_id, token_id = seed_committed_user_link_and_token(
-        m2_test_database,
-        phone="+998900011004",
-        telegram_chat_id=chat_id,
-        raw_token=raw_token,
-        linked_at=linked_at,
-        created_at=issued_at,
-        expires_at=issued_at + timedelta(minutes=10),
-    )
-    session_factory = create_database_session_factory(m2_test_database)
-    first_session = session_factory()
-    try:
-        with caplog.at_level(logging.INFO):
-            result = consume_start_token(
-                first_session,
-                RawTelegramLinkToken(raw_token),
-                VerifiedPrivateTelegramChatIdentity(chat_id),
-                now,
-            )
-        token_in_transaction = first_session.get(TelegramLinkToken, token_id)
-        link_in_transaction = first_session.get(TelegramLink, link_id)
-
-        assert isinstance(result, ConsumedTelegramStartToken)
-        assert result.outcome is (
-            TelegramStartTokenConsumeOutcome.ALREADY_LINKED_TO_THIS_CHAT
-        )
-        assert result.token is token_in_transaction
-        assert result.link is link_in_transaction
-        assert result.event is None
-        assert result.token.id == token_id
-        assert result.token.user_id == user_id
-        assert result.token.token_hash == token_hash
-        assert result.token.consumed_at == now
-        assert result.token.invalidated_at is None
-        assert result.link.id == link_id
-        assert result.link.user_id == user_id
-        assert result.link.telegram_chat_id == chat_id
-        assert result.link.linked_at == linked_at
-        assert result.link.updated_at == linked_at
-        assert result.link.unlinked_at is None
-        assert count_table(first_session, TelegramLink) == 1
-        assert count_table(first_session, TelegramLinkEvent) == 0
-        assert count_table(first_session, Customer) == 0
-        assert raw_token not in stored_token_text(first_session)
-        assert raw_token not in repr(result)
-        assert raw_token not in caplog.text
-        assert str(chat_id) not in caplog.text
-
-        first_session.commit()
-    finally:
-        first_session.close()
-
-    verify_session = session_factory()
-    try:
-        stored_token = verify_session.get(TelegramLinkToken, token_id)
-        stored_link = verify_session.get(TelegramLink, link_id)
-
-        assert stored_token is not None
-        assert stored_token.consumed_at == now
-        assert stored_link is not None
-        assert stored_link.telegram_chat_id == chat_id
-        assert stored_link.linked_at == linked_at
-        assert stored_link.updated_at == linked_at
-        assert stored_link.unlinked_at is None
-        assert count_table(verify_session, TelegramLinkEvent) == 0
-
-        with pytest.raises(TelegramLinkTokenConsumeError) as exc_info:
-            consume_start_token(
-                verify_session,
-                RawTelegramLinkToken(raw_token),
-                VerifiedPrivateTelegramChatIdentity(chat_id),
-                now + timedelta(seconds=1),
-            )
-        continuation_user = add_user(verify_session, "+998900011005")
-
-        assert exc_info.value.error_code is ErrorCode.LINK_TOKEN_INVALID
-        assert exc_info.value.public_error["code"] == "LINK_TOKEN_INVALID"
-        assert continuation_user.id is not None
-        assert count_table(verify_session, TelegramLinkEvent) == 0
-        assert raw_token not in str(exc_info.value)
-        assert raw_token not in repr(exc_info.value)
-        assert str(chat_id) not in str(exc_info.value)
-        assert str(chat_id) not in repr(exc_info.value)
-    finally:
-        verify_session.rollback()
-        verify_session.close()
-
-
-@pytest.mark.integration
-def test_consume_start_token_first_link_chat_collision_preserves_token_for_retry(
-    db_session: Session,
-) -> None:
-    raw_token = "first_link_collision_token"
-    linked_at = datetime(2026, 7, 24, 19, 40, tzinfo=UTC)
-    issued_at = linked_at + timedelta(minutes=2)
-    collision_at = issued_at + timedelta(minutes=1)
-    retry_at = collision_at + timedelta(seconds=1)
-    chat_x = 98_765_434
-    retry_chat = 98_765_435
-    user_a = add_user(db_session, "+998900011006")
-    user_b = add_user(db_session, "+998900011007")
-    user_a_link = add_active_link(
-        db_session,
-        user_a,
-        telegram_chat_id=chat_x,
-        linked_at=linked_at,
-    )
-    token = add_token(
-        db_session,
-        user_b,
-        raw_token=raw_token,
-        created_at=issued_at,
-        expires_at=issued_at + timedelta(minutes=10),
-    )
-    original_user_a_state = (
-        user_a_link.telegram_chat_id,
-        user_a_link.linked_at,
-        user_a_link.unlinked_at,
-        user_a_link.updated_at,
-    )
-    original_token_state = (
-        token.consumed_at,
-        token.invalidated_at,
-        token.expires_at,
+        chat_identity=chat_identity,
+        sender_identity=sender_identity,
+        now=bound_at,
     )
 
-    with pytest.raises(TelegramChatAlreadyLinkedError) as exc_info:
-        consume_start_token(
+    with (
+        caplog.at_level(logging.INFO),
+        pytest.raises(TelegramContactVerificationError) as exc_info,
+    ):
+        _consume_contact(
             db_session,
-            RawTelegramLinkToken(raw_token),
-            VerifiedPrivateTelegramChatIdentity(chat_x),
-            collision_at,
+            chat_identity=chat_identity,
+            sender_identity=sender_identity,
+            contact_phone=mismatch_phone,
+            now=bound_at + timedelta(seconds=1),
         )
-    db_session.refresh(user_a_link)
     db_session.refresh(token)
-    error_text = f"{exc_info.value!r} {exc_info.value} {exc_info.value.public_error}"
-    continuation_user = add_user(db_session, "+998900011008")
 
-    assert exc_info.value.error_code is ErrorCode.TELEGRAM_CHAT_ALREADY_LINKED
-    assert exc_info.value.public_error == {
-        "code": "TELEGRAM_CHAT_ALREADY_LINKED",
-        "message": "Bu Telegram chat allaqachon bog'langan.",
-    }
-    assert (
-        user_a_link.telegram_chat_id,
-        user_a_link.linked_at,
-        user_a_link.unlinked_at,
-        user_a_link.updated_at,
-    ) == original_user_a_state
-    assert (token.consumed_at, token.invalidated_at, token.expires_at) == (
-        original_token_state
-    )
-    assert count_table(db_session, TelegramLink) == 1
-    assert count_table(db_session, TelegramLinkEvent) == 0
-    assert continuation_user.id is not None
-    assert raw_token not in error_text
-    assert user_a.phone not in error_text
-    assert str(user_a.id) not in error_text
-    assert str(chat_x) not in error_text
-
-    retry_result = consume_start_token(
-        db_session,
-        RawTelegramLinkToken(raw_token),
-        VerifiedPrivateTelegramChatIdentity(retry_chat),
-        retry_at,
-    )
-    db_session.refresh(user_a_link)
-    db_session.refresh(token)
-    user_b_link = db_session.scalar(
-        select(TelegramLink).where(TelegramLink.user_id == user_b.id)
-    )
-    events = db_session.scalars(
-        select(TelegramLinkEvent).where(TelegramLinkEvent.user_id == user_b.id)
-    ).all()
-
-    assert retry_result.outcome is TelegramStartTokenConsumeOutcome.LINKED
-    assert retry_result.token is token
-    assert retry_result.link is user_b_link
-    assert retry_result.event is events[0]
-    assert token.consumed_at == retry_at
-    assert token.invalidated_at is None
-    assert (
-        user_a_link.telegram_chat_id,
-        user_a_link.linked_at,
-        user_a_link.unlinked_at,
-        user_a_link.updated_at,
-    ) == original_user_a_state
-    assert user_b_link is not None
-    assert user_b_link.telegram_chat_id == retry_chat
-    assert len(events) == 1
-    assert events[0].action == "linked"
-
-
-@pytest.mark.integration
-def test_consume_start_token_relink_chat_collision_preserves_link_and_retry_token(
-    db_session: Session,
-) -> None:
-    raw_token = "relink_collision_token"
-    linked_at = datetime(2026, 7, 24, 20, 0, tzinfo=UTC)
-    issued_at = linked_at + timedelta(minutes=2)
-    collision_at = issued_at + timedelta(minutes=1)
-    retry_at = collision_at + timedelta(seconds=1)
-    chat_x = 98_765_436
-    user_b_old_chat = 98_765_437
-    retry_chat = 98_765_438
-    user_a = add_user(db_session, "+998900011009")
-    user_b = add_user(db_session, "+998900011010")
-    user_a_link = add_active_link(
-        db_session,
-        user_a,
-        telegram_chat_id=chat_x,
-        linked_at=linked_at,
-    )
-    user_b_link = add_active_link(
-        db_session,
-        user_b,
-        telegram_chat_id=user_b_old_chat,
-        linked_at=linked_at + timedelta(minutes=1),
-    )
-    token = add_token(
-        db_session,
-        user_b,
-        raw_token=raw_token,
-        created_at=issued_at,
-        expires_at=issued_at + timedelta(minutes=10),
-    )
-    original_user_a_state = (
-        user_a_link.telegram_chat_id,
-        user_a_link.linked_at,
-        user_a_link.unlinked_at,
-        user_a_link.updated_at,
-    )
-    original_user_b_state = (
-        user_b_link.telegram_chat_id,
-        user_b_link.linked_at,
-        user_b_link.unlinked_at,
-        user_b_link.updated_at,
-    )
-    original_token_state = (
-        token.consumed_at,
-        token.invalidated_at,
-        token.expires_at,
-    )
-
-    with pytest.raises(TelegramChatAlreadyLinkedError) as exc_info:
-        consume_start_token(
-            db_session,
-            RawTelegramLinkToken(raw_token),
-            VerifiedPrivateTelegramChatIdentity(chat_x),
-            collision_at,
-        )
-    db_session.refresh(user_a_link)
-    db_session.refresh(user_b_link)
-    db_session.refresh(token)
-    error_text = f"{exc_info.value!r} {exc_info.value} {exc_info.value.public_error}"
-    continuation_user = add_user(db_session, "+998900011011")
-
-    assert exc_info.value.error_code is ErrorCode.TELEGRAM_CHAT_ALREADY_LINKED
-    assert (
-        user_a_link.telegram_chat_id,
-        user_a_link.linked_at,
-        user_a_link.unlinked_at,
-        user_a_link.updated_at,
-    ) == original_user_a_state
-    assert (
-        user_b_link.telegram_chat_id,
-        user_b_link.linked_at,
-        user_b_link.unlinked_at,
-        user_b_link.updated_at,
-    ) == original_user_b_state
-    assert (token.consumed_at, token.invalidated_at, token.expires_at) == (
-        original_token_state
-    )
-    assert count_table(db_session, TelegramLink) == 2
-    assert count_table(db_session, TelegramLinkEvent) == 0
-    assert continuation_user.id is not None
-    assert raw_token not in error_text
-    assert user_a.phone not in error_text
-    assert str(user_a.id) not in error_text
-    assert str(chat_x) not in error_text
-
-    retry_result = consume_start_token(
-        db_session,
-        RawTelegramLinkToken(raw_token),
-        VerifiedPrivateTelegramChatIdentity(retry_chat),
-        retry_at,
-    )
-    db_session.refresh(user_a_link)
-    db_session.refresh(user_b_link)
-    db_session.refresh(token)
-    events = db_session.scalars(
-        select(TelegramLinkEvent).where(TelegramLinkEvent.user_id == user_b.id)
-    ).all()
-
-    assert retry_result.outcome is TelegramStartTokenConsumeOutcome.RELINKED
-    assert retry_result.token is token
-    assert retry_result.link is user_b_link
-    assert retry_result.event is events[0]
-    assert token.consumed_at == retry_at
-    assert token.invalidated_at is None
-    assert (
-        user_a_link.telegram_chat_id,
-        user_a_link.linked_at,
-        user_a_link.unlinked_at,
-        user_a_link.updated_at,
-    ) == original_user_a_state
-    assert user_b_link.telegram_chat_id == retry_chat
-    assert user_b_link.linked_at == retry_at
-    assert user_b_link.updated_at == retry_at
-    assert user_b_link.unlinked_at is None
-    assert len(events) == 1
-    assert events[0].action == "relinked"
-
-
-@pytest.mark.integration
-def test_consume_start_token_chat_unique_conflict_uses_savepoint(
-    monkeypatch,
-    db_session: Session,
-) -> None:
-    raw_token = "chat_unique_conflict_token"
-    linked_at = datetime(2026, 7, 24, 20, 20, tzinfo=UTC)
-    issued_at = linked_at + timedelta(minutes=2)
-    collision_at = issued_at + timedelta(minutes=1)
-    chat_x = 98_765_439
-    user_a = add_user(db_session, "+998900011012")
-    user_b = add_user(db_session, "+998900011013")
-    user_a_link = add_active_link(
-        db_session,
-        user_a,
-        telegram_chat_id=chat_x,
-        linked_at=linked_at,
-    )
-    token = add_token(
-        db_session,
-        user_b,
-        raw_token=raw_token,
-        created_at=issued_at,
-        expires_at=issued_at + timedelta(minutes=10),
-    )
-    original_user_a_state = (
-        user_a_link.telegram_chat_id,
-        user_a_link.linked_at,
-        user_a_link.unlinked_at,
-        user_a_link.updated_at,
-    )
-
-    monkeypatch.setattr(
-        telegram_service,
-        "get_other_active_telegram_link_by_chat_identity_for_update",
-        lambda *args, **kwargs: None,
-    )
-
-    with pytest.raises(TelegramChatAlreadyLinkedError) as exc_info:
-        consume_start_token(
-            db_session,
-            RawTelegramLinkToken(raw_token),
-            VerifiedPrivateTelegramChatIdentity(chat_x),
-            collision_at,
-        )
-    db_session.refresh(user_a_link)
-    db_session.refresh(token)
-    continuation_user = add_user(db_session, "+998900011014")
-
-    assert exc_info.value.error_code is ErrorCode.TELEGRAM_CHAT_ALREADY_LINKED
-    assert (
-        user_a_link.telegram_chat_id,
-        user_a_link.linked_at,
-        user_a_link.unlinked_at,
-        user_a_link.updated_at,
-    ) == original_user_a_state
+    assert exc_info.value.error_code is ErrorCode.TELEGRAM_PHONE_MISMATCH
+    _assert_pending_mac_unchanged(token, pending_mac)
+    assert token.contact_requested_at == bound_at
     assert token.consumed_at is None
     assert token.invalidated_at is None
-    assert continuation_user.id is not None
+    _assert_zero_contact_domain_side_effects(db_session)
+    rendered = f"{exc_info.value!r} {exc_info.value} {caplog.text}"
+    for forbidden in (
+        mismatch_phone,
+        raw_token,
+        str(chat_identity.as_bigint()),
+        pending_mac,
+        CONTACT_BINDING_KEY.get_secret_value(),
+    ):
+        assert forbidden not in rendered
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("terminal_state", ("expired", "consumed", "invalidated"))
+def test_expired_consumed_or_invalidated_bound_token_is_rejected(
+    db_session: Session,
+    terminal_state: str,
+) -> None:
+    raw_token = f"contact_lifecycle_{terminal_state}"
+    now = datetime(2026, 8, 2, 19, 20, tzinfo=UTC)
+    issued_at = now - timedelta(minutes=2)
+    user = add_user(
+        db_session,
+        {
+            "expired": "+998900011123",
+            "consumed": "+998900011124",
+            "invalidated": "+998900011125",
+        }[terminal_state],
+    )
+    token = add_token(
+        db_session,
+        user,
+        raw_token=raw_token,
+        created_at=issued_at,
+        expires_at=(now if terminal_state == "expired" else now + timedelta(minutes=8)),
+    )
+    chat_identity = VerifiedPrivateTelegramChatIdentity(19_123)
+    sender_identity = TelegramUserIdentity(19_123)
+    pending_mac = _bind_contact(
+        db_session,
+        token=token,
+        raw_token=raw_token,
+        chat_identity=chat_identity,
+        sender_identity=sender_identity,
+        now=issued_at + timedelta(seconds=1),
+    )
+    if terminal_state != "expired":
+        token.pending_contact_binding_mac = None
+        token.contact_requested_at = None
+        if terminal_state == "consumed":
+            token.consumed_at = now - timedelta(seconds=1)
+        else:
+            token.invalidated_at = now - timedelta(seconds=1)
+        db_session.flush()
+
+    with pytest.raises(TelegramLinkTokenConsumeError) as exc_info:
+        _consume_contact(
+            db_session,
+            chat_identity=chat_identity,
+            sender_identity=sender_identity,
+            contact_phone=user.phone,
+            now=now,
+        )
+    db_session.refresh(token)
+
+    assert exc_info.value.error_code is ErrorCode.LINK_TOKEN_INVALID
+    if terminal_state == "expired":
+        _assert_pending_mac_unchanged(token, pending_mac)
+        assert token.contact_requested_at == issued_at + timedelta(seconds=1)
+    else:
+        assert token.pending_contact_binding_mac is None
+        assert token.contact_requested_at is None
+    assert count_table(db_session, TelegramLink) == 0
+    assert count_table(db_session, TelegramLinkEvent) == 0
+    assert count_table(db_session, OtpChallengeEvent) == 0
+
+
+@pytest.mark.integration
+def test_verified_contact_token_replay_is_rejected(db_session: Session) -> None:
+    raw_token = "verified_contact_replay"
+    issued_at = datetime(2026, 8, 2, 19, 30, tzinfo=UTC)
+    verified_at = issued_at + timedelta(seconds=2)
+    user = add_user(db_session, "+998900011126")
+    token = add_token(
+        db_session,
+        user,
+        raw_token=raw_token,
+        created_at=issued_at,
+        expires_at=issued_at + timedelta(minutes=10),
+    )
+    chat_identity = VerifiedPrivateTelegramChatIdentity(19_126)
+    sender_identity = TelegramUserIdentity(19_126)
+    _bind_contact(
+        db_session,
+        token=token,
+        raw_token=raw_token,
+        chat_identity=chat_identity,
+        sender_identity=sender_identity,
+        now=issued_at + timedelta(seconds=1),
+    )
+    first = _consume_contact(
+        db_session,
+        chat_identity=chat_identity,
+        sender_identity=sender_identity,
+        contact_phone=user.phone,
+        now=verified_at,
+    )
+    link_state = (
+        first.link.telegram_chat_id,
+        first.link.linked_at,
+        first.link.phone_verified_at,
+        first.link.updated_at,
+    )
+
+    with pytest.raises(TelegramLinkTokenConsumeError):
+        _consume_contact(
+            db_session,
+            chat_identity=chat_identity,
+            sender_identity=sender_identity,
+            contact_phone=user.phone,
+            now=verified_at + timedelta(seconds=1),
+        )
+    db_session.refresh(token)
+    db_session.refresh(first.link)
+
+    assert token.consumed_at == verified_at
+    assert token.pending_contact_binding_mac is None
+    assert token.contact_requested_at is None
+    if (
+        first.link.telegram_chat_id,
+        first.link.linked_at,
+        first.link.phone_verified_at,
+        first.link.updated_at,
+    ) != link_state:
+        pytest.fail("verified link changed on contact replay", pytrace=False)
+    assert count_table(db_session, TelegramLink) == 1
+    assert count_table(db_session, TelegramLinkEvent) == 1
+    assert count_table(db_session, OtpChallengeEvent) == 0
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("authority_change", ("chat", "sender", "contact"))
+def test_bound_token_rejects_other_chat_or_sender(
+    db_session: Session,
+    authority_change: str,
+) -> None:
+    raw_token = f"bound_contact_authority_{authority_change}"
+    issued_at = datetime(2026, 8, 2, 19, 40, tzinfo=UTC)
+    user = add_user(db_session, "+998900011127")
+    token = add_token(
+        db_session,
+        user,
+        raw_token=raw_token,
+        created_at=issued_at,
+        expires_at=issued_at + timedelta(minutes=10),
+    )
+    bound_chat = VerifiedPrivateTelegramChatIdentity(19_127)
+    bound_sender = TelegramUserIdentity(19_127)
+    pending_mac = _bind_contact(
+        db_session,
+        token=token,
+        raw_token=raw_token,
+        chat_identity=bound_chat,
+        sender_identity=bound_sender,
+        now=issued_at + timedelta(seconds=1),
+    )
+    submitted_chat = (
+        VerifiedPrivateTelegramChatIdentity(19_128)
+        if authority_change == "chat"
+        else bound_chat
+    )
+    submitted_sender = (
+        TelegramUserIdentity(19_128) if authority_change == "sender" else bound_sender
+    )
+    submitted_contact = (
+        TelegramUserIdentity(19_129)
+        if authority_change == "contact"
+        else submitted_sender
+    )
+
+    with pytest.raises(
+        (TelegramLinkTokenConsumeError, TelegramContactVerificationError)
+    ):
+        _consume_contact(
+            db_session,
+            chat_identity=submitted_chat,
+            sender_identity=submitted_sender,
+            contact_identity=submitted_contact,
+            contact_phone=user.phone,
+            now=issued_at + timedelta(seconds=2),
+        )
+    db_session.refresh(token)
+
+    _assert_pending_mac_unchanged(token, pending_mac)
+    assert token.contact_requested_at == issued_at + timedelta(seconds=1)
+    assert token.consumed_at is None
+    assert token.invalidated_at is None
+    assert count_table(db_session, TelegramLink) == 0
+    assert count_table(db_session, TelegramLinkEvent) == 0
+
+
+@pytest.mark.integration
+def test_contact_chat_collision_preserves_token_and_existing_link(
+    db_session: Session,
+) -> None:
+    raw_token = "verified_contact_chat_collision"
+    linked_at = datetime(2026, 8, 2, 19, 50, tzinfo=UTC)
+    issued_at = linked_at + timedelta(minutes=1)
+    collision_chat = 19_130
+    collision_owner = add_user(db_session, "+998900011130")
+    target_user = add_user(db_session, "+998900011131")
+    existing_link = add_active_link(
+        db_session,
+        collision_owner,
+        telegram_chat_id=collision_chat,
+        linked_at=linked_at,
+    )
+    token = add_token(
+        db_session,
+        target_user,
+        raw_token=raw_token,
+        created_at=issued_at,
+        expires_at=issued_at + timedelta(minutes=10),
+    )
+    chat_identity = VerifiedPrivateTelegramChatIdentity(collision_chat)
+    sender_identity = TelegramUserIdentity(collision_chat)
+    pending_mac = _bind_contact(
+        db_session,
+        token=token,
+        raw_token=raw_token,
+        chat_identity=chat_identity,
+        sender_identity=sender_identity,
+        now=issued_at + timedelta(seconds=1),
+    )
+    link_state = (
+        existing_link.telegram_chat_id,
+        existing_link.linked_at,
+        existing_link.phone_verified_at,
+        existing_link.unlinked_at,
+        existing_link.updated_at,
+    )
+
+    with pytest.raises(TelegramChatAlreadyLinkedError) as exc_info:
+        _consume_contact(
+            db_session,
+            chat_identity=chat_identity,
+            sender_identity=sender_identity,
+            contact_phone=target_user.phone,
+            now=issued_at + timedelta(seconds=2),
+        )
+    db_session.refresh(token)
+    db_session.refresh(existing_link)
+
+    assert exc_info.value.error_code is ErrorCode.TELEGRAM_CHAT_ALREADY_LINKED
+    _assert_pending_mac_unchanged(token, pending_mac)
+    assert token.consumed_at is None
+    assert token.invalidated_at is None
+    if (
+        existing_link.telegram_chat_id,
+        existing_link.linked_at,
+        existing_link.phone_verified_at,
+        existing_link.unlinked_at,
+        existing_link.updated_at,
+    ) != link_state:
+        pytest.fail("collision owner link changed", pytrace=False)
     assert count_table(db_session, TelegramLink) == 1
     assert count_table(db_session, TelegramLinkEvent) == 0
+    assert count_table(db_session, OtpChallengeEvent) == 0
+
+
+@pytest.mark.integration
+def test_mismatching_relink_preserves_old_verified_generation(
+    db_session: Session,
+) -> None:
+    snapshot = seed_registration_snapshot(
+        db_session,
+        phone="+998900011132",
+    )
+    user = db_session.get(User, snapshot.user_id)
+    customer = db_session.get(Customer, snapshot.customer_id)
+    link = db_session.get(TelegramLink, snapshot.telegram_link_id)
+    assert user is not None
+    assert customer is not None
+    assert link is not None
+    link.phone_verified_at = link.linked_at
+    customer.onboarding_status = CUSTOMER_ONBOARDING_STATUS_ACTIVE
+    customer.activated_at = SNAPSHOT_NOW + timedelta(minutes=1)
+    customer.updated_at = customer.activated_at
+    registration, registration_dispatch, login, login_dispatch = (
+        _seed_both_pending_otp_purposes(
+            db_session,
+            snapshot=snapshot,
+            now=SNAPSHOT_NOW,
+        )
+    )
+    auth_session = AuthSession(
+        user_id=user.id,
+        token_hash="e" * 64,
+        csrf_secret="synthetic-session-csrf-secret",
+        created_at=SNAPSHOT_NOW,
+        last_seen_at=SNAPSHOT_NOW,
+        expires_at=SNAPSHOT_NOW + timedelta(hours=1),
+    )
+    db_session.add(auth_session)
+    issued_at = SNAPSHOT_NOW + timedelta(minutes=2)
+    raw_token = "mismatching_protected_relink"
+    token = add_token(
+        db_session,
+        user,
+        raw_token=raw_token,
+        created_at=issued_at,
+        expires_at=issued_at + timedelta(minutes=10),
+    )
+    chat_identity = VerifiedPrivateTelegramChatIdentity(19_132)
+    sender_identity = TelegramUserIdentity(19_132)
+    pending_mac = _bind_contact(
+        db_session,
+        token=token,
+        raw_token=raw_token,
+        chat_identity=chat_identity,
+        sender_identity=sender_identity,
+        now=issued_at + timedelta(seconds=1),
+    )
+    db_session.flush()
+    link_state = (
+        link.telegram_chat_id,
+        link.linked_at,
+        link.phone_verified_at,
+        link.unlinked_at,
+        link.updated_at,
+    )
+    customer_state = (
+        customer.onboarding_status,
+        customer.activated_at,
+        customer.updated_at,
+    )
+    session_state = (
+        auth_session.last_seen_at,
+        auth_session.expires_at,
+        auth_session.revoked_at,
+    )
+
+    with pytest.raises(TelegramContactVerificationError):
+        _consume_contact(
+            db_session,
+            chat_identity=chat_identity,
+            sender_identity=sender_identity,
+            contact_phone="+998900019999",
+            now=issued_at + timedelta(seconds=2),
+        )
+    for row in (
+        token,
+        link,
+        customer,
+        registration,
+        registration_dispatch,
+        login,
+        login_dispatch,
+        auth_session,
+    ):
+        db_session.refresh(row)
+
+    _assert_pending_mac_unchanged(token, pending_mac)
+    assert token.contact_requested_at == issued_at + timedelta(seconds=1)
+    assert token.consumed_at is None
+    assert token.invalidated_at is None
+    if (
+        link.telegram_chat_id,
+        link.linked_at,
+        link.phone_verified_at,
+        link.unlinked_at,
+        link.updated_at,
+    ) != link_state:
+        pytest.fail("verified link changed on mismatching relink", pytrace=False)
+    if (
+        customer.onboarding_status,
+        customer.activated_at,
+        customer.updated_at,
+    ) != customer_state:
+        pytest.fail("customer changed on mismatching relink", pytrace=False)
+    assert registration.status == OtpChallengeStatus.PENDING_DISPATCH.value
+    assert login.status == OtpChallengeStatus.PENDING_DISPATCH.value
+    assert registration_dispatch.status == OtpDispatchStatus.PENDING.value
+    assert login_dispatch.status == OtpDispatchStatus.PENDING.value
+    if (
+        auth_session.last_seen_at,
+        auth_session.expires_at,
+        auth_session.revoked_at,
+    ) != session_state:
+        pytest.fail("session changed on mismatching relink", pytrace=False)
+    assert count_table(db_session, TelegramLinkEvent) == 0
+    assert count_table(db_session, OtpChallengeEvent) == 0
+    assert db_session.scalar(text("SELECT count(*) FROM audit_log")) == 0
+    assert db_session.scalar(text("SELECT count(*) FROM auth_rate_limits")) == 0
+
+
+@pytest.mark.integration
+def test_same_phone_reverify_rotates_generation_and_invalidates_both_purposes(
+    db_session: Session,
+) -> None:
+    snapshot = seed_registration_snapshot(
+        db_session,
+        phone="+998900011133",
+    )
+    user = db_session.get(User, snapshot.user_id)
+    customer = db_session.get(Customer, snapshot.customer_id)
+    link = db_session.get(TelegramLink, snapshot.telegram_link_id)
+    assert user is not None
+    assert customer is not None
+    assert link is not None
+    old_linked_at = link.linked_at
+    link.phone_verified_at = old_linked_at
+    customer.onboarding_status = CUSTOMER_ONBOARDING_STATUS_ACTIVE
+    customer.activated_at = SNAPSHOT_NOW + timedelta(minutes=1)
+    customer.updated_at = customer.activated_at
+    registration, registration_dispatch, login, login_dispatch = (
+        _seed_both_pending_otp_purposes(
+            db_session,
+            snapshot=snapshot,
+            now=SNAPSHOT_NOW,
+        )
+    )
+    issued_at = SNAPSHOT_NOW + timedelta(minutes=2)
+    verified_at = issued_at + timedelta(seconds=2)
+    raw_token = "same_phone_protected_reverify"
+    token = add_token(
+        db_session,
+        user,
+        raw_token=raw_token,
+        created_at=issued_at,
+        expires_at=issued_at + timedelta(minutes=10),
+    )
+    chat_identity = VerifiedPrivateTelegramChatIdentity(19_133)
+    sender_identity = TelegramUserIdentity(19_133)
+    _bind_contact(
+        db_session,
+        token=token,
+        raw_token=raw_token,
+        chat_identity=chat_identity,
+        sender_identity=sender_identity,
+        now=issued_at + timedelta(seconds=1),
+    )
+
+    result = _consume_contact(
+        db_session,
+        chat_identity=chat_identity,
+        sender_identity=sender_identity,
+        contact_phone=user.phone,
+        now=verified_at,
+    )
+    for row in (
+        token,
+        link,
+        customer,
+        registration,
+        registration_dispatch,
+        login,
+        login_dispatch,
+    ):
+        db_session.refresh(row)
+
+    assert result.outcome is TelegramLinkOutcome.RELINKED
+    assert token.consumed_at == verified_at
+    assert token.pending_contact_binding_mac is None
+    assert token.contact_requested_at is None
+    assert link.linked_at == link.phone_verified_at == verified_at
+    assert link.linked_at != old_linked_at
+    assert link.telegram_chat_id == chat_identity.as_bigint()
+    assert link.unlinked_at is None
+    assert customer.onboarding_status == CUSTOMER_ONBOARDING_STATUS_ACTIVE
+    assert registration.status == OtpChallengeStatus.INVALIDATED.value
+    assert login.status == OtpChallengeStatus.INVALIDATED.value
+    assert registration_dispatch.status == OtpDispatchStatus.CANCELLED.value
+    assert login_dispatch.status == OtpDispatchStatus.CANCELLED.value
+    assert tuple(
+        db_session.scalars(
+            select(OtpChallengeEvent.action).order_by(OtpChallengeEvent.id)
+        ).all()
+    ) == (
+        OtpChallengeEventAction.INVALIDATED_BY_LINK_CHANGE.value,
+        OtpChallengeEventAction.INVALIDATED_BY_LINK_CHANGE.value,
+    )
+    assert tuple(
+        db_session.scalars(
+            select(TelegramLinkEvent.action).order_by(TelegramLinkEvent.id)
+        ).all()
+    ) == ("relinked",)
+
+
+def _assert_contact_binding_domain_is_empty(session: Session) -> None:
+    assert count_table(session, TelegramLink) == 0
+    assert count_table(session, TelegramLinkEvent) == 0
+    assert count_table(session, Customer) == 0
+    for table_name in ("otp_challenges", "otp_dispatches", "sessions", "audit_log"):
+        count = session.scalar(text(f"SELECT count(*) FROM {table_name}"))
+        assert count == 0
+
+
+@pytest.mark.integration
+def test_start_binding_writes_only_pending_state_and_replay_is_idempotent(
+    db_session: Session,
+) -> None:
+    raw_token = "pending_contact_happy_path"
+    issued_at = datetime(2026, 8, 2, 18, 0, tzinfo=UTC)
+    requested_at = issued_at + timedelta(minutes=1)
+    user = add_user(db_session, "+998900011101")
+    token = add_token(
+        db_session,
+        user,
+        raw_token=raw_token,
+        created_at=issued_at,
+        expires_at=issued_at + timedelta(minutes=10),
+    )
+    chat_identity = VerifiedPrivateTelegramChatIdentity(19_101)
+    sender_identity = TelegramUserIdentity(29_101)
+    expected_mac = derive_telegram_contact_binding_mac(
+        rate_limit_hmac_key=CONTACT_BINDING_KEY,
+        chat_identity=chat_identity,
+        sender_identity=sender_identity,
+    )
+
+    result = bind_start_token_for_contact(
+        db_session,
+        RawTelegramLinkToken(raw_token),
+        chat_identity,
+        sender_identity,
+        rate_limit_hmac_key=CONTACT_BINDING_KEY,
+        now=requested_at,
+    )
+    db_session.refresh(token)
+
+    assert isinstance(result, PendingTelegramContactBinding)
+    assert token.pending_contact_binding_mac is not None
+    if not hmac.compare_digest(
+        token.pending_contact_binding_mac,
+        expected_mac.as_stored_value(),
+    ):
+        pytest.fail("pending contact binding MAC mismatch", pytrace=False)
+    assert token.contact_requested_at == requested_at
+    assert token.consumed_at is None
+    assert token.invalidated_at is None
+    assert raw_token not in repr(result)
+    assert str(chat_identity.as_bigint()) not in repr(result)
+    assert str(sender_identity.as_bigint()) not in repr(result)
+    _assert_contact_binding_domain_is_empty(db_session)
+
+    replay_result = bind_start_token_for_contact(
+        db_session,
+        RawTelegramLinkToken(raw_token),
+        chat_identity,
+        sender_identity,
+        rate_limit_hmac_key=CONTACT_BINDING_KEY,
+        now=requested_at + timedelta(minutes=1),
+    )
+    db_session.refresh(token)
+
+    assert isinstance(replay_result, PendingTelegramContactBinding)
+    assert token.contact_requested_at == requested_at
+    assert token.consumed_at is None
+    assert token.invalidated_at is None
+    _assert_contact_binding_domain_is_empty(db_session)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("terminal_state", ("expired", "consumed", "invalidated"))
+def test_start_binding_rejects_expired_consumed_or_invalidated_token_zero_write(
+    db_session: Session,
+    terminal_state: str,
+) -> None:
+    raw_token = f"pending_contact_{terminal_state}"
+    now = datetime(2026, 8, 2, 18, 20, tzinfo=UTC)
+    user = add_user(
+        db_session,
+        {
+            "expired": "+998900011102",
+            "consumed": "+998900011103",
+            "invalidated": "+998900011104",
+        }[terminal_state],
+    )
+    token = add_token(
+        db_session,
+        user,
+        raw_token=raw_token,
+        created_at=now - timedelta(minutes=2),
+        expires_at=(now if terminal_state == "expired" else now + timedelta(minutes=8)),
+    )
+    if terminal_state == "consumed":
+        token.consumed_at = now - timedelta(seconds=1)
+    if terminal_state == "invalidated":
+        token.invalidated_at = now - timedelta(seconds=1)
+    db_session.flush()
+    before = (
+        token.consumed_at,
+        token.invalidated_at,
+        token.pending_contact_binding_mac,
+        token.contact_requested_at,
+    )
+
+    with pytest.raises(TelegramLinkTokenConsumeError) as exc_info:
+        bind_start_token_for_contact(
+            db_session,
+            RawTelegramLinkToken(raw_token),
+            VerifiedPrivateTelegramChatIdentity(19_102),
+            TelegramUserIdentity(29_102),
+            rate_limit_hmac_key=CONTACT_BINDING_KEY,
+            now=now,
+        )
+    db_session.refresh(token)
+
+    assert exc_info.value.error_code is ErrorCode.LINK_TOKEN_INVALID
+    assert (
+        token.consumed_at,
+        token.invalidated_at,
+        token.pending_contact_binding_mac,
+        token.contact_requested_at,
+    ) == before
+    _assert_contact_binding_domain_is_empty(db_session)
+
+
+@pytest.mark.integration
+def test_start_binding_rejects_same_token_for_different_identity_zero_write(
+    db_session: Session,
+) -> None:
+    raw_token = "pending_contact_identity_rebind"
+    now = datetime(2026, 8, 2, 18, 30, tzinfo=UTC)
+    user = add_user(db_session, "+998900011105")
+    token = add_token(
+        db_session,
+        user,
+        raw_token=raw_token,
+        created_at=now,
+        expires_at=now + timedelta(minutes=10),
+    )
+    bind_start_token_for_contact(
+        db_session,
+        RawTelegramLinkToken(raw_token),
+        VerifiedPrivateTelegramChatIdentity(19_103),
+        TelegramUserIdentity(29_103),
+        rate_limit_hmac_key=CONTACT_BINDING_KEY,
+        now=now + timedelta(seconds=1),
+    )
+    db_session.refresh(token)
+    before = (
+        token.pending_contact_binding_mac,
+        token.contact_requested_at,
+        token.consumed_at,
+        token.invalidated_at,
+    )
+
+    with pytest.raises(TelegramLinkTokenConsumeError):
+        bind_start_token_for_contact(
+            db_session,
+            RawTelegramLinkToken(raw_token),
+            VerifiedPrivateTelegramChatIdentity(19_104),
+            TelegramUserIdentity(29_104),
+            rate_limit_hmac_key=CONTACT_BINDING_KEY,
+            now=now + timedelta(seconds=2),
+        )
+    db_session.refresh(token)
+
+    assert (
+        token.pending_contact_binding_mac,
+        token.contact_requested_at,
+        token.consumed_at,
+        token.invalidated_at,
+    ) == before
+    _assert_contact_binding_domain_is_empty(db_session)
+
+
+@pytest.mark.integration
+def test_start_binding_invalidates_prior_pending_token_for_same_identity_first(
+    db_session: Session,
+) -> None:
+    first_raw_token = "pending_contact_first_token"
+    second_raw_token = "pending_contact_second_token"
+    now = datetime(2026, 8, 2, 18, 40, tzinfo=UTC)
+    first_user = add_user(db_session, "+998900011106")
+    second_user = add_user(db_session, "+998900011107")
+    first = add_token(
+        db_session,
+        first_user,
+        raw_token=first_raw_token,
+        created_at=now,
+        expires_at=now + timedelta(minutes=10),
+    )
+    second = add_token(
+        db_session,
+        second_user,
+        raw_token=second_raw_token,
+        created_at=now,
+        expires_at=now + timedelta(minutes=10),
+    )
+    chat_identity = VerifiedPrivateTelegramChatIdentity(19_105)
+    sender_identity = TelegramUserIdentity(29_105)
+    bind_start_token_for_contact(
+        db_session,
+        RawTelegramLinkToken(first_raw_token),
+        chat_identity,
+        sender_identity,
+        rate_limit_hmac_key=CONTACT_BINDING_KEY,
+        now=now + timedelta(seconds=1),
+    )
+
+    bind_start_token_for_contact(
+        db_session,
+        RawTelegramLinkToken(second_raw_token),
+        chat_identity,
+        sender_identity,
+        rate_limit_hmac_key=CONTACT_BINDING_KEY,
+        now=now + timedelta(seconds=2),
+    )
+    db_session.refresh(first)
+    db_session.refresh(second)
+
+    assert first.invalidated_at == now + timedelta(seconds=2)
+    assert first.pending_contact_binding_mac is None
+    assert first.contact_requested_at is None
+    assert second.invalidated_at is None
+    assert second.pending_contact_binding_mac is not None
+    assert second.contact_requested_at == now + timedelta(seconds=2)
+    _assert_contact_binding_domain_is_empty(db_session)

@@ -69,6 +69,7 @@ from app.otp.repository import (
 )
 from app.settings import Settings
 from app.telegram.client_ip import ResolvedClientIp
+from app.telegram.models import TelegramLink
 from tests.m11_seed import (
     NOW as SEED_NOW,
 )
@@ -1090,6 +1091,208 @@ def _create_web_registration_candidate(
     )
     session.flush()
     return snapshot.user_id, created.session.id, challenge.id
+
+
+@pytest.mark.integration
+def test_wrong_owner_web_new_code_and_verify_are_safe_and_contained(
+    m2_test_database: Engine,
+) -> None:
+    settings = _web_settings(m2_test_database, secure_cookie=True)
+    with Session(m2_test_database) as session, session.begin():
+        user_id, current_session_id, challenge_id = _create_web_registration_candidate(
+            session,
+            settings=settings,
+            phone="+998900001392",
+        )
+        challenge = session.get(OtpChallenge, challenge_id)
+        current_session = session.get(AuthSession, current_session_id)
+        assert challenge is not None
+        assert current_session is not None
+        link = session.get(TelegramLink, challenge.telegram_link_id)
+        dispatch = session.scalar(
+            select(OtpDispatch).where(OtpDispatch.challenge_id == challenge_id)
+        )
+        customer = session.scalar(select(Customer).where(Customer.user_id == user_id))
+        assert link is not None
+        assert dispatch is not None
+        assert customer is not None
+        other_user = User(
+            phone="+998900001393",
+            password_hash=None,
+            is_active=True,
+            is_platform_admin=False,
+            created_at=SEED_NOW,
+            updated_at=SEED_NOW,
+        )
+        session.add(other_user)
+        session.flush()
+        link.user_id = other_user.id
+        link.updated_at = SEED_NOW + timedelta(minutes=1)
+        session.flush()
+        dispatch_id = dispatch.id
+        expected_link = (
+            link.user_id,
+            link.telegram_chat_id,
+            link.linked_at,
+            link.phone_verified_at,
+            link.unlinked_at,
+            link.updated_at,
+        )
+        expected_session = (
+            current_session.user_id,
+            current_session.token_hash,
+            current_session.csrf_secret,
+            current_session.created_at,
+            current_session.last_seen_at,
+            current_session.expires_at,
+            current_session.revoked_at,
+        )
+
+    with Session(m2_test_database) as session:
+        user = session.get(User, user_id)
+        current_session = session.get(AuthSession, current_session_id)
+        assert user is not None
+        assert current_session is not None
+        session.expunge(user)
+        session.expunge(current_session)
+    context = _authenticated_context(user=user, session=current_session)
+
+    new_code_response = request_new_registration_otp_code(
+        _activation_form_request(
+            settings,
+            path="/customer/activation/otp/new-code",
+            fields=(("csrf_token", "synthetic"),),
+        ),
+        settings=settings,
+        context=context,
+        now=SEED_NOW + timedelta(minutes=2),
+        _csrf=None,
+    )
+
+    with Session(m2_test_database) as session, session.begin():
+        user = session.get(User, user_id)
+        current_session = session.get(AuthSession, current_session_id)
+        assert user is not None
+        assert current_session is not None
+        verify_response = asyncio.run(
+            verify_registration_otp(
+                _activation_form_request(
+                    settings,
+                    path="/customer/activation/otp/verify",
+                    fields=(("csrf_token", "synthetic"), ("code", "004271")),
+                ),
+                db=session,
+                settings=settings,
+                context=_authenticated_context(
+                    user=user,
+                    session=current_session,
+                ),
+                now=SEED_NOW + timedelta(minutes=3),
+                _csrf=None,
+            )
+        )
+
+    with Session(m2_test_database) as session:
+        challenge = session.get(OtpChallenge, challenge_id)
+        dispatch = session.get(OtpDispatch, dispatch_id)
+        link = session.scalar(select(TelegramLink))
+        customer = session.scalar(select(Customer).where(Customer.user_id == user_id))
+        current_session = session.get(AuthSession, current_session_id)
+        events = tuple(
+            session.scalars(
+                select(OtpChallengeEvent)
+                .where(OtpChallengeEvent.challenge_id == challenge_id)
+                .order_by(
+                    OtpChallengeEvent.occurred_at.asc(),
+                    OtpChallengeEvent.id.asc(),
+                )
+            )
+        )
+        rates = tuple(session.scalars(select(AuthRateLimit)))
+        audit_count = session.scalar(select(func.count()).select_from(AuditLog))
+        session_count = session.scalar(select(func.count()).select_from(AuthSession))
+        challenge_count = session.scalar(select(func.count()).select_from(OtpChallenge))
+        dispatch_count = session.scalar(select(func.count()).select_from(OtpDispatch))
+        assert challenge is not None
+        assert dispatch is not None
+        assert link is not None
+        assert customer is not None
+        assert current_session is not None
+
+    assert new_code_response.status_code == 303
+    assert new_code_response.headers["location"] == (
+        "/customer/activation?error=TELEGRAM_NOT_LINKED"
+    )
+    assert new_code_response.headers["X-Error-Code"] == "TELEGRAM_NOT_LINKED"
+    assert new_code_response.headers["Cache-Control"] == "no-store"
+    assert "set-cookie" not in new_code_response.headers
+    assert verify_response.status_code == 303
+    assert verify_response.headers["location"] == (
+        "/customer/activation?error=CUSTOMER_ACTIVATION_CHANGED"
+    )
+    assert verify_response.headers["X-Error-Code"] == "CUSTOMER_ACTIVATION_CHANGED"
+    assert verify_response.headers["Cache-Control"] == "no-store"
+    assert "set-cookie" not in verify_response.headers
+    for response in (new_code_response, verify_response):
+        rendered_headers = repr(tuple(response.headers.items()))
+        assert "004271" not in rendered_headers
+        assert str(user_id) not in rendered_headers
+        assert str(challenge_id) not in rendered_headers
+    assert (
+        challenge.status,
+        challenge.failed_attempts,
+        challenge.consumed_at,
+        challenge.terminal_at,
+        challenge.updated_at,
+    ) == (
+        OtpChallengeStatus.INVALIDATED.value,
+        0,
+        None,
+        SEED_NOW + timedelta(minutes=3),
+        SEED_NOW + timedelta(minutes=3),
+    )
+    assert (
+        dispatch.status,
+        dispatch.claimed_at,
+        dispatch.prepared_at,
+        dispatch.sent_at,
+        dispatch.terminal_at,
+        dispatch.failure_code,
+        dispatch.updated_at,
+    ) == (
+        "CANCELLED",
+        None,
+        None,
+        None,
+        SEED_NOW + timedelta(minutes=3),
+        None,
+        SEED_NOW + timedelta(minutes=3),
+    )
+    assert [(event.action, event.safe_code) for event in events] == [
+        ("INVALIDATED_BY_LINK_CHANGE", None)
+    ]
+    assert (
+        link.user_id,
+        link.telegram_chat_id,
+        link.linked_at,
+        link.phone_verified_at,
+        link.unlinked_at,
+        link.updated_at,
+    ) == expected_link
+    assert (customer.onboarding_status, customer.activated_at) == ("draft", None)
+    assert (
+        current_session.user_id,
+        current_session.token_hash,
+        current_session.csrf_secret,
+        current_session.created_at,
+        current_session.last_seen_at,
+        current_session.expires_at,
+        current_session.revoked_at,
+    ) == expected_session
+    assert len(rates) == 3
+    assert {rate.attempt_count for rate in rates} == {1}
+    assert audit_count == 0
+    assert session_count == challenge_count == dispatch_count == 1
 
 
 @pytest.mark.integration
