@@ -1,8 +1,11 @@
 import asyncio
 import inspect
+import subprocess
+import sys
 from collections.abc import Awaitable, Generator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from threading import Lock
 from uuid import uuid4
 
@@ -48,6 +51,7 @@ NOW = datetime(2026, 7, 29, 14, 0, tzinfo=UTC)
 RAW_TOKEN = "123456789:OtpDispatcherSecretToken"
 OTP_HMAC_KEY = "test-otp-dispatch-command-hmac-key-at-least-32-chars"
 RATE_LIMIT_HMAC_KEY = "test-rate-limit-hmac-key-for-otp-dispatcher"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
@@ -234,6 +238,54 @@ def test_dispatcher_module_import_has_no_web_network_or_database_side_effect() -
             1,
         )[0]
     )
+
+
+def test_dispatcher_fresh_process_resolves_all_registered_foreign_key_targets() -> None:
+    script = """
+import app.otp.dispatcher  # noqa: F401
+from app.db import Base, create_database_engine
+from app.settings import Settings
+
+engine = create_database_engine(
+    Settings(
+        _env_file=None,
+        app_environment="testing",
+        debug=False,
+        database_url="postgresql+psycopg://test:test@127.0.0.1:1/test",
+        session_cookie_secure=False,
+        rate_limit_hmac_key="fresh-process-test-key-at-least-32-chars",
+    )
+)
+
+missing = sorted(
+    {
+        foreign_key.target_fullname.split(".", 1)[0]
+        for table in Base.metadata.tables.values()
+        for foreign_key in table.foreign_keys
+        if foreign_key.target_fullname.split(".", 1)[0]
+        not in Base.metadata.tables
+    }
+)
+if missing:
+    raise SystemExit(f"unresolved dispatcher metadata targets: {','.join(missing)}")
+for table in Base.metadata.tables.values():
+    for foreign_key in table.foreign_keys:
+        foreign_key.column
+tuple(Base.metadata.sorted_tables)
+engine.dispose()
+print("OTP_DISPATCHER_MODEL_METADATA_COMPLETE")
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "OTP_DISPATCHER_MODEL_METADATA_COMPLETE\n"
 
 
 def test_dispatcher_command_fails_closed_without_required_secrets(

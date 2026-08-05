@@ -1,5 +1,7 @@
 import asyncio
 import inspect
+import subprocess
+import sys
 from collections.abc import Awaitable, Generator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -79,6 +81,55 @@ def make_settings(
 
 def run(coroutine: Awaitable[object]):
     return asyncio.run(coroutine)
+
+
+def test_worker_fresh_process_resolves_all_registered_foreign_key_targets() -> None:
+    script = """
+import app.telegram.worker  # noqa: F401
+import app.telegram.update_processing  # noqa: F401
+from app.db import Base, create_database_engine
+from app.settings import Settings
+
+engine = create_database_engine(
+    Settings(
+        _env_file=None,
+        app_environment="testing",
+        debug=False,
+        database_url="postgresql+psycopg://test:test@127.0.0.1:1/test",
+        session_cookie_secure=False,
+        rate_limit_hmac_key="fresh-process-test-key-at-least-32-chars",
+    )
+)
+
+missing = sorted(
+    {
+        foreign_key.target_fullname.split(".", 1)[0]
+        for table in Base.metadata.tables.values()
+        for foreign_key in table.foreign_keys
+        if foreign_key.target_fullname.split(".", 1)[0]
+        not in Base.metadata.tables
+    }
+)
+if missing:
+    raise SystemExit(f"unresolved worker metadata targets: {','.join(missing)}")
+for table in Base.metadata.tables.values():
+    for foreign_key in table.foreign_keys:
+        foreign_key.column
+tuple(Base.metadata.sorted_tables)
+engine.dispose()
+print("WORKER_MODEL_METADATA_COMPLETE")
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "WORKER_MODEL_METADATA_COMPLETE\n"
 
 
 class FakePollingClient:
