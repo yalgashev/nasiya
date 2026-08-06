@@ -1,10 +1,17 @@
 # Nasiya M11 Known Limitations
 
-Status: authoritative CR-M11-03 recovery-amended residual boundary for M11.
+Status: authoritative residual limitations for `M11 REMOTE GREEN — CLOSED`.
 Baseline: M10 docs-only closeout
 `17ebbe166d63a32e3b7eaa3eb3838f578d9b7780`.
 
-These are intentional limits of the one M11 capability. They do not authorize
+M11 is closed at exact pushed SHA
+`8741ffe7eeb710d05342b43473281d4a5f9c316b`; GitHub Actions run
+`31122632059` succeeded with 3252 passed and zero failed, skipped, xfailed, or
+xpassed outcomes. Alembic head/current is `d2e3f4a5b6c7`, all eight approved
+implementation checkpoints remain in ancestry, and the R12-authorized bounded
+runtime correction does not relabel them. Controlled self-phone Chrome,
+Telegram, PostgreSQL, worker, and dispatcher acceptance is GREEN. These are
+intentional limits of the closed M11 capability and do not authorize
 additional implementation.
 
 ## KL-M11-01 — Existing Accounts And Customers Only
@@ -139,3 +146,7 @@ lead, shop linkage, SMS/Web Push, OCR/biometric/registry, generic activation or
 OTP/contact infrastructure, arbitrary reply markup, raw pending Telegram
 identity persistence, new table/worker/dispatcher/broker and M12 product work
 are OUT. Any need for them triggers the M11 stop condition.
+
+The docs-only closeout does not alter these limitations, CR-M11-01/02/03, the
+M2–M10 inherited contracts, or the implementation checkpoint history. M12
+implementation has not started.
