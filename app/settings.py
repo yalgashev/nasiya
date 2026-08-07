@@ -130,6 +130,11 @@ class Settings(BaseSettings):
     telegram_link_rate_limit_user_attempts: int = Field(default=3, gt=0)
     telegram_link_rate_limit_phone_attempts: int = Field(default=3, gt=0)
     telegram_link_rate_limit_ip_attempts: int = Field(default=20, gt=0)
+    shop_customer_link_rate_limit_window_seconds: int = Field(default=900, gt=0)
+    shop_customer_link_rate_limit_actor_attempts: int = Field(default=30, gt=0)
+    shop_customer_link_rate_limit_shop_attempts: int = Field(default=100, gt=0)
+    shop_customer_link_rate_limit_phone_attempts: int = Field(default=5, gt=0)
+    shop_customer_link_rate_limit_ip_attempts: int = Field(default=200, gt=0)
     rate_limit_hmac_key: SecretStr
     telegram_bot_username: TelegramBotUsername | None = None
     telegram_bot_token: SecretStr | None = None

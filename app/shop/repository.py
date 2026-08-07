@@ -32,6 +32,7 @@ __all__ = (
     "get_shop_for_staff",
     "list_active_shop_staff",
     "list_user_active_staff",
+    "lock_actor_shop_staff_for_update",
     "read_locked_shop_defaults",
     "lock_shop_for_update",
     "update_locked_shop_defaults",
@@ -42,6 +43,16 @@ __all__ = (
 class _LockedShop:
     shop: Shop
     _session: Session
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _LockedActorShopStaff:
+    staff: ShopStaff
+    locked_shop: _LockedShop
+    _session: Session
+
+    def __repr__(self) -> str:
+        return "_LockedActorShopStaff(staff=<redacted>, locked_shop=<redacted>)"
 
 
 def get_shop(session: Session, *, shop_id: ShopId) -> Shop | None:
@@ -255,6 +266,32 @@ def read_locked_shop_defaults(
     )
 
 
+def lock_actor_shop_staff_for_update(
+    session: Session,
+    *,
+    locked_shop: _LockedShop,
+    actor_user_id: UserId,
+) -> _LockedActorShopStaff | None:
+    shop = _validate_locked_shop_token(session, locked_shop)
+    statement = (
+        select(ShopStaff)
+        .where(
+            ShopStaff.shop_id == shop.shop.id,
+            ShopStaff.user_id == actor_user_id,
+            ShopStaff.is_active.is_(True),
+        )
+        .with_for_update()
+    )
+    staff = session.scalar(statement)
+    if staff is None:
+        return None
+    return _LockedActorShopStaff(
+        staff=staff,
+        locked_shop=shop,
+        _session=session,
+    )
+
+
 def update_locked_shop_defaults(
     session: Session,
     *,
@@ -320,3 +357,15 @@ def _validate_locked_shop_token(
     if locked_shop._session is not session:
         raise RuntimeError("locked_shop was created by a different SQLAlchemy session")
     return locked_shop
+
+
+def _validate_locked_actor_shop_staff(
+    session: Session,
+    locked_staff: object,
+) -> _LockedActorShopStaff:
+    if not isinstance(locked_staff, _LockedActorShopStaff):
+        raise TypeError("locked_staff must come from lock_actor_shop_staff_for_update")
+    if locked_staff._session is not session:
+        raise RuntimeError("locked_staff was created by a different SQLAlchemy session")
+    _validate_locked_shop_token(session, locked_staff.locked_shop)
+    return locked_staff

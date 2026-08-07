@@ -22,6 +22,11 @@ def get_by_phone(session: Session, normalized_phone: str) -> User | None:
     return session.execute(statement).scalar_one_or_none()
 
 
+def find_user_id_by_phone(session: Session, normalized_phone: str) -> UUID | None:
+    statement = select(User.id).where(User.phone == normalized_phone)
+    return session.scalar(statement)
+
+
 def add_user(session: Session, user: User) -> User:
     session.add(user)
     return user
