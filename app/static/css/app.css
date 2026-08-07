@@ -298,7 +298,7 @@ dd {
 
 .shop-customer-roster > li,
 .shop-customer-page form {
-    min-width: 0;
+    min-inline-size: 0;
     border: 1px solid #cbd5e1;
     border-radius: 8px;
     padding: 16px;

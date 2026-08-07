@@ -31,6 +31,7 @@ __all__ = (
     "get_shop",
     "get_shop_for_staff",
     "list_active_shop_staff",
+    "list_shops_by_ids",
     "list_user_active_staff",
     "lock_actor_shop_staff_for_update",
     "read_locked_shop_defaults",
@@ -58,6 +59,13 @@ class _LockedActorShopStaff:
 def get_shop(session: Session, *, shop_id: ShopId) -> Shop | None:
     statement = select(Shop).where(Shop.id == shop_id)
     return session.scalar(statement)
+
+
+def list_shops_by_ids(session: Session, *, shop_ids: set[ShopId]) -> list[Shop]:
+    if not shop_ids:
+        return []
+    statement = select(Shop).where(Shop.id.in_(shop_ids))
+    return list(session.scalars(statement))
 
 
 def get_active_staff(

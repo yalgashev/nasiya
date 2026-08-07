@@ -13,7 +13,11 @@ from sqlalchemy.orm import Session
 from app.auth.csrf import get_csrf_token
 from app.auth.models import User
 from app.auth.sessions import CreatedSession, create_authenticated_session
-from app.customer.models import CUSTOMER_ONBOARDING_STATUS_ACTIVE, Customer
+from app.customer.models import (
+    CUSTOMER_ONBOARDING_STATUS_ACTIVE,
+    CUSTOMER_ONBOARDING_STATUS_DRAFT,
+    Customer,
+)
 from app.db import create_database_session_factory
 from app.main import create_app
 from app.security_headers import AUTH_NO_STORE_CACHE_CONTROL
@@ -304,6 +308,107 @@ def test_cashier_policy_and_default_posts_are_forbidden_with_safe_prg(
     assert str(row.id) not in policy.headers["location"]
 
 
+def test_policy_path_is_tenant_scoped_and_rechecks_live_role(
+    m2_test_database: Engine, db_session: Session
+) -> None:
+    client, settings = _client(m2_test_database)
+    actor, current_shop, _target, customer = _seed(
+        db_session,
+        role=ShopRole.MANAGER,
+    )
+    other_shop = Shop(name="Other tenant", phone=_phone())
+    db_session.add(other_shop)
+    db_session.flush()
+    other_row = ShopCustomer(
+        shop_id=other_shop.id,
+        customer_id=customer.id,
+        created_by_user_id=actor.id,
+        credit_limit_uzs=Decimal("1000000"),
+        max_open_debts=2,
+        list_status="normal",
+        revision=1,
+        created_at=datetime(2026, 8, 6, 12, 0, tzinfo=UTC),
+        updated_at=datetime(2026, 8, 6, 12, 0, tzinfo=UTC),
+    )
+    own_row = ShopCustomer(
+        shop_id=current_shop.id,
+        customer_id=customer.id,
+        created_by_user_id=actor.id,
+        credit_limit_uzs=Decimal("1000000"),
+        max_open_debts=2,
+        list_status="normal",
+        revision=1,
+        created_at=datetime(2026, 8, 6, 12, 0, tzinfo=UTC),
+        updated_at=datetime(2026, 8, 6, 12, 0, tzinfo=UTC),
+    )
+    db_session.add_all((other_row, own_row))
+    db_session.flush()
+    created = _session(db_session, client, settings, actor, current_shop)
+    form = {
+        "csrf_token": _csrf(created),
+        "expected_revision": "1",
+        "credit_limit_uzs": "2000000",
+        "max_open_debts": "3",
+        "list_status": "blacklisted",
+    }
+
+    cross_tenant = client.post(
+        f"/shop/customers/{other_row.id}/policy",
+        data=form,
+        follow_redirects=False,
+    )
+    assert cross_tenant.headers["location"] == (
+        "/shop/customers?error=SHOP_CUSTOMER_UNAVAILABLE"
+    )
+
+    staff = db_session.scalar(
+        select(ShopStaff).where(
+            ShopStaff.shop_id == current_shop.id,
+            ShopStaff.user_id == actor.id,
+        )
+    )
+    assert staff is not None
+    staff.role = ShopRole.CASHIER.value
+    actor.is_platform_admin = True
+    db_session.commit()
+    role_changed = client.post(
+        f"/shop/customers/{own_row.id}/policy",
+        data=form,
+        follow_redirects=False,
+    )
+    assert role_changed.headers["location"] == "/shop/customers?error=FORBIDDEN"
+    db_session.refresh(other_row)
+    db_session.refresh(own_row)
+    assert (other_row.revision, own_row.revision) == (1, 1)
+
+
+def test_revoked_membership_or_changed_active_shop_never_grants_authority(
+    m2_test_database: Engine, db_session: Session
+) -> None:
+    client, settings = _client(m2_test_database)
+    actor, shop, target, _customer = _seed(db_session)
+    created = _session(db_session, client, settings, actor, shop)
+    staff = db_session.scalar(
+        select(ShopStaff).where(
+            ShopStaff.shop_id == shop.id,
+            ShopStaff.user_id == actor.id,
+        )
+    )
+    assert staff is not None
+    staff.is_active = False
+    staff.revoked_at = NOW
+    db_session.commit()
+
+    revoked = client.post(
+        "/shop/customers/link",
+        data={"csrf_token": _csrf(created), "phone": target.phone},
+        follow_redirects=False,
+    )
+    assert revoked.status_code == 303
+    assert revoked.headers["location"] == "/shop/select"
+    assert db_session.scalar(select(ShopCustomer)) is None
+
+
 def test_own_customer_shops_never_discloses_policy_or_other_customer(
     m2_test_database: Engine, db_session: Session
 ) -> None:
@@ -374,3 +479,68 @@ def test_localized_errors_and_csrf_failure_are_no_store_and_identifier_safe(
     assert "Магазин" not in localized.text
     assert "измен" in localized.text.casefold()
     assert localized.headers["cache-control"] == AUTH_NO_STORE_CACHE_CONTROL
+
+
+def test_all_ineligible_phone_categories_have_identical_public_response(
+    m2_test_database: Engine, db_session: Session
+) -> None:
+    client, settings = _client(m2_test_database)
+    actor, shop, _eligible_target, _customer = _seed(db_session)
+    disabled = _user(db_session)
+    disabled.is_active = False
+    draft = _user(db_session)
+    unverified = _user(db_session)
+    for user, customer_status, verified in (
+        (disabled, CUSTOMER_ONBOARDING_STATUS_ACTIVE, True),
+        (draft, CUSTOMER_ONBOARDING_STATUS_DRAFT, True),
+        (unverified, CUSTOMER_ONBOARDING_STATUS_ACTIVE, False),
+    ):
+        db_session.add(
+            Customer(
+                user_id=user.id,
+                onboarding_status=customer_status,
+                created_at=NOW,
+                updated_at=NOW,
+                activated_at=(
+                    NOW
+                    if customer_status == CUSTOMER_ONBOARDING_STATUS_ACTIVE
+                    else None
+                ),
+            )
+        )
+        db_session.add(
+            TelegramLink(
+                user_id=user.id,
+                telegram_chat_id=user.id.int % 8_000_000_000 + 10,
+                linked_at=NOW,
+                phone_verified_at=NOW if verified else None,
+                updated_at=NOW,
+            )
+        )
+    db_session.flush()
+    created = _session(db_session, client, settings, actor, shop)
+    missing_phone = _phone()
+    submitted_phones = (disabled.phone, draft.phone, unverified.phone, missing_phone)
+    responses = [
+        client.post(
+            "/shop/customers/link",
+            data={"csrf_token": _csrf(created), "phone": phone},
+            follow_redirects=False,
+        )
+        for phone in submitted_phones
+    ]
+    assert {
+        (response.status_code, response.headers["location"], response.text)
+        for response in responses
+    } == {
+        (
+            303,
+            "/shop/customers?error=CUSTOMER_LINK_UNAVAILABLE",
+            "",
+        )
+    }
+    serialized = "\n".join(
+        response.headers["location"] + response.text for response in responses
+    )
+    assert all(phone not in serialized for phone in submitted_phones)
+    assert db_session.scalar(select(ShopCustomer)) is None

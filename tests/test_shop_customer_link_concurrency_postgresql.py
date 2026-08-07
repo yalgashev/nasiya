@@ -2,6 +2,7 @@ import inspect
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from threading import Barrier
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select
@@ -15,7 +16,12 @@ from app.shop.enums import ShopRole, ShopStatus
 from app.shop.models import Shop, ShopStaff
 from app.shop.service import revoke_staff, suspend_shop
 from app.shop.values import ShopId, ShopStaffId, UserId
-from app.shop_customer.contracts import ShopCustomerLinkOutcome
+from app.shop_customer.contracts import (
+    DetachedShopCustomerAuthority,
+    LinkShopCustomerCommand,
+    ShopCustomerLinkOutcome,
+    TransientCanonicalShopCustomerPhone,
+)
 from app.shop_customer.models import ShopCustomer
 from app.shop_customer.service import (
     coordinate_link_active_customer,
@@ -61,6 +67,109 @@ def test_parallel_same_pair_is_exactly_one_row_and_one_audit(
     with factory() as verification:
         assert verification.scalar(select(func.count()).select_from(ShopCustomer)) == 1
         assert verification.scalar(select(func.count()).select_from(AuditLog)) == 1
+
+
+@pytest.mark.integration
+def test_parallel_same_pair_across_two_staff_is_one_row_and_one_audit(
+    m2_test_database: Engine,
+) -> None:
+    first_command, ids = _seed_eligible(m2_test_database)
+    factory = _factory(m2_test_database)
+    with factory.begin() as setup:
+        second_actor = _add_user(setup)
+        target = setup.get(User, ids["target"])
+        assert target is not None
+        setup.add(
+            ShopStaff(
+                shop_id=ids["shop"],
+                user_id=second_actor.id,
+                role=ShopRole.MANAGER.value,
+                is_active=True,
+            )
+        )
+        second_command = LinkShopCustomerCommand(
+            authority=DetachedShopCustomerAuthority(
+                actor_user_id=UserId(second_actor.id),
+                current_shop_id=ShopId(ids["shop"]),
+            ),
+            target_phone=TransientCanonicalShopCustomerPhone(target.phone),
+        )
+
+    results = _run_pair(
+        lambda: coordinate_link_active_customer(
+            factory,
+            command=first_command,
+            now=NOW,
+        ),
+        lambda: coordinate_link_active_customer(
+            factory,
+            command=second_command,
+            now=NOW,
+        ),
+    )
+
+    assert {result.outcome for result in results} == {
+        ShopCustomerLinkOutcome.CREATED,
+        ShopCustomerLinkOutcome.ALREADY_LINKED,
+    }
+    with factory() as verification:
+        assert verification.scalar(select(func.count()).select_from(ShopCustomer)) == 1
+        assert verification.scalar(select(func.count()).select_from(AuditLog)) == 1
+
+
+@pytest.mark.integration
+def test_parallel_same_customer_across_two_shops_creates_two_isolated_links(
+    m2_test_database: Engine,
+) -> None:
+    first_command, ids = _seed_eligible(m2_test_database)
+    factory = _factory(m2_test_database)
+    with factory.begin() as setup:
+        second_actor = _add_user(setup)
+        second_shop = Shop(
+            name="Parallel second tenant",
+            phone=f"+998{uuid4().int % 1_000_000_000:09d}",
+            status=ShopStatus.ACTIVE.value,
+        )
+        setup.add(second_shop)
+        setup.flush()
+        setup.add(
+            ShopStaff(
+                shop_id=second_shop.id,
+                user_id=second_actor.id,
+                role=ShopRole.CASHIER.value,
+                is_active=True,
+            )
+        )
+        target = setup.get(User, ids["target"])
+        assert target is not None
+        second_command = LinkShopCustomerCommand(
+            authority=DetachedShopCustomerAuthority(
+                actor_user_id=UserId(second_actor.id),
+                current_shop_id=ShopId(second_shop.id),
+            ),
+            target_phone=TransientCanonicalShopCustomerPhone(target.phone),
+        )
+
+    results = _run_pair(
+        lambda: coordinate_link_active_customer(
+            factory,
+            command=first_command,
+            now=NOW,
+        ),
+        lambda: coordinate_link_active_customer(
+            factory,
+            command=second_command,
+            now=NOW,
+        ),
+    )
+
+    assert all(result.outcome is ShopCustomerLinkOutcome.CREATED for result in results)
+    with factory() as verification:
+        rows = tuple(verification.scalars(select(ShopCustomer)))
+        assert len(rows) == 2
+        assert len({row.shop_id for row in rows}) == 2
+        assert len({row.customer_id for row in rows}) == 1
+        assert verification.scalar(select(func.count()).select_from(AuditLog)) == 2
 
 
 @pytest.mark.integration

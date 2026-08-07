@@ -23,9 +23,15 @@ M9_NO_STORE_PATH_PREFIXES: Final = (
     "/auth/registration-offer",
     "/customer/activation",
     "/customer/identity",
+)
+M12_NO_STORE_PATH_PREFIXES: Final = (
     "/shop/customers",
     "/shop/settings/credit",
     "/customer/shops",
+)
+SENSITIVE_NO_STORE_PATH_PREFIXES: Final = (
+    *M9_NO_STORE_PATH_PREFIXES,
+    *M12_NO_STORE_PATH_PREFIXES,
 )
 SECURITY_HEADERS: Final[Mapping[str, str]] = {
     "Content-Security-Policy": CONTENT_SECURITY_POLICY,
@@ -56,7 +62,7 @@ def install_security_headers_middleware(
     ) -> Response:
         response = await call_next(request)
         set_security_headers(response, settings)
-        if request.url.path.startswith(M9_NO_STORE_PATH_PREFIXES):
+        if request.url.path.startswith(SENSITIVE_NO_STORE_PATH_PREFIXES):
             mark_auth_response_no_store(response)
         return response
 

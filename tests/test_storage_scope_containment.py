@@ -205,8 +205,13 @@ def test_m5_m6_m7_roles_workers_tt_are_immutable_and_main_is_narrowly_extended()
     assert "customer_activation_router" in main_source
     assert "StorageBodyLimitMiddleware" in main_source
     assert 'protected_paths={"/customer/identity/document"}' in main_source
-    for forbidden in ("presigned_put", "scheduler", "shop_customer", "OCR"):
+    for forbidden in ("presigned_put", "scheduler", "OCR"):
         assert forbidden not in main_source
+    assert (
+        "from app.shop_customer.router import router as shop_customer_router"
+        in main_source
+    )
+    assert "application.include_router(shop_customer_router)" in main_source
     assert (PROJECT_ROOT / "tests/test_shop_containment_guard.py").is_file()
     assert (PROJECT_ROOT / "tests/test_shop_service_isolation.py").is_file()
     assert (PROJECT_ROOT / "tests/test_telegram_scope_regression.py").is_file()

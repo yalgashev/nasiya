@@ -126,6 +126,7 @@ def test_repository_public_api_excludes_private_lock_helpers() -> None:
         "get_shop",
         "get_shop_for_staff",
         "list_active_shop_staff",
+        "list_shops_by_ids",
         "list_user_active_staff",
         "lock_actor_shop_staff_for_update",
         "read_locked_shop_defaults",

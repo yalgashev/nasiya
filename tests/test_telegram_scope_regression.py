@@ -26,6 +26,7 @@ from app.customer_activation.router import validate_activation_csrf
 from app.db import Base, create_database_session_factory
 from app.main import create_app
 from app.settings import Settings
+from app.shop_customer.dependencies import get_detached_shop_customer_authority
 from app.telegram.models import (
     TelegramLink,
     TelegramLinkEvent,
@@ -132,6 +133,7 @@ def route_has_csrf_dependency(route: APIRoute) -> bool:
             validate_activation_csrf,
             get_detached_mutation_session_context,
             get_detached_otp_mutation_context,
+            get_detached_shop_customer_authority,
         }
         for dependency_call in iter_dependency_calls(route.dependant)
     )

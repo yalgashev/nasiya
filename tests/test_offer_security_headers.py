@@ -3,6 +3,8 @@ from pathlib import Path
 from app.security_headers import (
     CONTENT_SECURITY_POLICY,
     M9_NO_STORE_PATH_PREFIXES,
+    M12_NO_STORE_PATH_PREFIXES,
+    SENSITIVE_NO_STORE_PATH_PREFIXES,
 )
 
 
@@ -12,6 +14,15 @@ def test_sensitive_no_store_scope_is_exact_and_csp_forbids_inline_code() -> None
         "/auth/registration-offer",
         "/customer/activation",
         "/customer/identity",
+    )
+    assert M12_NO_STORE_PATH_PREFIXES == (
+        "/shop/customers",
+        "/shop/settings/credit",
+        "/customer/shops",
+    )
+    assert SENSITIVE_NO_STORE_PATH_PREFIXES == (
+        *M9_NO_STORE_PATH_PREFIXES,
+        *M12_NO_STORE_PATH_PREFIXES,
     )
     assert "script-src 'self'" in CONTENT_SECURITY_POLICY
     assert "style-src 'self'" in CONTENT_SECURITY_POLICY

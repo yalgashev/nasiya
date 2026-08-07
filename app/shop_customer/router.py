@@ -38,7 +38,7 @@ from app.settings import Settings
 from app.shop.context import CurrentShopContext
 from app.shop.dependencies import ShopSelectionRequired, require_shop_staff
 from app.shop.enums import ShopRole, ShopStatus
-from app.shop.models import Shop
+from app.shop.repository import list_shops_by_ids
 from app.shop.values import ShopId
 from app.shop_customer.contracts import (
     DetachedShopCustomerAuthority,
@@ -415,8 +415,8 @@ def _list_own_shop_names(db: DatabaseSession, *, customer: Customer) -> list[str
     linked = list_customer_own_shop_customers(db, customer_id=customer.id)
     if not linked:
         return []
-    shop_ids = {row.shop_id for row in linked}
-    shops = db.scalars(select(Shop).where(Shop.id.in_(shop_ids))).all()
+    shop_ids = {ShopId(row.shop_id) for row in linked}
+    shops = list_shops_by_ids(db, shop_ids=shop_ids)
     names_by_id = {shop.id: shop.name for shop in shops}
     return [names_by_id[row.shop_id] for row in linked if row.shop_id in names_by_id]
 

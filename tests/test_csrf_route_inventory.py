@@ -11,6 +11,7 @@ from app.customer_activation.router import validate_activation_csrf
 from app.customer_identity.router import upload_document
 from app.main import create_app
 from app.settings import Settings
+from app.shop_customer.dependencies import get_detached_shop_customer_authority
 
 UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 TEST_RATE_LIMIT_HMAC_KEY = "test-rate-limit-hmac-key-for-route-inventory"
@@ -60,6 +61,7 @@ def route_has_csrf_dependency(route: APIRoute) -> bool:
             validate_activation_csrf,
             get_detached_mutation_session_context,
             get_detached_otp_mutation_context,
+            get_detached_shop_customer_authority,
         }
         for dependency_call in iter_dependency_calls(route.dependant)
     )

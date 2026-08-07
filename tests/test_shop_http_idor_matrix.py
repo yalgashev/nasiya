@@ -33,6 +33,7 @@ class IdorVector(StrEnum):
     FOREIGN_ACTIVE_SHOP_SESSION = "foreign_active_shop_session"
     FOREIGN_SHOP_UUID = "foreign_shop_uuid"
     FOREIGN_STAFF_UUID = "foreign_staff_uuid"
+    FOREIGN_SHOP_CUSTOMER_UUID = "foreign_shop_customer_uuid"
     NOT_APPLICABLE = "not_applicable"
 
 
@@ -90,6 +91,36 @@ ROUTE_IDOR_CASES = (
         "/shop/staff/{staff_id}/revoke",
         IdorVector.FOREIGN_STAFF_UUID,
         "path staff_id must be scoped to the active shop",
+    ),
+    RouteIdorCase(
+        "GET",
+        "/shop/customers",
+        IdorVector.FOREIGN_ACTIVE_SHOP_SESSION,
+        "uses the current session shop and a live membership",
+    ),
+    RouteIdorCase(
+        "POST",
+        "/shop/customers/link",
+        IdorVector.NOT_APPLICABLE,
+        "target is resolved server-side from exact phone, not a resource ID",
+    ),
+    RouteIdorCase(
+        "GET",
+        "/shop/settings/credit",
+        IdorVector.FOREIGN_ACTIVE_SHOP_SESSION,
+        "uses the current session shop and a live membership",
+    ),
+    RouteIdorCase(
+        "POST",
+        "/shop/settings/credit",
+        IdorVector.FOREIGN_ACTIVE_SHOP_SESSION,
+        "uses detached authority derived from the current session shop",
+    ),
+    RouteIdorCase(
+        "POST",
+        "/shop/customers/{shop_customer_id}/policy",
+        IdorVector.FOREIGN_SHOP_CUSTOMER_UUID,
+        "path locator is resolved only within detached current-shop authority",
     ),
 )
 
@@ -321,6 +352,7 @@ def test_all_shop_routes_have_explicit_http_idor_case_or_na_reason() -> None:
     } == {
         ("GET", "/shop/select"),
         ("POST", "/shop/staff/add"),
+        ("POST", "/shop/customers/link"),
     }
 
 

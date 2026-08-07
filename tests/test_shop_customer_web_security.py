@@ -62,7 +62,7 @@ def test_templates_are_csp_mobile_and_browser_storage_safe() -> None:
     assert "<label" in source
     css = CSS_PATH.read_text(encoding="utf-8")
     assert "@media (max-width: 430px)" in css
-    assert "min-width: 0" in css
+    assert "min-inline-size: 0" in css
     assert ":focus-visible" in css
 
 

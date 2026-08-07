@@ -27,6 +27,7 @@ EXPECTED_ALL_CUSTOMER_ROUTES = {
     "/customer/activation/otp/request": {"POST"},
     "/customer/activation/otp/verify": {"POST"},
     "/customer/activation/otp/new-code": {"POST"},
+    "/customer/shops": {"GET"},
 }
 
 
@@ -133,6 +134,7 @@ def test_customer_routes_forbid_external_ids_and_scope_drift() -> None:
         "/customer/profile",
         "/customer/identity",
         "/customer/identity/document",
+        "/customer/shops",
         "/customer/activation",
     }
     assert "/customer/onboarding/start" not in get_customer_routes

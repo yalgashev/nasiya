@@ -609,7 +609,7 @@ def test_recovery_downgrade_fails_closed_with_pending_or_verified_state(
     token_id = uuid4()
     link_id = uuid4()
     try:
-        command.upgrade(config, M11_REVISION)
+        command.downgrade(config, M11_REVISION)
         with m2_test_database.begin() as connection:
             connection.execute(
                 text(

@@ -28,7 +28,6 @@ FORBIDDEN_PROFILE_SCOPE_TEXT = (
     "telegram",
     "otp",
     "offer",
-    "shop",
     "debt",
     "qarz",
     "progress",
@@ -81,6 +80,7 @@ def test_customer_profile_template_renders_safe_draft_profile() -> None:
     assert "Holat: draft" in visible_html
     assert 'href="/customer/onboarding"' in rendered
     assert 'href="/customer/activation"' in rendered
+    assert 'href="/customer/shops"' in rendered
     assert "Faollashtirishga tayyorgarlik" in visible_html
     assert 'href="/auth/account"' in rendered
     assert raw_phone not in visible_html
