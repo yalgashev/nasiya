@@ -15,6 +15,7 @@ def _register_database_model_dependencies() -> None:
     from app.customer_document import models as _customer_document_models  # noqa: F401
     from app.offers import models as _offer_models  # noqa: F401
     from app.shop import models as _shop_models  # noqa: F401
+    from app.shop_customer import models as _shop_customer_models  # noqa: F401
     from app.storage import models as _storage_models  # noqa: F401
 
 

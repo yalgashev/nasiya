@@ -26,6 +26,9 @@ _PERSISTED_AUDIT_EVENT_TYPES = frozenset(
         AuditEventType.CUSTOMER_DOCUMENT_SUPERSEDED,
         AuditEventType.CUSTOMER_DOCUMENT_ACCESS_GRANTED,
         AuditEventType.CUSTOMER_ACTIVATED,
+        AuditEventType.SHOP_CUSTOMER_LINKED,
+        AuditEventType.SHOP_CUSTOMER_POLICY_UPDATED,
+        AuditEventType.SHOP_CUSTOMER_DEFAULTS_UPDATED,
     }
 )
 _PERSISTED_AUDIT_OBJECT_TYPES = frozenset(
@@ -37,17 +40,6 @@ _PERSISTED_AUDIT_OBJECT_TYPES = frozenset(
         AuditObjectType.CUSTOMER_IDENTITY,
         AuditObjectType.CUSTOMER_DOCUMENT,
         AuditObjectType.CUSTOMER,
-    }
-)
-_STAGED_M12_AUDIT_EVENT_TYPES = frozenset(
-    {
-        AuditEventType.SHOP_CUSTOMER_LINKED,
-        AuditEventType.SHOP_CUSTOMER_POLICY_UPDATED,
-        AuditEventType.SHOP_CUSTOMER_DEFAULTS_UPDATED,
-    }
-)
-_STAGED_M12_AUDIT_OBJECT_TYPES = frozenset(
-    {
         AuditObjectType.SHOP_CUSTOMER,
         AuditObjectType.SHOP,
     }
@@ -96,7 +88,7 @@ def test_audit_actor_foreign_key_is_named_and_restrictive() -> None:
     assert foreign_key.ondelete == "RESTRICT"
 
 
-def test_audit_model_remains_m11_schema_until_the_m12_migration() -> None:
+def test_audit_model_matches_current_m12_exact_shape_registry() -> None:
     checks = _checks()
 
     assert set(checks) == {
@@ -109,22 +101,19 @@ def test_audit_model_remains_m11_schema_until_the_m12_migration() -> None:
     }
     event_sql = str(checks["ck_audit_log_event_type_allowed"].sqltext)
     assert all(event.value in event_sql for event in _PERSISTED_AUDIT_EVENT_TYPES)
-    assert all(event.value not in event_sql for event in _STAGED_M12_AUDIT_EVENT_TYPES)
     actor_sql = str(checks["ck_audit_log_actor_kind_allowed"].sqltext)
     assert all(kind.value in actor_sql for kind in AuditActorKind)
     object_sql = str(checks["ck_audit_log_object_type_allowed"].sqltext)
     assert all(
         object_type.value in object_sql for object_type in _PERSISTED_AUDIT_OBJECT_TYPES
     )
-    assert all(
-        object_type.value not in object_sql
-        for object_type in _STAGED_M12_AUDIT_OBJECT_TYPES
-    )
     object_mapping_sql = str(checks["ck_audit_log_object_matches_event"].sqltext)
     assert (
         "event_type = 'customer.activated' AND object_type = 'customer'"
         in object_mapping_sql
     )
+    assert "object_type = 'shop_customer'" in object_mapping_sql
+    assert "object_type = 'shop'" in object_mapping_sql
     payload_sql = str(checks["ck_audit_log_payload_exact_shape"].sqltext)
     assert "jsonb_typeof(payload) = 'object'" in payload_sql
     assert "payload ?& ARRAY" in payload_sql
@@ -142,6 +131,9 @@ def test_audit_model_remains_m11_schema_until_the_m12_migration() -> None:
     assert (
         "payload ->> 'activation_method' = 'TELEGRAM_REGISTRATION_OTP'" in payload_sql
     )
+    assert "event_type = 'shop_customer.linked'" in payload_sql
+    assert "event_type = 'shop_customer.policy_updated'" in payload_sql
+    assert "event_type = 'shop.customer_defaults_updated'" in payload_sql
 
 
 def test_audit_model_has_no_query_update_or_delete_application_api() -> None:

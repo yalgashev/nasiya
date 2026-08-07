@@ -1,5 +1,6 @@
 """Bounded ShopCustomer domain contracts.
 
-This package contains M12 relationship and credit-policy vocabulary only. ORM,
-repository, service, and web composition are introduced in their assigned tasks.
+This package contains the M12 relationship and credit-policy vocabulary plus its
+bounded ORM metadata and tenant-scoped repository primitives. Service and web
+composition are introduced in their assigned tasks.
 """

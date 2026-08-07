@@ -32,6 +32,41 @@ def _exact_payload_clause(
     return clause + ")"
 
 
+def _whole_number_predicate(
+    key: str,
+    *,
+    minimum: int,
+    maximum: int | None = None,
+) -> str:
+    numeric_value = f"(payload ->> '{key}')::numeric"
+    bounds = f"{numeric_value} >= {minimum}"
+    if maximum is not None:
+        bounds += f" AND {numeric_value} <= {maximum}"
+    return (
+        f"jsonb_typeof(payload -> '{key}') = 'number' "
+        f"AND trunc({numeric_value}) = {numeric_value} AND {bounds}"
+    )
+
+
+def _policy_predicate(
+    *,
+    credit_key: str,
+    max_debts_key: str,
+    status_key: str,
+) -> str:
+    return (
+        _whole_number_predicate(
+            credit_key,
+            minimum=0,
+            maximum=1_000_000_000_000,
+        )
+        + " AND "
+        + _whole_number_predicate(max_debts_key, minimum=1, maximum=100)
+        + f" AND payload ->> '{status_key}' "
+        "IN ('normal', 'whitelisted', 'blacklisted')"
+    )
+
+
 _AUDIT_PAYLOAD_EXACT_SHAPE_SQL = (
     "jsonb_typeof(payload) = 'object' AND ("
     + " OR ".join(
@@ -137,6 +172,93 @@ _AUDIT_PAYLOAD_EXACT_SHAPE_SQL = (
                     "'TELEGRAM_REGISTRATION_OTP'"
                 ),
             ),
+            _exact_payload_clause(
+                AuditEventType.SHOP_CUSTOMER_LINKED,
+                (
+                    "outcome",
+                    "credit_limit_uzs",
+                    "max_open_debts",
+                    "list_status",
+                    "revision",
+                ),
+                extra_predicate=(
+                    "payload ->> 'outcome' = 'created' AND "
+                    + _policy_predicate(
+                        credit_key="credit_limit_uzs",
+                        max_debts_key="max_open_debts",
+                        status_key="list_status",
+                    )
+                    + " AND "
+                    + _whole_number_predicate("revision", minimum=1)
+                ),
+            ),
+            _exact_payload_clause(
+                AuditEventType.SHOP_CUSTOMER_POLICY_UPDATED,
+                (
+                    "old_credit_limit_uzs",
+                    "new_credit_limit_uzs",
+                    "old_max_open_debts",
+                    "new_max_open_debts",
+                    "old_list_status",
+                    "new_list_status",
+                    "revision",
+                ),
+                extra_predicate=(
+                    _policy_predicate(
+                        credit_key="old_credit_limit_uzs",
+                        max_debts_key="old_max_open_debts",
+                        status_key="old_list_status",
+                    )
+                    + " AND "
+                    + _policy_predicate(
+                        credit_key="new_credit_limit_uzs",
+                        max_debts_key="new_max_open_debts",
+                        status_key="new_list_status",
+                    )
+                    + " AND "
+                    + _whole_number_predicate("revision", minimum=2)
+                    + " AND (payload -> 'old_credit_limit_uzs' <> "
+                    "payload -> 'new_credit_limit_uzs' OR "
+                    "payload -> 'old_max_open_debts' <> "
+                    "payload -> 'new_max_open_debts' OR "
+                    "payload -> 'old_list_status' <> "
+                    "payload -> 'new_list_status')"
+                ),
+            ),
+            _exact_payload_clause(
+                AuditEventType.SHOP_CUSTOMER_DEFAULTS_UPDATED,
+                (
+                    "old_default_credit_limit_uzs",
+                    "new_default_credit_limit_uzs",
+                    "old_default_max_open_debts",
+                    "new_default_max_open_debts",
+                ),
+                extra_predicate=(
+                    _whole_number_predicate(
+                        "old_default_credit_limit_uzs",
+                        minimum=0,
+                        maximum=1_000_000_000_000,
+                    )
+                    + " AND "
+                    + _whole_number_predicate(
+                        "new_default_credit_limit_uzs",
+                        minimum=0,
+                        maximum=1_000_000_000_000,
+                    )
+                    + " AND "
+                    + _whole_number_predicate(
+                        "old_default_max_open_debts", minimum=1, maximum=100
+                    )
+                    + " AND "
+                    + _whole_number_predicate(
+                        "new_default_max_open_debts", minimum=1, maximum=100
+                    )
+                    + " AND (payload -> 'old_default_credit_limit_uzs' <> "
+                    "payload -> 'new_default_credit_limit_uzs' OR "
+                    "payload -> 'old_default_max_open_debts' <> "
+                    "payload -> 'new_default_max_open_debts')"
+                ),
+            ),
         )
     )
     + ")"
@@ -161,6 +283,9 @@ class AuditLog(Base):
                 f", '{AuditEventType.CUSTOMER_DOCUMENT_SUPERSEDED.value}'"
                 f", '{AuditEventType.CUSTOMER_DOCUMENT_ACCESS_GRANTED.value}'"
                 f", '{AuditEventType.CUSTOMER_ACTIVATED.value}'"
+                f", '{AuditEventType.SHOP_CUSTOMER_LINKED.value}'"
+                f", '{AuditEventType.SHOP_CUSTOMER_POLICY_UPDATED.value}'"
+                f", '{AuditEventType.SHOP_CUSTOMER_DEFAULTS_UPDATED.value}'"
                 ")"
             ),
             name="ck_audit_log_event_type_allowed",
@@ -183,6 +308,8 @@ class AuditLog(Base):
                 f", '{AuditObjectType.CUSTOMER_IDENTITY.value}'"
                 f", '{AuditObjectType.CUSTOMER_DOCUMENT.value}'"
                 f", '{AuditObjectType.CUSTOMER.value}'"
+                f", '{AuditObjectType.SHOP_CUSTOMER.value}'"
+                f", '{AuditObjectType.SHOP.value}'"
                 ")"
             ),
             name="ck_audit_log_object_type_allowed",
@@ -226,6 +353,13 @@ class AuditLog(Base):
                 f"AND object_type = '{AuditObjectType.CUSTOMER_DOCUMENT.value}')"
                 f" OR (event_type = '{AuditEventType.CUSTOMER_ACTIVATED.value}' "
                 f"AND object_type = '{AuditObjectType.CUSTOMER.value}')"
+                f" OR (event_type IN ("
+                f"'{AuditEventType.SHOP_CUSTOMER_LINKED.value}', "
+                f"'{AuditEventType.SHOP_CUSTOMER_POLICY_UPDATED.value}') "
+                f"AND object_type = '{AuditObjectType.SHOP_CUSTOMER.value}')"
+                f" OR (event_type = "
+                f"'{AuditEventType.SHOP_CUSTOMER_DEFAULTS_UPDATED.value}' "
+                f"AND object_type = '{AuditObjectType.SHOP.value}')"
             ),
             name="ck_audit_log_object_matches_event",
         ),

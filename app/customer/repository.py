@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -5,7 +6,15 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from app.customer.models import CUSTOMER_ONBOARDING_STATUS_DRAFT, Customer
+from app.auth.repository import (
+    _LockedActorTargetUsers,
+    _validate_locked_actor_target_users,
+)
+from app.customer.models import (
+    CUSTOMER_ONBOARDING_STATUS_ACTIVE,
+    CUSTOMER_ONBOARDING_STATUS_DRAFT,
+    Customer,
+)
 from app.customer.ports import (
     CustomerActivationTransitionOutcome,
     CustomerActivationTransitionResult,
@@ -13,6 +22,16 @@ from app.customer.ports import (
     CustomerLifecycleStatus,
     transition_customer_to_active,
 )
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _LockedActiveTargetCustomer:
+    customer: Customer
+    locked_users: _LockedActorTargetUsers
+    _session: Session
+
+    def __repr__(self) -> str:
+        return "_LockedActiveTargetCustomer(customer=<redacted>)"
 
 
 def get_customer_by_user_id(session: Session, user_id: UUID) -> Customer | None:
@@ -40,6 +59,48 @@ def lock_existing_own_customer_for_update(
         select(Customer).where(Customer.user_id == actor_user_id).with_for_update()
     )
     return session.scalar(statement)
+
+
+def lock_active_customer_for_target_user(
+    session: Session,
+    *,
+    locked_users: _LockedActorTargetUsers,
+) -> _LockedActiveTargetCustomer | None:
+    """Lock only the active Customer owned by the already-locked target User."""
+
+    users = _validate_locked_actor_target_users(session, locked_users)
+    statement = (
+        select(Customer)
+        .where(
+            Customer.user_id == users.target.id,
+            Customer.onboarding_status == CUSTOMER_ONBOARDING_STATUS_ACTIVE,
+        )
+        .with_for_update()
+    )
+    customer = session.scalar(statement)
+    if customer is None:
+        return None
+    return _LockedActiveTargetCustomer(
+        customer=customer,
+        locked_users=users,
+        _session=session,
+    )
+
+
+def _validate_locked_active_target_customer(
+    session: Session,
+    locked_customer: object,
+) -> _LockedActiveTargetCustomer:
+    if not isinstance(locked_customer, _LockedActiveTargetCustomer):
+        raise TypeError(
+            "locked_customer must come from lock_active_customer_for_target_user"
+        )
+    if locked_customer._session is not session:
+        raise RuntimeError(
+            "locked_customer was created by a different SQLAlchemy session"
+        )
+    _validate_locked_actor_target_users(session, locked_customer.locked_users)
+    return locked_customer
 
 
 def get_existing_own_customer_status(

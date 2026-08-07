@@ -82,6 +82,8 @@ def test_repository_identifiers_are_keyword_only() -> None:
         repository.list_active_shop_staff,
         repository.count_active_owners,
         repository.lock_shop_for_update,
+        repository.read_locked_shop_defaults,
+        repository.update_locked_shop_defaults,
         repository._lock_active_staff_by_id_for_update,
         repository._lock_staff_for_user_for_update,
     )
@@ -124,7 +126,9 @@ def test_repository_public_api_excludes_private_lock_helpers() -> None:
         "get_shop_for_staff",
         "list_active_shop_staff",
         "list_user_active_staff",
+        "read_locked_shop_defaults",
         "lock_shop_for_update",
+        "update_locked_shop_defaults",
     )
     assert "_LockedShop" not in repository.__all__
     assert "_lock_active_staff_by_id_for_update" not in repository.__all__

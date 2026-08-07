@@ -60,9 +60,9 @@ def test_m10_never_transitions_customer_from_draft_to_active() -> None:
 
 def test_m10_adds_no_shop_customer_or_customer_lead_surface() -> None:
     migration = M10_MIGRATION.read_text(encoding="utf-8")
-    module_names = {path.stem for path in PROJECT_ROOT.joinpath("app").rglob("*.py")}
-    assert "shop_customer" not in module_names
-    assert "customer_lead" not in module_names
+    m10_module_names = {path.stem for path in _m10_python_paths()}
+    assert "shop_customer" not in m10_module_names
+    assert "customer_lead" not in m10_module_names
     assert '"shop_customers"' not in migration
     assert '"customer_leads"' not in migration
 

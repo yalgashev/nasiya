@@ -13,6 +13,7 @@ import app.customer_identity.models  # noqa: F401
 import app.offers.models  # noqa: F401
 import app.otp.models  # noqa: F401
 import app.shop.models  # noqa: F401
+import app.shop_customer.models  # noqa: F401
 import app.storage.models  # noqa: F401
 import app.telegram.models  # noqa: F401
 from app.db import Base
@@ -59,6 +60,13 @@ M8_M9_AND_M10_AUTHORIZED_TABLES = {
     "customer_identities",
     "customer_documents",
 }
+M12_AUTHORIZED_TABLES = {"shop_customers"}
+M8_M9_AND_M10_MIGRATIONS = (
+    PROJECT_ROOT / "alembic/versions/f8a9b0c1d2e3_create_object_files.py",
+    PROJECT_ROOT / "alembic/versions/a9b0c1d2e3f4_create_legal_offer_foundation.py",
+    PROJECT_ROOT
+    / "alembic/versions/b0c1d2e3f4a5_create_customer_identity_foundation.py",
+)
 FORBIDDEN_STORAGE_IMPORT_PREFIXES = (
     "app.customer",
     "app.news",
@@ -106,12 +114,18 @@ def _settings() -> Settings:
     )
 
 
-def test_m8_m9_and_m10_tables_are_exactly_scoped_in_metadata() -> None:
-    all_tables = set(Base.metadata.tables)
+def test_m8_m9_and_m10_table_contracts_remain_source_scoped() -> None:
+    for migration in M8_M9_AND_M10_MIGRATIONS:
+        assert '"shop_customers"' not in migration.read_text(encoding="utf-8")
 
-    assert all_tables - PRE_M8_TABLES == M8_M9_AND_M10_AUTHORIZED_TABLES
+
+def test_current_metadata_has_exact_m12_authorized_table_extension() -> None:
+    all_tables = set(Base.metadata.tables)
+    expected_new_tables = M8_M9_AND_M10_AUTHORIZED_TABLES | M12_AUTHORIZED_TABLES
+
+    assert all_tables - PRE_M8_TABLES == expected_new_tables
     assert PRE_M8_TABLES <= all_tables
-    assert len(all_tables) == len(PRE_M8_TABLES) + len(M8_M9_AND_M10_AUTHORIZED_TABLES)
+    assert len(all_tables) == len(PRE_M8_TABLES) + len(expected_new_tables)
 
 
 def test_production_runtime_has_only_the_concrete_m10_document_file_route() -> None:

@@ -17,6 +17,8 @@ from app.auth.models import User
 from app.shop.enums import ShopRole, ShopStaffAction, ShopStatus, ShopStatusAction
 from app.shop.models import Shop, ShopStaff, ShopStaffEvent, ShopStatusEvent
 from app.shop.values import ShopId, ShopStaffId, UserId
+from app.shop_customer.contracts import ShopDefaultCreditPolicy
+from app.shop_customer.values import CreditLimitUzbekistanSom, MaxOpenDebts
 
 __all__ = (
     "add_shop",
@@ -30,7 +32,9 @@ __all__ = (
     "get_shop_for_staff",
     "list_active_shop_staff",
     "list_user_active_staff",
+    "read_locked_shop_defaults",
     "lock_shop_for_update",
+    "update_locked_shop_defaults",
 )
 
 
@@ -237,6 +241,37 @@ def lock_shop_for_update(
     if shop is None:
         return None
     return _LockedShop(shop=shop, _session=session)
+
+
+def read_locked_shop_defaults(
+    session: Session,
+    *,
+    locked_shop: _LockedShop,
+) -> ShopDefaultCreditPolicy:
+    token = _validate_locked_shop_token(session, locked_shop)
+    return ShopDefaultCreditPolicy(
+        credit_limit=CreditLimitUzbekistanSom(token.shop.default_credit_limit_uzs),
+        max_open_debts=MaxOpenDebts(token.shop.default_max_open_debts),
+    )
+
+
+def update_locked_shop_defaults(
+    session: Session,
+    *,
+    locked_shop: _LockedShop,
+    defaults: ShopDefaultCreditPolicy,
+    now: datetime,
+) -> Shop:
+    token = _validate_locked_shop_token(session, locked_shop)
+    if not isinstance(defaults, ShopDefaultCreditPolicy):
+        raise TypeError("defaults must be a ShopDefaultCreditPolicy")
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("Shop default update time must be timezone-aware")
+    token.shop.default_credit_limit_uzs = defaults.credit_limit.value
+    token.shop.default_max_open_debts = defaults.max_open_debts.value
+    token.shop.updated_at = now
+    session.add(token.shop)
+    return token.shop
 
 
 def _lock_active_staff_by_id_for_update(

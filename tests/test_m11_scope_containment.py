@@ -65,7 +65,7 @@ CR_M11_02_CROSS_CUTTING_TEST_FILES = {
     "tests/test_telegram_post_commit_reply.py",
     "tests/test_telegram_update_parser.py",
 }
-EXACT_TABLES = {
+M11_HISTORICAL_TABLES = {
     "audit_log",
     "auth_rate_limits",
     "customer_documents",
@@ -91,6 +91,21 @@ EXACT_TABLES = {
     "telegram_update_failures",
     "users",
 }
+M12_CURRENT_TABLE_EXTENSION = {"shop_customers"}
+M11_SCHEMA_MIGRATIONS = (
+    PROJECT_ROOT
+    / "alembic/versions/c1d2e3f4a5b6_extend_customer_activation_foundation.py",
+    PROJECT_ROOT
+    / "alembic/versions/d2e3f4a5b6c7_add_telegram_self_phone_verification.py",
+)
+
+
+def _assert_m11_table_contract_is_source_scoped() -> None:
+    for migration in M11_SCHEMA_MIGRATIONS:
+        assert '"shop_customers"' not in migration.read_text(encoding="utf-8")
+    assert set(Base.metadata.tables) == (
+        M11_HISTORICAL_TABLES | M12_CURRENT_TABLE_EXTENSION
+    )
 
 
 def _draft() -> CustomerLifecycleState:
@@ -283,7 +298,7 @@ def test_m11_adds_no_public_bootstrap_user_customer_lead_or_shop_customer() -> N
 def test_m11_adds_no_table_dependency_worker_dispatcher_or_out_scope_capability() -> (
     None
 ):
-    assert set(Base.metadata.tables) == EXACT_TABLES
+    _assert_m11_table_contract_is_source_scoped()
     assert _direct_dependency_names() == {
         "alembic",
         "boto3",
@@ -374,7 +389,7 @@ def test_cr_m11_02_adds_only_three_columns_and_no_table_dependency_or_process() 
     ):
         assert forbidden not in recovery_source
 
-    assert set(Base.metadata.tables) == EXACT_TABLES
+    _assert_m11_table_contract_is_source_scoped()
     assert not any(
         path.stem in {"worker", "dispatcher", "outbox", "broker", "scheduler"}
         for path in (PROJECT_ROOT / "app/customer_activation").glob("*.py")

@@ -15,6 +15,7 @@ from app.offers import models as _offer_models  # noqa: F401
 from app.otp import models as _otp_models  # noqa: F401
 from app.settings import Settings
 from app.shop import models as _shop_models  # noqa: F401
+from app.shop_customer import models as _shop_customer_models  # noqa: F401
 from app.storage import models as _storage_models  # noqa: F401
 from app.telegram import models as _telegram_models  # noqa: F401
 

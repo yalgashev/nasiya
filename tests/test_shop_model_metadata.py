@@ -1,9 +1,14 @@
+from decimal import Decimal
+from pathlib import Path
+
 from sqlalchemy import (
     JSON,
     Boolean,
     CheckConstraint,
     DateTime,
     Index,
+    Numeric,
+    SmallInteger,
     Text,
     UniqueConstraint,
 )
@@ -13,6 +18,12 @@ from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 from app.auth.models import Session as AuthSession
 from app.db import Base
 from app.shop.models import Shop, ShopStaff, ShopStaffEvent, ShopStatusEvent
+from app.shop_customer.values import DEFAULT_CREDIT_LIMIT_UZS, DEFAULT_MAX_OPEN_DEBTS
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+M5_SHOP_MIGRATION = (
+    PROJECT_ROOT / "alembic/versions/a6b4c2d8e9f1_create_m5_shop_tables.py"
+)
 
 
 def check_constraints(model) -> dict[str, str]:
@@ -46,13 +57,15 @@ def test_shop_tables_are_registered_in_base_metadata() -> None:
     assert Base.metadata.tables["shop_staff_events"] is ShopStaffEvent.__table__
 
 
-def test_shop_tables_have_exact_m5_columns() -> None:
+def test_current_shop_table_has_exact_m12_columns() -> None:
     assert set(Shop.__table__.columns.keys()) == {
         "id",
         "name",
         "phone",
         "address_text",
         "status",
+        "default_credit_limit_uzs",
+        "default_max_open_debts",
         "created_at",
         "updated_at",
     }
@@ -84,6 +97,26 @@ def test_shop_tables_have_exact_m5_columns() -> None:
         "actor_user_id",
         "created_at",
     }
+
+
+def test_m5_shop_column_contract_remains_source_scoped() -> None:
+    source = M5_SHOP_MIGRATION.read_text(encoding="utf-8")
+    shops_create = source.split('op.create_table(\n        "shops",', 1)[1].split(
+        "    op.create_index(", 1
+    )[0]
+
+    for column_name in (
+        "id",
+        "name",
+        "phone",
+        "address_text",
+        "status",
+        "created_at",
+        "updated_at",
+    ):
+        assert f'"{column_name}"' in shops_create
+    assert "default_credit_limit_uzs" not in shops_create
+    assert "default_max_open_debts" not in shops_create
 
 
 def test_session_active_shop_id_exists_in_orm_metadata() -> None:
@@ -169,11 +202,17 @@ def test_shop_nullable_contracts() -> None:
             assert model.__table__.columns[column_name].nullable is expected
 
 
-def test_shop_column_types_are_m5_contract_types() -> None:
+def test_shop_column_types_are_current_contract_types() -> None:
     assert isinstance(Shop.__table__.columns["name"].type, Text)
     assert isinstance(Shop.__table__.columns["phone"].type, Text)
     assert isinstance(Shop.__table__.columns["address_text"].type, Text)
     assert isinstance(Shop.__table__.columns["status"].type, Text)
+    assert isinstance(Shop.__table__.columns["default_credit_limit_uzs"].type, Numeric)
+    assert Shop.__table__.columns["default_credit_limit_uzs"].type.precision == 18
+    assert Shop.__table__.columns["default_credit_limit_uzs"].type.scale == 0
+    assert isinstance(
+        Shop.__table__.columns["default_max_open_debts"].type, SmallInteger
+    )
     assert isinstance(ShopStaff.__table__.columns["role"].type, Text)
     assert isinstance(ShopStaff.__table__.columns["is_active"].type, Boolean)
     assert isinstance(ShopStatusEvent.__table__.columns["action"].type, Text)
@@ -244,6 +283,30 @@ def test_shop_check_constraints_are_present() -> None:
         "char_length(btrim(name)) BETWEEN 2 AND 120"
     )
     assert constraints["ck_shops_phone_not_blank"] == "length(btrim(phone)) > 0"
+    assert constraints["ck_shops_default_credit_limit_uzs_bounds"] == (
+        "default_credit_limit_uzs BETWEEN 0 AND 1000000000000"
+    )
+    assert constraints["ck_shops_default_max_open_debts_bounds"] == (
+        "default_max_open_debts BETWEEN 1 AND 100"
+    )
+
+
+def test_shop_default_policy_columns_are_exactly_bounded_decimal_defaults() -> None:
+    credit_limit = Shop.__table__.columns["default_credit_limit_uzs"]
+    max_open_debts = Shop.__table__.columns["default_max_open_debts"]
+
+    assert credit_limit.nullable is False
+    assert credit_limit.default is not None
+    assert credit_limit.default.arg == Decimal("1000000")
+    assert credit_limit.default.arg == DEFAULT_CREDIT_LIMIT_UZS.value
+    assert credit_limit.server_default is not None
+    assert str(credit_limit.server_default.arg) == "1000000"
+    assert max_open_debts.nullable is False
+    assert max_open_debts.default is not None
+    assert max_open_debts.default.arg == 2
+    assert max_open_debts.default.arg == DEFAULT_MAX_OPEN_DEBTS.value
+    assert max_open_debts.server_default is not None
+    assert str(max_open_debts.server_default.arg) == "2"
 
 
 def test_shop_staff_check_constraints_are_present() -> None:

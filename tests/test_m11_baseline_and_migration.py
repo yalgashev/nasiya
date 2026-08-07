@@ -54,6 +54,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 M10_REVISION = "b0c1d2e3f4a5"
 ORIGINAL_M11_REVISION = "c1d2e3f4a5b6"
 M11_REVISION = "d2e3f4a5b6c7"
+M12_REVISION = "e3f4a5b6c7d8"
 NOW = datetime(2026, 8, 2, 10, 0, tzinfo=UTC)
 GLOBAL_REGISTRATION_LOCK_ORDER = (
     "TelegramLinkToken",
@@ -162,13 +163,16 @@ def _clear_cr_m11_02_state(engine: Engine) -> None:
             )
 
 
-def test_m11_migrations_are_single_linear_zero_table_chain() -> None:
+def test_m11_migrations_remain_a_source_scoped_zero_table_chain() -> None:
     scripts = ScriptDirectory.from_config(_config())
-    assert scripts.get_heads() == [M11_REVISION]
+    assert scripts.get_heads() == [M12_REVISION]
+    m12_revision = scripts.get_revision(M12_REVISION)
     recovery_revision = scripts.get_revision(M11_REVISION)
     original_revision = scripts.get_revision(ORIGINAL_M11_REVISION)
+    assert m12_revision is not None
     assert recovery_revision is not None
     assert original_revision is not None
+    assert m12_revision.down_revision == M11_REVISION
     assert recovery_revision.down_revision == ORIGINAL_M11_REVISION
     assert original_revision.down_revision == M10_REVISION
 

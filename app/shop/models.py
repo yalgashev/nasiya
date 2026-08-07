@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from decimal import Decimal
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
@@ -7,14 +8,21 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Numeric,
+    SmallInteger,
     Text,
     UniqueConstraint,
 )
+from sqlalchemy import text as sqlalchemy_text
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
 from app.shop.enums import ShopRole, ShopStaffAction, ShopStatus, ShopStatusAction
+from app.shop_customer.values import (
+    DEFAULT_CREDIT_LIMIT_UZS,
+    DEFAULT_MAX_OPEN_DEBTS,
+)
 
 
 def utc_now() -> datetime:
@@ -36,6 +44,14 @@ class Shop(Base):
             "length(btrim(phone)) > 0",
             name="ck_shops_phone_not_blank",
         ),
+        CheckConstraint(
+            "default_credit_limit_uzs BETWEEN 0 AND 1000000000000",
+            name="ck_shops_default_credit_limit_uzs_bounds",
+        ),
+        CheckConstraint(
+            "default_max_open_debts BETWEEN 1 AND 100",
+            name="ck_shops_default_max_open_debts_bounds",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -50,6 +66,18 @@ class Shop(Base):
         Text,
         nullable=False,
         default=ShopStatus.ACTIVE.value,
+    )
+    default_credit_limit_uzs: Mapped[Decimal] = mapped_column(
+        Numeric(18, 0),
+        nullable=False,
+        default=DEFAULT_CREDIT_LIMIT_UZS.value,
+        server_default=sqlalchemy_text("1000000"),
+    )
+    default_max_open_debts: Mapped[int] = mapped_column(
+        SmallInteger,
+        nullable=False,
+        default=DEFAULT_MAX_OPEN_DEBTS.value,
+        server_default=sqlalchemy_text("2"),
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
