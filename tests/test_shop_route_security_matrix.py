@@ -2,6 +2,7 @@ from collections.abc import Generator, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from html import unescape
 from uuid import UUID, uuid4
 
 import pytest
@@ -29,6 +30,7 @@ from app.security_headers import AUTH_NO_STORE_CACHE_CONTROL, CONTENT_SECURITY_P
 from app.settings import Settings
 from app.shop.enums import ShopRole, ShopStatus
 from app.shop.models import Shop, ShopStaff
+from app.shop_customer.dependencies import get_detached_shop_customer_authority
 
 TEST_RATE_LIMIT_HMAC_KEY = "test-rate-limit-hmac-key-for-shop-route-matrix"
 
@@ -37,6 +39,7 @@ class RouteClass(StrEnum):
     CONTEXT = "context"
     TENANT_READ = "tenant_read"
     OWNER_BUSINESS_MUTATION = "owner_business_mutation"
+    TENANT_BUSINESS_MUTATION = "tenant_business_mutation"
 
 
 @dataclass(frozen=True)
@@ -55,6 +58,23 @@ ROUTE_POLICIES = (
     RoutePolicy("POST", "/shop/select", RouteClass.CONTEXT),
     RoutePolicy("GET", "/shop", RouteClass.TENANT_READ),
     RoutePolicy("GET", "/shop/staff", RouteClass.TENANT_READ),
+    RoutePolicy("GET", "/shop/customers", RouteClass.TENANT_READ),
+    RoutePolicy("GET", "/shop/settings/credit", RouteClass.TENANT_READ),
+    RoutePolicy(
+        "POST",
+        "/shop/customers/link",
+        RouteClass.TENANT_BUSINESS_MUTATION,
+    ),
+    RoutePolicy(
+        "POST",
+        "/shop/customers/{shop_customer_id}/policy",
+        RouteClass.TENANT_BUSINESS_MUTATION,
+    ),
+    RoutePolicy(
+        "POST",
+        "/shop/settings/credit",
+        RouteClass.TENANT_BUSINESS_MUTATION,
+    ),
     RoutePolicy("POST", "/shop/staff/add", RouteClass.OWNER_BUSINESS_MUTATION),
     RoutePolicy(
         "POST",
@@ -202,10 +222,11 @@ def csrf_value(created: CreatedSession) -> str:
 
 
 def actual_path(policy: RoutePolicy, staff_id: UUID | None = None) -> str:
-    if "{staff_id}" not in policy.path_format:
-        return policy.path_format
-    assert staff_id is not None
-    return policy.path_format.replace("{staff_id}", str(staff_id))
+    path = policy.path_format
+    if "{staff_id}" in path:
+        assert staff_id is not None
+        path = path.replace("{staff_id}", str(staff_id))
+    return path.replace("{shop_customer_id}", str(uuid4()))
 
 
 def post_data_for(
@@ -224,6 +245,21 @@ def post_data_for(
         data["role"] = ShopRole.CASHIER.value
     elif policy.path_format.endswith("/role"):
         data["new_role"] = ShopRole.MANAGER.value
+    elif policy.path_format == "/shop/customers/link":
+        data["phone"] = target_phone
+    elif policy.path_format.endswith("/policy"):
+        data.update(
+            expected_revision="1",
+            credit_limit_uzs="1000000",
+            max_open_debts="2",
+            list_status="normal",
+        )
+    elif policy.path_format == "/shop/settings/credit":
+        data.update(
+            expected_updated_at="2026-07-27T19:00:00+00:00",
+            credit_limit_uzs="1000000",
+            max_open_debts="2",
+        )
     return data
 
 
@@ -263,7 +299,7 @@ def iter_dependency_calls(dependant: Dependant) -> Iterator[object]:
 
 def route_has_csrf_dependency(route: APIRoute) -> bool:
     return any(
-        dependency_call is validate_csrf
+        dependency_call in {validate_csrf, get_detached_shop_customer_authority}
         for dependency_call in iter_dependency_calls(route.dependant)
     )
 
@@ -407,7 +443,7 @@ def test_tenant_read_routes_allow_suspended_shop_membership(
     response = client.get(policy.path_format, follow_redirects=False)
 
     assert response.status_code == 200
-    assert "faqat ko'rish rejimi" in response.text
+    assert "faqat ko'rish rejimi" in unescape(response.text)
     assert_shop_security_headers(response)
 
 

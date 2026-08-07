@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+
+{% block title %}{{ copy.customer_shops_heading }} - Nasiya{% endblock %}
+
+{% block content %}
+<main class="customer-page">
+    <h1>{{ copy.customer_shops_heading }}</h1>
+    {% if has_shops %}<ul>{% for shop_name in shop_names %}<li>{{ shop_name }}</li>{% endfor %}</ul>{% else %}<p>{{ copy.no_linked_shops }}</p>{% endif %}
+    <nav aria-label="Mijoz profili navigatsiyasi"><a href="/customer/profile">{{ copy.profile_link }}</a></nav>
+</main>
+{% endblock %}

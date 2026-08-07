@@ -279,6 +279,64 @@ dd {
     gap: 12px;
 }
 
+.shop-customer-page {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+
+.shop-customer-page nav {
+    display: grid;
+    gap: 12px;
+}
+
+.shop-customer-roster {
+    display: grid;
+    gap: 16px;
+    padding: 0;
+    list-style: none;
+}
+
+.shop-customer-roster > li,
+.shop-customer-page form {
+    min-width: 0;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    padding: 16px;
+    background: #ffffff;
+}
+
+.shop-customer-page input,
+.shop-customer-page select,
+.shop-customer-page button,
+.shop-customer-page a {
+    max-width: 100%;
+}
+
+.shop-customer-page [role="status"],
+.shop-read-only {
+    margin-top: 16px;
+    border-left: 4px solid #0f766e;
+    padding: 10px 12px;
+    color: #134e4a;
+    background: #ecfdf5;
+}
+
+@media (max-width: 430px) {
+    main {
+        width: min(100% - 24px, 640px);
+        padding: 24px 0;
+    }
+
+    h1 {
+        font-size: 1.75rem;
+    }
+
+    .shop-customer-roster > li,
+    .shop-customer-page form {
+        padding: 12px;
+    }
+}
+
 .customer-actions a {
     display: inline-flex;
     align-items: center;

@@ -18,7 +18,10 @@
         {% if is_read_only %}
         <p class="shop-read-only">faqat ko'rish rejimi</p>
         {% endif %}
-        <p class="shop-placeholder">Mijozlar va qarzlar keyingi bosqichda paydo bo'ladi</p>
+        <nav class="shop-actions" aria-label="Do'kon navigatsiyasi">
+            <a href="/shop/customers">Mijozlar ro'yxati</a>
+            <a href="/shop/settings/credit">Kredit sozlamalari</a>
+        </nav>
         {% if show_shop_switcher %}
         <nav class="shop-actions" aria-label="Do'kon navigatsiyasi">
             <a href="/shop/select">Do'kon almashtirish</a>

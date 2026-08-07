@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block title %}{{ copy.defaults_heading }} - Nasiya{% endblock %}
+
+{% block content %}
+<main class="shop-customer-page">
+    <h1>{{ copy.defaults_heading }}</h1>
+    {% if error_message %}<p class="form-error" role="alert">{{ error_message }}</p>{% endif %}
+    {% if notice %}<p class="form-notice" role="status">{{ notice }}</p>{% endif %}
+    {% if is_read_only %}<p class="shop-read-only">{{ copy.read_only_notice }}</p>{% endif %}
+    <form action="/shop/settings/credit" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="expected_updated_at" value="{{ expected_updated_at }}">
+        <label for="credit-limit">{{ copy.credit_limit_label }}</label>
+        <input id="credit-limit" name="credit_limit_uzs" inputmode="numeric" value="{{ defaults.credit_limit.value }}" {% if not can_edit %}readonly{% endif %} required>
+        <label for="max-open-debts">{{ copy.max_open_debts_label }}</label>
+        <input id="max-open-debts" name="max_open_debts" inputmode="numeric" value="{{ defaults.max_open_debts.value }}" {% if not can_edit %}readonly{% endif %} required>
+        {% if can_edit %}<button type="submit">{{ copy.save_button }}</button>{% endif %}
+    </form>
+    <nav aria-label="Do'kon navigatsiyasi"><a href="/shop/customers">{{ copy.roster_heading }}</a></nav>
+</main>
+{% endblock %}

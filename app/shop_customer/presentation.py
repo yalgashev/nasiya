@@ -33,6 +33,15 @@ class ShopCustomerWebCopy:
     updated_notice: str
     customer_shops_heading: str
     no_linked_shops: str
+    empty_roster: str
+    read_only_notice: str
+    workspace_link: str
+    profile_link: str
+    already_linked_notice: str
+    unchanged_notice: str
+    normal_status: str
+    whitelisted_status: str
+    blacklisted_status: str
 
 
 _UZ_LATN_COPY: Final = ShopCustomerWebCopy(
@@ -50,6 +59,15 @@ _UZ_LATN_COPY: Final = ShopCustomerWebCopy(
     updated_notice="Sozlamalar saqlandi.",
     customer_shops_heading="Bog'langan do'konlar",
     no_linked_shops="Bog'langan do'konlar yo'q.",
+    empty_roster="Do'kon mijozlari hali yo'q.",
+    read_only_notice="faqat ko'rish rejimi",
+    workspace_link="Ish joyi",
+    profile_link="Mijoz profiliga qaytish",
+    already_linked_notice="Mijoz avval bog'langan.",
+    unchanged_notice="O'zgarish topilmadi.",
+    normal_status="Oddiy",
+    whitelisted_status="Oq ro'yxat",
+    blacklisted_status="Qora ro'yxat",
 )
 _RU_COPY: Final = ShopCustomerWebCopy(
     page_title="Клиенты магазина",
@@ -66,6 +84,15 @@ _RU_COPY: Final = ShopCustomerWebCopy(
     updated_notice="Настройки сохранены.",
     customer_shops_heading="Привязанные магазины",
     no_linked_shops="Привязанных магазинов нет.",
+    empty_roster="Клиентов магазина пока нет.",
+    read_only_notice="Режим только для просмотра.",
+    workspace_link="Рабочее место",
+    profile_link="Вернуться к профилю клиента",
+    already_linked_notice="Клиент уже привязан.",
+    unchanged_notice="Изменений нет.",
+    normal_status="Обычный",
+    whitelisted_status="Белый список",
+    blacklisted_status="Черный список",
 )
 _COPY: Final[Mapping[ShopCustomerWebLanguage, ShopCustomerWebCopy]] = MappingProxyType(
     {

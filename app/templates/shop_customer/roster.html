@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block title %}{{ copy.page_title }} - Nasiya{% endblock %}
+
+{% block content %}
+<main class="shop-customer-page">
+    <h1>{{ copy.roster_heading }}</h1>
+    {% if error_message %}<p class="form-error" role="alert">{{ error_message }}</p>{% endif %}
+    {% if notice %}<p class="form-notice" role="status">{{ notice }}</p>{% endif %}
+    {% if is_read_only %}<p class="shop-read-only">{{ copy.read_only_notice }}</p>{% endif %}
+    {% if can_link %}
+    <section aria-labelledby="link-heading">
+        <h2 id="link-heading">{{ copy.link_heading }}</h2>
+        <form action="/shop/customers/link" method="post" autocomplete="off">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label for="customer-phone">{{ copy.phone_label }}</label>
+            <input id="customer-phone" name="phone" type="tel" inputmode="tel" autocomplete="off" required>
+            <button type="submit">{{ copy.link_button }}</button>
+        </form>
+    </section>
+    {% endif %}
+    <section aria-labelledby="roster-heading">
+        <h2 id="roster-heading">{{ copy.roster_heading }}</h2>
+        {% if has_rows %}
+        <ul class="shop-customer-roster">
+            {% for row in rows %}
+            <li>
+                <p>{{ row.masked_phone }}</p>
+                <p>{{ copy.credit_limit_label }}: {{ row.credit_limit_uzs }}</p>
+                <p>{{ copy.max_open_debts_label }}: {{ row.max_open_debts }}</p>
+                <p>{{ copy.list_status_label }}: {{ list_status_labels[row.list_status] }}</p>
+                {% if can_edit_policy %}
+                <form action="/shop/customers/{{ row.locator }}/policy" method="post">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="expected_revision" value="{{ row.revision }}">
+                    <label>{{ copy.credit_limit_label }}<input name="credit_limit_uzs" inputmode="numeric" value="{{ row.credit_limit_uzs }}" required></label>
+                    <label>{{ copy.max_open_debts_label }}<input name="max_open_debts" inputmode="numeric" value="{{ row.max_open_debts }}" required></label>
+                    <label>{{ copy.list_status_label }}
+                        <select name="list_status">
+                        {% for item in list_statuses %}<option value="{{ item.value }}" {% if item.value == row.list_status %}selected{% endif %}>{{ list_status_labels[item] }}</option>{% endfor %}
+                        </select>
+                    </label>
+                    <button type="submit">{{ copy.save_button }}</button>
+                </form>
+                {% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}<p>{{ copy.empty_roster }}</p>{% endif %}
+    </section>
+    <nav aria-label="Do'kon navigatsiyasi"><a href="/shop">{{ copy.workspace_link }}</a><a href="/shop/settings/credit">{{ copy.defaults_heading }}</a></nav>
+</main>
+{% endblock %}

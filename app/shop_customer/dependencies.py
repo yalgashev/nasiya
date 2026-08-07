@@ -3,21 +3,33 @@
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request, status
 
 from app.auth.deps import (
     CurrentSessionStatus,
-    LoginRequired,
     get_current_session_context,
     get_current_time,
     get_settings,
     validate_csrf,
 )
+from app.auth.error_codes import ErrorCode
 from app.settings import Settings
 from app.shop.context import resolve_current_shop
 from app.shop.dependencies import ShopSelectionRequired
 from app.shop.values import ShopId, UserId
 from app.shop_customer.contracts import DetachedShopCustomerAuthority
+
+
+class ShopCustomerLoginRequired(HTTPException):
+    def __init__(self) -> None:
+        super().__init__(
+            status_code=status.HTTP_303_SEE_OTHER,
+            detail="Login required",
+            headers={
+                "Location": "/auth/login",
+                "X-Error-Code": ErrorCode.UNAUTHORIZED.value,
+            },
+        )
 
 
 async def get_detached_shop_customer_authority(
@@ -52,7 +64,7 @@ async def get_detached_shop_customer_authority(
                 )
 
     if not authenticated:
-        raise LoginRequired()
+        raise ShopCustomerLoginRequired()
     if authority is None:
         raise ShopSelectionRequired()
     return authority

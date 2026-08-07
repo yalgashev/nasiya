@@ -23,6 +23,9 @@ M9_NO_STORE_PATH_PREFIXES: Final = (
     "/auth/registration-offer",
     "/customer/activation",
     "/customer/identity",
+    "/shop/customers",
+    "/shop/settings/credit",
+    "/customer/shops",
 )
 SECURITY_HEADERS: Final[Mapping[str, str]] = {
     "Content-Security-Policy": CONTENT_SECURITY_POLICY,

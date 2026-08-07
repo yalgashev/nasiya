@@ -175,7 +175,8 @@ def test_shop_workspace_renders_for_all_active_roles(
     assert label in html
     assert "Faol xodimlar" in html
     assert ">2<" in html
-    assert "Mijozlar va qarzlar keyingi bosqichda paydo bo'ladi" in html
+    assert 'href="/shop/customers"' in html
+    assert 'href="/shop/settings/credit"' in html
     assert "faqat ko'rish rejimi" not in html
     assert 'href="/shop/select"' not in html
     assert str(shop.id) not in html
@@ -205,7 +206,8 @@ def test_shop_workspace_renders_suspended_read_only_state(
     assert shop.name in html
     assert "to'xtatilgan" in html
     assert "faqat ko'rish rejimi" in html
-    assert "Mijozlar va qarzlar keyingi bosqichda paydo bo'ladi" in html
+    assert 'href="/shop/customers"' in html
+    assert 'href="/shop/settings/credit"' in html
     assert str(shop.id) not in html
     assert shop.phone not in html
     assert user.phone not in html
