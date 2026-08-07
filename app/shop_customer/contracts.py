@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from app.auth.phone import PhoneNormalizationError, normalize_uzbekistan_phone
@@ -65,6 +66,40 @@ class ShopCustomerPolicy:
             raise ValueError("Shop customer maximum open debts is invalid")
         if not isinstance(self.list_status, ShopCustomerListStatus):
             raise ValueError("Shop customer list status is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class DebtlessShopCustomerPolicyProjection:
+    """Minimal immutable policy state for a later, already-authorized consumer.
+
+    It is deliberately not an eligibility decision, balance, exposure, or debt
+    record. ``blacklisted`` remains a future-consumer signal only, while
+    ``whitelisted`` creates no bypass capability.
+    """
+
+    policy: ShopCustomerPolicy
+    revision: ShopCustomerRevision
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.policy, ShopCustomerPolicy):
+            raise ValueError("Shop customer policy projection is invalid")
+        if not isinstance(self.revision, ShopCustomerRevision):
+            raise ValueError("Shop customer policy projection revision is invalid")
+
+    @property
+    def has_blacklist_signal(self) -> bool:
+        return self.policy.list_status is ShopCustomerListStatus.BLACKLISTED
+
+
+@runtime_checkable
+class ShopCustomerPolicyReadPort(Protocol):
+    """Read-only policy port after the caller has scoped the relationship."""
+
+    def read_debtless_policy(
+        self,
+        *,
+        shop_customer_id: ShopCustomerId,
+    ) -> DebtlessShopCustomerPolicyProjection | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,6 +227,12 @@ class ShopCustomerAggregate:
             revision=self.revision,
             created_at=self.created_at,
             updated_at=self.updated_at,
+        )
+
+    def to_debtless_policy_projection(self) -> DebtlessShopCustomerPolicyProjection:
+        return DebtlessShopCustomerPolicyProjection(
+            policy=self.policy,
+            revision=self.revision,
         )
 
     def __repr__(self) -> str:

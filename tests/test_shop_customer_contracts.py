@@ -7,6 +7,7 @@ import pytest
 
 from app.shop.values import ShopId, UserId
 from app.shop_customer.contracts import (
+    DebtlessShopCustomerPolicyProjection,
     DetachedShopCustomerAuthority,
     ExpectedShopUpdatedAt,
     LinkShopCustomerCommand,
@@ -17,6 +18,7 @@ from app.shop_customer.contracts import (
     ShopCustomerLinkResult,
     ShopCustomerPathLocator,
     ShopCustomerPolicy,
+    ShopCustomerPolicyReadPort,
     ShopCustomerPolicyUpdateOutcome,
     ShopCustomerPolicyUpdateResult,
     ShopCustomerRevision,
@@ -122,6 +124,61 @@ def test_policy_requires_the_exact_three_typed_values() -> None:
             max_open_debts=MaxOpenDebts(2),
             list_status=ShopCustomerListStatus.NORMAL,
         )
+
+
+def test_debtless_policy_projection_is_minimal_read_only_and_signal_only() -> None:
+    now = datetime.now(UTC)
+    aggregate = _aggregate(created_at=now, updated_at=now)
+    projection = aggregate.to_debtless_policy_projection()
+
+    assert isinstance(projection, DebtlessShopCustomerPolicyProjection)
+    assert tuple(projection.__dataclass_fields__) == ("policy", "revision")
+    assert projection.policy == aggregate.policy
+    assert projection.revision == aggregate.revision
+    assert projection.has_blacklist_signal is False
+    for raw_identifier in (
+        aggregate.id.as_uuid(),
+        aggregate.shop_id,
+        aggregate.customer_id,
+        aggregate.created_by_user_id,
+    ):
+        assert str(raw_identifier) not in repr(projection)
+
+    blacklisted = DebtlessShopCustomerPolicyProjection(
+        policy=_policy(status=ShopCustomerListStatus.BLACKLISTED),
+        revision=ShopCustomerRevision(3),
+    )
+    whitelisted = DebtlessShopCustomerPolicyProjection(
+        policy=_policy(status=ShopCustomerListStatus.WHITELISTED),
+        revision=ShopCustomerRevision(4),
+    )
+    assert blacklisted.has_blacklist_signal is True
+    assert whitelisted.has_blacklist_signal is False
+    assert {
+        "allows",
+        "bypass",
+        "eligibility",
+        "exposure",
+        "open_debt_count",
+    }.isdisjoint(vars(DebtlessShopCustomerPolicyProjection))
+
+
+def test_debtless_policy_read_port_is_only_a_scoped_read_contract() -> None:
+    projection = DebtlessShopCustomerPolicyProjection(
+        policy=_policy(),
+        revision=ShopCustomerRevision(1),
+    )
+
+    class ReadPort:
+        def read_debtless_policy(
+            self,
+            *,
+            shop_customer_id: ShopCustomerId,
+        ) -> DebtlessShopCustomerPolicyProjection | None:
+            _ = shop_customer_id
+            return projection
+
+    assert isinstance(ReadPort(), ShopCustomerPolicyReadPort)
     with pytest.raises(ValueError, match="list status is invalid"):
         ShopCustomerPolicy(  # type: ignore[arg-type]
             credit_limit=CreditLimitUzbekistanSom(Decimal("1000000")),
