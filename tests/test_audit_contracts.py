@@ -16,7 +16,7 @@ OBJECT_ID = UUID("22222222-2222-4222-8222-222222222222")
 NOW = datetime(2026, 7, 31, 13, 0, tzinfo=UTC)
 
 
-def test_audit_registries_are_exactly_twelve_events_and_seven_objects() -> None:
+def test_audit_contract_registries_include_exact_m12_extensions() -> None:
     assert {event.value for event in AuditEventType} == {
         "platform_admin.bootstrapped",
         "offer.version_created",
@@ -30,6 +30,9 @@ def test_audit_registries_are_exactly_twelve_events_and_seven_objects() -> None:
         "customer.document_superseded",
         "customer.document_access_granted",
         "customer.activated",
+        "shop_customer.linked",
+        "shop_customer.policy_updated",
+        "shop.customer_defaults_updated",
     }
     assert {object_type.value for object_type in AuditObjectType} == {
         "user",
@@ -39,6 +42,8 @@ def test_audit_registries_are_exactly_twelve_events_and_seven_objects() -> None:
         "customer_identity",
         "customer_document",
         "customer",
+        "shop_customer",
+        "shop",
     }
     assert {kind.value for kind in AuditActorKind} == {"USER", "SYSTEM"}
 

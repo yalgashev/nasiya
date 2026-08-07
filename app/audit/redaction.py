@@ -17,6 +17,8 @@ from app.audit.contracts import (
 from app.customer_document.contracts import CustomerDocumentStatus
 from app.customer_identity.contracts import CustomerDocumentType
 from app.offers.enums import OfferLanguage, OfferPurpose, OfferStatus
+from app.shop_customer.enums import ShopCustomerListStatus
+from app.shop_customer.values import MAX_CREDIT_LIMIT_UZS, MAX_OPEN_DEBTS
 
 AuditPayload = dict[str, str | int | bool | None]
 _CONTENT_HASH_PATTERN: Final = re.compile(r"[0-9a-f]{64}")
@@ -245,6 +247,96 @@ def _customer_activated_payload(metadata: Mapping[str, object]) -> AuditPayload:
     }
 
 
+def _shop_customer_linked_payload(metadata: Mapping[str, object]) -> AuditPayload:
+    values = _required(
+        metadata,
+        "outcome",
+        "credit_limit_uzs",
+        "max_open_debts",
+        "list_status",
+        "revision",
+    )
+    if values["outcome"] != "created":
+        raise ValueError("Shop customer linked audit outcome is invalid")
+    return {
+        "outcome": "created",
+        "credit_limit_uzs": _credit_limit_uzs(values["credit_limit_uzs"]),
+        "max_open_debts": _max_open_debts(values["max_open_debts"]),
+        "list_status": _shop_customer_list_status(values["list_status"]),
+        "revision": _positive_integer(values["revision"]),
+    }
+
+
+def _shop_customer_policy_updated_payload(
+    metadata: Mapping[str, object],
+) -> AuditPayload:
+    values = _required(
+        metadata,
+        "old_credit_limit_uzs",
+        "new_credit_limit_uzs",
+        "old_max_open_debts",
+        "new_max_open_debts",
+        "old_list_status",
+        "new_list_status",
+        "revision",
+    )
+    payload = {
+        "old_credit_limit_uzs": _credit_limit_uzs(values["old_credit_limit_uzs"]),
+        "new_credit_limit_uzs": _credit_limit_uzs(values["new_credit_limit_uzs"]),
+        "old_max_open_debts": _max_open_debts(values["old_max_open_debts"]),
+        "new_max_open_debts": _max_open_debts(values["new_max_open_debts"]),
+        "old_list_status": _shop_customer_list_status(values["old_list_status"]),
+        "new_list_status": _shop_customer_list_status(values["new_list_status"]),
+        "revision": _positive_integer(values["revision"]),
+    }
+    if (
+        payload["old_credit_limit_uzs"],
+        payload["old_max_open_debts"],
+        payload["old_list_status"],
+    ) == (
+        payload["new_credit_limit_uzs"],
+        payload["new_max_open_debts"],
+        payload["new_list_status"],
+    ):
+        raise ValueError("Shop customer audit policy change must be real")
+    return payload
+
+
+def _shop_customer_defaults_updated_payload(
+    metadata: Mapping[str, object],
+) -> AuditPayload:
+    values = _required(
+        metadata,
+        "old_default_credit_limit_uzs",
+        "new_default_credit_limit_uzs",
+        "old_default_max_open_debts",
+        "new_default_max_open_debts",
+    )
+    payload = {
+        "old_default_credit_limit_uzs": _credit_limit_uzs(
+            values["old_default_credit_limit_uzs"]
+        ),
+        "new_default_credit_limit_uzs": _credit_limit_uzs(
+            values["new_default_credit_limit_uzs"]
+        ),
+        "old_default_max_open_debts": _max_open_debts(
+            values["old_default_max_open_debts"]
+        ),
+        "new_default_max_open_debts": _max_open_debts(
+            values["new_default_max_open_debts"]
+        ),
+    }
+    if (
+        payload["old_default_credit_limit_uzs"],
+        payload["old_default_max_open_debts"],
+    ) == (
+        payload["new_default_credit_limit_uzs"],
+        payload["new_default_max_open_debts"],
+    ):
+        raise ValueError("Shop defaults audit policy change must be real")
+    return payload
+
+
 _PAYLOAD_BUILDERS: Final[
     Mapping[AuditEventType, Callable[[Mapping[str, object]], AuditPayload]]
 ] = {
@@ -264,6 +356,11 @@ _PAYLOAD_BUILDERS: Final[
         _customer_document_access_granted_payload
     ),
     AuditEventType.CUSTOMER_ACTIVATED: _customer_activated_payload,
+    AuditEventType.SHOP_CUSTOMER_LINKED: _shop_customer_linked_payload,
+    AuditEventType.SHOP_CUSTOMER_POLICY_UPDATED: _shop_customer_policy_updated_payload,
+    AuditEventType.SHOP_CUSTOMER_DEFAULTS_UPDATED: (
+        _shop_customer_defaults_updated_payload
+    ),
 }
 
 
@@ -299,6 +396,32 @@ def _positive_integer(value: object) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise ValueError("Audit version number must be positive")
     return value
+
+
+def _credit_limit_uzs(value: object) -> int:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not 0 <= value <= int(MAX_CREDIT_LIMIT_UZS)
+    ):
+        raise ValueError("Shop customer audit credit limit is invalid")
+    return value
+
+
+def _max_open_debts(value: object) -> int:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not 1 <= value <= MAX_OPEN_DEBTS
+    ):
+        raise ValueError("Shop customer audit maximum open debts is invalid")
+    return value
+
+
+def _shop_customer_list_status(value: object) -> str:
+    if not isinstance(value, ShopCustomerListStatus):
+        raise ValueError("Shop customer audit list status is invalid")
+    return value.value
 
 
 def _content_hash(value: object) -> str:

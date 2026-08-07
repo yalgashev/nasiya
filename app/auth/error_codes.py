@@ -43,6 +43,9 @@ class ErrorCode(StrEnum):
     REGISTRATION_OFFER_NOT_ACCEPTED = "REGISTRATION_OFFER_NOT_ACCEPTED"
     CUSTOMER_ACTIVATION_CHANGED = "CUSTOMER_ACTIVATION_CHANGED"
     TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER = "TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER"
+    CUSTOMER_LINK_UNAVAILABLE = "CUSTOMER_LINK_UNAVAILABLE"
+    SHOP_CUSTOMER_UNAVAILABLE = "SHOP_CUSTOMER_UNAVAILABLE"
+    SHOP_CUSTOMER_CHANGED = "SHOP_CUSTOMER_CHANGED"
 
 
 @dataclass(frozen=True)
@@ -232,6 +235,21 @@ ERROR_CATALOG: Final[Mapping[ErrorCode, ErrorDefinition]] = MappingProxyType(
         ErrorCode.TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER: ErrorDefinition(
             code=ErrorCode.TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER,
             user_message="Faol mijoz uchun Telegram bog'lanishi saqlanishi kerak.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.CUSTOMER_LINK_UNAVAILABLE: ErrorDefinition(
+            code=ErrorCode.CUSTOMER_LINK_UNAVAILABLE,
+            user_message="Mijozni bog'lash hozir mavjud emas.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.SHOP_CUSTOMER_UNAVAILABLE: ErrorDefinition(
+            code=ErrorCode.SHOP_CUSTOMER_UNAVAILABLE,
+            user_message="Mijoz bog'lanishi mavjud emas.",
+            http_status=HTTPStatus.NOT_FOUND,
+        ),
+        ErrorCode.SHOP_CUSTOMER_CHANGED: ErrorDefinition(
+            code=ErrorCode.SHOP_CUSTOMER_CHANGED,
+            user_message="Mijoz bog'lanishi o'zgargan. Sahifani yangilang.",
             http_status=HTTPStatus.CONFLICT,
         ),
     }

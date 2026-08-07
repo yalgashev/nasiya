@@ -12,6 +12,47 @@ from app.audit.contracts import (
 )
 from app.audit.models import AuditLog
 
+_PERSISTED_AUDIT_EVENT_TYPES = frozenset(
+    {
+        AuditEventType.PLATFORM_ADMIN_BOOTSTRAPPED,
+        AuditEventType.OFFER_VERSION_CREATED,
+        AuditEventType.OFFER_TEXT_UPDATED,
+        AuditEventType.OFFER_VERSION_APPROVED,
+        AuditEventType.OFFER_VERSION_MADE_CURRENT,
+        AuditEventType.OFFER_VERSION_DEMOTED,
+        AuditEventType.OFFER_REGISTRATION_ACCEPTED,
+        AuditEventType.CUSTOMER_IDENTITY_SAVED,
+        AuditEventType.CUSTOMER_DOCUMENT_ATTACHED,
+        AuditEventType.CUSTOMER_DOCUMENT_SUPERSEDED,
+        AuditEventType.CUSTOMER_DOCUMENT_ACCESS_GRANTED,
+        AuditEventType.CUSTOMER_ACTIVATED,
+    }
+)
+_PERSISTED_AUDIT_OBJECT_TYPES = frozenset(
+    {
+        AuditObjectType.USER,
+        AuditObjectType.OFFER_VERSION,
+        AuditObjectType.OFFER_TEXT,
+        AuditObjectType.OFFER_ACCEPTANCE,
+        AuditObjectType.CUSTOMER_IDENTITY,
+        AuditObjectType.CUSTOMER_DOCUMENT,
+        AuditObjectType.CUSTOMER,
+    }
+)
+_STAGED_M12_AUDIT_EVENT_TYPES = frozenset(
+    {
+        AuditEventType.SHOP_CUSTOMER_LINKED,
+        AuditEventType.SHOP_CUSTOMER_POLICY_UPDATED,
+        AuditEventType.SHOP_CUSTOMER_DEFAULTS_UPDATED,
+    }
+)
+_STAGED_M12_AUDIT_OBJECT_TYPES = frozenset(
+    {
+        AuditObjectType.SHOP_CUSTOMER,
+        AuditObjectType.SHOP,
+    }
+)
+
 
 def _checks() -> dict[str, CheckConstraint]:
     return {
@@ -55,7 +96,7 @@ def test_audit_actor_foreign_key_is_named_and_restrictive() -> None:
     assert foreign_key.ondelete == "RESTRICT"
 
 
-def test_audit_checks_close_registry_actor_object_and_payload_shape() -> None:
+def test_audit_model_remains_m11_schema_until_the_m12_migration() -> None:
     checks = _checks()
 
     assert set(checks) == {
@@ -67,11 +108,18 @@ def test_audit_checks_close_registry_actor_object_and_payload_shape() -> None:
         "ck_audit_log_payload_exact_shape",
     }
     event_sql = str(checks["ck_audit_log_event_type_allowed"].sqltext)
-    assert all(event.value in event_sql for event in AuditEventType)
+    assert all(event.value in event_sql for event in _PERSISTED_AUDIT_EVENT_TYPES)
+    assert all(event.value not in event_sql for event in _STAGED_M12_AUDIT_EVENT_TYPES)
     actor_sql = str(checks["ck_audit_log_actor_kind_allowed"].sqltext)
     assert all(kind.value in actor_sql for kind in AuditActorKind)
     object_sql = str(checks["ck_audit_log_object_type_allowed"].sqltext)
-    assert all(object_type.value in object_sql for object_type in AuditObjectType)
+    assert all(
+        object_type.value in object_sql for object_type in _PERSISTED_AUDIT_OBJECT_TYPES
+    )
+    assert all(
+        object_type.value not in object_sql
+        for object_type in _STAGED_M12_AUDIT_OBJECT_TYPES
+    )
     object_mapping_sql = str(checks["ck_audit_log_object_matches_event"].sqltext)
     assert (
         "event_type = 'customer.activated' AND object_type = 'customer'"

@@ -8,6 +8,12 @@ from types import MappingProxyType
 from typing import Final, Protocol, runtime_checkable
 from uuid import UUID
 
+from app.shop_customer.contracts import (
+    ShopCustomerPolicy,
+    ShopCustomerRevision,
+    ShopDefaultCreditPolicy,
+)
+
 
 class AuditEventType(StrEnum):
     PLATFORM_ADMIN_BOOTSTRAPPED = "platform_admin.bootstrapped"
@@ -22,6 +28,9 @@ class AuditEventType(StrEnum):
     CUSTOMER_DOCUMENT_SUPERSEDED = "customer.document_superseded"
     CUSTOMER_DOCUMENT_ACCESS_GRANTED = "customer.document_access_granted"
     CUSTOMER_ACTIVATED = "customer.activated"
+    SHOP_CUSTOMER_LINKED = "shop_customer.linked"
+    SHOP_CUSTOMER_POLICY_UPDATED = "shop_customer.policy_updated"
+    SHOP_CUSTOMER_DEFAULTS_UPDATED = "shop.customer_defaults_updated"
 
 
 class AuditObjectType(StrEnum):
@@ -32,6 +41,8 @@ class AuditObjectType(StrEnum):
     CUSTOMER_IDENTITY = "customer_identity"
     CUSTOMER_DOCUMENT = "customer_document"
     CUSTOMER = "customer"
+    SHOP_CUSTOMER = "shop_customer"
+    SHOP = "shop"
 
 
 class AuditActorKind(StrEnum):
@@ -57,6 +68,9 @@ _EVENT_OBJECT_TYPES: Final[Mapping[AuditEventType, AuditObjectType]] = MappingPr
             AuditObjectType.CUSTOMER_DOCUMENT
         ),
         AuditEventType.CUSTOMER_ACTIVATED: AuditObjectType.CUSTOMER,
+        AuditEventType.SHOP_CUSTOMER_LINKED: AuditObjectType.SHOP_CUSTOMER,
+        AuditEventType.SHOP_CUSTOMER_POLICY_UPDATED: AuditObjectType.SHOP_CUSTOMER,
+        AuditEventType.SHOP_CUSTOMER_DEFAULTS_UPDATED: AuditObjectType.SHOP,
     }
 )
 
@@ -77,6 +91,88 @@ class CustomerActivatedAuditPayload:
                 "from_status": self.from_status,
                 "to_status": self.to_status,
                 "activation_method": self.activation_method,
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ShopCustomerLinkedAuditPayload:
+    policy: ShopCustomerPolicy
+    revision: ShopCustomerRevision
+    outcome: str = field(default="created", init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.policy, ShopCustomerPolicy):
+            raise ValueError("Shop customer linked audit policy is invalid")
+        if not isinstance(self.revision, ShopCustomerRevision):
+            raise ValueError("Shop customer linked audit revision is invalid")
+
+    def as_candidate_metadata(self) -> Mapping[str, object]:
+        return MappingProxyType(
+            {
+                "outcome": self.outcome,
+                "credit_limit_uzs": int(self.policy.credit_limit.value),
+                "max_open_debts": self.policy.max_open_debts.value,
+                "list_status": self.policy.list_status,
+                "revision": self.revision.value,
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ShopCustomerPolicyUpdatedAuditPayload:
+    old_policy: ShopCustomerPolicy
+    new_policy: ShopCustomerPolicy
+    revision: ShopCustomerRevision
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.old_policy, ShopCustomerPolicy):
+            raise ValueError("Shop customer old audit policy is invalid")
+        if not isinstance(self.new_policy, ShopCustomerPolicy):
+            raise ValueError("Shop customer new audit policy is invalid")
+        if self.old_policy == self.new_policy:
+            raise ValueError("Shop customer audit policy change must be real")
+        if not isinstance(self.revision, ShopCustomerRevision):
+            raise ValueError("Shop customer policy audit revision is invalid")
+
+    def as_candidate_metadata(self) -> Mapping[str, object]:
+        return MappingProxyType(
+            {
+                "old_credit_limit_uzs": int(self.old_policy.credit_limit.value),
+                "new_credit_limit_uzs": int(self.new_policy.credit_limit.value),
+                "old_max_open_debts": self.old_policy.max_open_debts.value,
+                "new_max_open_debts": self.new_policy.max_open_debts.value,
+                "old_list_status": self.old_policy.list_status,
+                "new_list_status": self.new_policy.list_status,
+                "revision": self.revision.value,
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ShopCustomerDefaultsUpdatedAuditPayload:
+    old_defaults: ShopDefaultCreditPolicy
+    new_defaults: ShopDefaultCreditPolicy
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.old_defaults, ShopDefaultCreditPolicy):
+            raise ValueError("Shop old defaults audit policy is invalid")
+        if not isinstance(self.new_defaults, ShopDefaultCreditPolicy):
+            raise ValueError("Shop new defaults audit policy is invalid")
+        if self.old_defaults == self.new_defaults:
+            raise ValueError("Shop defaults audit policy change must be real")
+
+    def as_candidate_metadata(self) -> Mapping[str, object]:
+        return MappingProxyType(
+            {
+                "old_default_credit_limit_uzs": int(
+                    self.old_defaults.credit_limit.value
+                ),
+                "new_default_credit_limit_uzs": int(
+                    self.new_defaults.credit_limit.value
+                ),
+                "old_default_max_open_debts": self.old_defaults.max_open_debts.value,
+                "new_default_max_open_debts": self.new_defaults.max_open_debts.value,
             }
         )
 

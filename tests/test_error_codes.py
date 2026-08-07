@@ -50,8 +50,11 @@ def test_error_catalog_contains_only_stable_codes() -> None:
         ErrorCode.REGISTRATION_OFFER_NOT_ACCEPTED,
         ErrorCode.CUSTOMER_ACTIVATION_CHANGED,
         ErrorCode.TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER,
+        ErrorCode.CUSTOMER_LINK_UNAVAILABLE,
+        ErrorCode.SHOP_CUSTOMER_UNAVAILABLE,
+        ErrorCode.SHOP_CUSTOMER_CHANGED,
     }
-    assert len(ERROR_CATALOG) == 36
+    assert len(ERROR_CATALOG) == 39
 
 
 def test_error_code_values_are_stable() -> None:
@@ -92,6 +95,9 @@ def test_error_code_values_are_stable() -> None:
         "REGISTRATION_OFFER_NOT_ACCEPTED",
         "CUSTOMER_ACTIVATION_CHANGED",
         "TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER",
+        "CUSTOMER_LINK_UNAVAILABLE",
+        "SHOP_CUSTOMER_UNAVAILABLE",
+        "SHOP_CUSTOMER_CHANGED",
     ]
 
 
@@ -134,6 +140,9 @@ def test_error_code_values_are_stable() -> None:
         (ErrorCode.REGISTRATION_OFFER_NOT_ACCEPTED, 409),
         (ErrorCode.CUSTOMER_ACTIVATION_CHANGED, 409),
         (ErrorCode.TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER, 409),
+        (ErrorCode.CUSTOMER_LINK_UNAVAILABLE, 409),
+        (ErrorCode.SHOP_CUSTOMER_UNAVAILABLE, 404),
+        (ErrorCode.SHOP_CUSTOMER_CHANGED, 409),
     ],
 )
 def test_error_http_status_mapping_is_stable(
@@ -251,6 +260,18 @@ def test_error_http_status_mapping_is_stable(
         (
             ErrorCode.TELEGRAM_REQUIRED_FOR_ACTIVE_CUSTOMER,
             "Faol mijoz uchun Telegram bog'lanishi saqlanishi kerak.",
+        ),
+        (
+            ErrorCode.CUSTOMER_LINK_UNAVAILABLE,
+            "Mijozni bog'lash hozir mavjud emas.",
+        ),
+        (
+            ErrorCode.SHOP_CUSTOMER_UNAVAILABLE,
+            "Mijoz bog'lanishi mavjud emas.",
+        ),
+        (
+            ErrorCode.SHOP_CUSTOMER_CHANGED,
+            "Mijoz bog'lanishi o'zgargan. Sahifani yangilang.",
         ),
     ],
 )
