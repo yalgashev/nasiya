@@ -46,6 +46,15 @@ class ErrorCode(StrEnum):
     CUSTOMER_LINK_UNAVAILABLE = "CUSTOMER_LINK_UNAVAILABLE"
     SHOP_CUSTOMER_UNAVAILABLE = "SHOP_CUSTOMER_UNAVAILABLE"
     SHOP_CUSTOMER_CHANGED = "SHOP_CUSTOMER_CHANGED"
+    CUSTOMER_NOT_ACTIVE = "CUSTOMER_NOT_ACTIVE"
+    CUSTOMER_BLACKLISTED = "CUSTOMER_BLACKLISTED"
+    CUSTOMER_RATING_BLOCKED = "CUSTOMER_RATING_BLOCKED"
+    CREDIT_LIMIT_EXCEEDED = "CREDIT_LIMIT_EXCEEDED"
+    MAX_OPEN_DEBTS = "MAX_OPEN_DEBTS"
+    DEBT_UNAVAILABLE = "DEBT_UNAVAILABLE"
+    DEBT_NOT_PENDING = "DEBT_NOT_PENDING"
+    DEBT_EXPIRED = "DEBT_EXPIRED"
+    IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
 
 
 @dataclass(frozen=True)
@@ -250,6 +259,51 @@ ERROR_CATALOG: Final[Mapping[ErrorCode, ErrorDefinition]] = MappingProxyType(
         ErrorCode.SHOP_CUSTOMER_CHANGED: ErrorDefinition(
             code=ErrorCode.SHOP_CUSTOMER_CHANGED,
             user_message="Mijoz bog'lanishi o'zgargan. Sahifani yangilang.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.CUSTOMER_NOT_ACTIVE: ErrorDefinition(
+            code=ErrorCode.CUSTOMER_NOT_ACTIVE,
+            user_message="Mijoz hali faol emas.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.CUSTOMER_BLACKLISTED: ErrorDefinition(
+            code=ErrorCode.CUSTOMER_BLACKLISTED,
+            user_message="Mijoz uchun qarz yaratish mumkin emas.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.CUSTOMER_RATING_BLOCKED: ErrorDefinition(
+            code=ErrorCode.CUSTOMER_RATING_BLOCKED,
+            user_message="Mijoz uchun qarz amali hozir mavjud emas.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.CREDIT_LIMIT_EXCEEDED: ErrorDefinition(
+            code=ErrorCode.CREDIT_LIMIT_EXCEEDED,
+            user_message="Kredit limiti oshib ketadi.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.MAX_OPEN_DEBTS: ErrorDefinition(
+            code=ErrorCode.MAX_OPEN_DEBTS,
+            user_message="Ochiq qarzlar limiti to'lgan.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.DEBT_UNAVAILABLE: ErrorDefinition(
+            code=ErrorCode.DEBT_UNAVAILABLE,
+            user_message="Qarz hozir mavjud emas.",
+            http_status=HTTPStatus.NOT_FOUND,
+        ),
+        ErrorCode.DEBT_NOT_PENDING: ErrorDefinition(
+            code=ErrorCode.DEBT_NOT_PENDING,
+            user_message="Amal faqat kutilayotgan qarz uchun mumkin.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.DEBT_EXPIRED: ErrorDefinition(
+            code=ErrorCode.DEBT_EXPIRED,
+            user_message="Qarzni qabul qilish muddati tugagan.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.IDEMPOTENCY_CONFLICT: ErrorDefinition(
+            code=ErrorCode.IDEMPOTENCY_CONFLICT,
+            user_message="Bu takrorlash kaliti boshqa so'rov bilan ishlatilgan.",
             http_status=HTTPStatus.CONFLICT,
         ),
     }

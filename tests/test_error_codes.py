@@ -53,8 +53,17 @@ def test_error_catalog_contains_only_stable_codes() -> None:
         ErrorCode.CUSTOMER_LINK_UNAVAILABLE,
         ErrorCode.SHOP_CUSTOMER_UNAVAILABLE,
         ErrorCode.SHOP_CUSTOMER_CHANGED,
+        ErrorCode.CUSTOMER_NOT_ACTIVE,
+        ErrorCode.CUSTOMER_BLACKLISTED,
+        ErrorCode.CUSTOMER_RATING_BLOCKED,
+        ErrorCode.CREDIT_LIMIT_EXCEEDED,
+        ErrorCode.MAX_OPEN_DEBTS,
+        ErrorCode.DEBT_UNAVAILABLE,
+        ErrorCode.DEBT_NOT_PENDING,
+        ErrorCode.DEBT_EXPIRED,
+        ErrorCode.IDEMPOTENCY_CONFLICT,
     }
-    assert len(ERROR_CATALOG) == 39
+    assert len(ERROR_CATALOG) == 48
 
 
 def test_error_code_values_are_stable() -> None:
@@ -98,6 +107,15 @@ def test_error_code_values_are_stable() -> None:
         "CUSTOMER_LINK_UNAVAILABLE",
         "SHOP_CUSTOMER_UNAVAILABLE",
         "SHOP_CUSTOMER_CHANGED",
+        "CUSTOMER_NOT_ACTIVE",
+        "CUSTOMER_BLACKLISTED",
+        "CUSTOMER_RATING_BLOCKED",
+        "CREDIT_LIMIT_EXCEEDED",
+        "MAX_OPEN_DEBTS",
+        "DEBT_UNAVAILABLE",
+        "DEBT_NOT_PENDING",
+        "DEBT_EXPIRED",
+        "IDEMPOTENCY_CONFLICT",
     ]
 
 

@@ -5,9 +5,11 @@ import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
+from app.debt.values import DebtId
 from app.offers.content import (
     canonicalize_offer_text,
     compute_offer_content_hash,
@@ -202,6 +204,156 @@ class RegistrationOfferAcceptance:
             f"accepted_at={self.accepted_at!r}, "
             "user_agent=<redacted>)"
         )
+
+
+class DebtOfferAcceptanceOutcome(StrEnum):
+    ACCEPTED = "accepted"
+    REPLAY = "replay"
+    STALE = "stale"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class DebtOfferAcceptanceSnapshot:
+    """Immutable debt-only evidence; it deliberately retains no offer body."""
+
+    user_id: UUID = field(repr=False)
+    debt_id: DebtId = field(repr=False)
+    offer_version_id: UUID = field(repr=False)
+    offer_text_id: UUID = field(repr=False)
+    purpose: OfferPurpose
+    language: OfferLanguage
+    version_number: int
+    content_hash: str
+    accepted_at: datetime
+    user_agent: str | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        _require_uuid(self.user_id, field_name="user_id")
+        if not isinstance(self.debt_id, DebtId):
+            raise ValueError("Debt acceptance debt identity is invalid")
+        _require_uuid(self.offer_version_id, field_name="offer_version_id")
+        _require_uuid(self.offer_text_id, field_name="offer_text_id")
+        if self.purpose is not OfferPurpose.DEBT_ACCEPTANCE:
+            raise ValueError("Debt acceptance purpose must be DEBT_ACCEPTANCE")
+        if not isinstance(self.language, OfferLanguage):
+            raise ValueError("Debt acceptance language is invalid")
+        if (
+            not isinstance(self.version_number, int)
+            or isinstance(self.version_number, bool)
+            or self.version_number < 1
+        ):
+            raise ValueError("Debt acceptance version number must be positive")
+        if _CONTENT_HASH_PATTERN.fullmatch(self.content_hash) is None:
+            raise ValueError("Debt acceptance content hash is invalid")
+        object.__setattr__(
+            self,
+            "accepted_at",
+            _as_utc(self.accepted_at, field_name="accepted_at"),
+        )
+        _require_normalized_user_agent(self.user_agent)
+
+    @classmethod
+    def from_current_offer(
+        cls,
+        *,
+        user_id: UUID,
+        debt_id: DebtId,
+        resolved_offer: ResolvedCurrentOffer,
+        language: OfferLanguage,
+        displayed_offer_text_id: UUID,
+        accepted_at: datetime,
+        user_agent: str | None,
+    ) -> DebtOfferAcceptanceSnapshot:
+        if not isinstance(resolved_offer, ResolvedCurrentOffer):
+            raise ValueError("Debt current offer is invalid")
+        if resolved_offer.version.purpose is not OfferPurpose.DEBT_ACCEPTANCE:
+            raise ValueError("Debt current offer purpose must be DEBT_ACCEPTANCE")
+        if not isinstance(language, OfferLanguage):
+            raise ValueError("Debt acceptance language is invalid")
+        if not isinstance(displayed_offer_text_id, UUID):
+            raise ValueError("Displayed offer text identity is invalid")
+        if (
+            resolved_offer.text.id != displayed_offer_text_id
+            or resolved_offer.text.variant.language is not language
+        ):
+            raise DebtOfferAcceptanceStaleError("Debt offer changed")
+        return cls(
+            user_id=user_id,
+            debt_id=debt_id,
+            offer_version_id=resolved_offer.version.id,
+            offer_text_id=resolved_offer.text.id,
+            purpose=OfferPurpose.DEBT_ACCEPTANCE,
+            language=language,
+            version_number=resolved_offer.version.version_number,
+            content_hash=resolved_offer.text.variant.content_hash,
+            accepted_at=accepted_at,
+            user_agent=user_agent,
+        )
+
+    def __repr__(self) -> str:
+        return (
+            "DebtOfferAcceptanceSnapshot("
+            "user_id=<redacted>, debt_id=<redacted>, offer_version_id=<redacted>, "
+            "offer_text_id=<redacted>, "
+            f"purpose={self.purpose.value!r}, language={self.language.value!r}, "
+            f"version_number={self.version_number!r}, "
+            f"content_hash={self.content_hash!r}, "
+            f"accepted_at={self.accepted_at!r}, user_agent=<redacted>)"
+        )
+
+
+class DebtOfferAcceptanceStaleError(ValueError):
+    """Current debt acceptance evidence no longer matches the displayed offer."""
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class StoredDebtOfferAcceptance:
+    id: UUID = field(repr=False)
+    acceptance: DebtOfferAcceptanceSnapshot
+
+    def __post_init__(self) -> None:
+        _require_uuid(self.id, field_name="debt_offer_acceptance_id")
+        if not isinstance(self.acceptance, DebtOfferAcceptanceSnapshot):
+            raise ValueError("Stored debt acceptance is invalid")
+
+    def __repr__(self) -> str:
+        return "StoredDebtOfferAcceptance(id=<redacted>, acceptance=<redacted>)"
+
+
+@dataclass(frozen=True, slots=True)
+class DebtOfferAcceptanceResult:
+    outcome: DebtOfferAcceptanceOutcome
+    acceptance: StoredDebtOfferAcceptance | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.outcome, DebtOfferAcceptanceOutcome):
+            raise ValueError("Debt acceptance outcome is invalid")
+        requires_acceptance = self.outcome in {
+            DebtOfferAcceptanceOutcome.ACCEPTED,
+            DebtOfferAcceptanceOutcome.REPLAY,
+        }
+        if requires_acceptance != isinstance(
+            self.acceptance, StoredDebtOfferAcceptance
+        ):
+            raise ValueError("Debt acceptance result is invalid")
+
+    @classmethod
+    def accepted(
+        cls, acceptance: StoredDebtOfferAcceptance
+    ) -> DebtOfferAcceptanceResult:
+        return cls(outcome=DebtOfferAcceptanceOutcome.ACCEPTED, acceptance=acceptance)
+
+    @classmethod
+    def replay(cls, acceptance: StoredDebtOfferAcceptance) -> DebtOfferAcceptanceResult:
+        return cls(outcome=DebtOfferAcceptanceOutcome.REPLAY, acceptance=acceptance)
+
+    @classmethod
+    def stale(cls) -> DebtOfferAcceptanceResult:
+        return cls(outcome=DebtOfferAcceptanceOutcome.STALE)
+
+    @property
+    def is_replay(self) -> bool:
+        return self.outcome is DebtOfferAcceptanceOutcome.REPLAY
 
 
 @dataclass(frozen=True, slots=True)

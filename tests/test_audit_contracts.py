@@ -33,6 +33,11 @@ def test_audit_contract_registries_include_exact_m12_extensions() -> None:
         "shop_customer.linked",
         "shop_customer.policy_updated",
         "shop.customer_defaults_updated",
+        "debt.created",
+        "debt.accepted",
+        "debt.rejected",
+        "debt.cancelled",
+        "debt.expired",
     }
     assert {object_type.value for object_type in AuditObjectType} == {
         "user",
@@ -44,6 +49,7 @@ def test_audit_contract_registries_include_exact_m12_extensions() -> None:
         "customer",
         "shop_customer",
         "shop",
+        "debt",
     }
     assert {kind.value for kind in AuditActorKind} == {"USER", "SYSTEM"}
 

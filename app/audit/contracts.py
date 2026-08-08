@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Final, Protocol, runtime_checkable
 from uuid import UUID
 
+from app.debt.enums import DebtExpirySource
+from app.debt.values import DiscountBasisPoints, DiscountedAmountUZS, OriginalAmountUZS
+from app.offers.enums import OfferLanguage
 from app.shop_customer.contracts import (
     ShopCustomerPolicy,
     ShopCustomerRevision,
@@ -31,6 +35,11 @@ class AuditEventType(StrEnum):
     SHOP_CUSTOMER_LINKED = "shop_customer.linked"
     SHOP_CUSTOMER_POLICY_UPDATED = "shop_customer.policy_updated"
     SHOP_CUSTOMER_DEFAULTS_UPDATED = "shop.customer_defaults_updated"
+    DEBT_CREATED = "debt.created"
+    DEBT_ACCEPTED = "debt.accepted"
+    DEBT_REJECTED = "debt.rejected"
+    DEBT_CANCELLED = "debt.cancelled"
+    DEBT_EXPIRED = "debt.expired"
 
 
 class AuditObjectType(StrEnum):
@@ -43,6 +52,7 @@ class AuditObjectType(StrEnum):
     CUSTOMER = "customer"
     SHOP_CUSTOMER = "shop_customer"
     SHOP = "shop"
+    DEBT = "debt"
 
 
 class AuditActorKind(StrEnum):
@@ -71,6 +81,11 @@ _EVENT_OBJECT_TYPES: Final[Mapping[AuditEventType, AuditObjectType]] = MappingPr
         AuditEventType.SHOP_CUSTOMER_LINKED: AuditObjectType.SHOP_CUSTOMER,
         AuditEventType.SHOP_CUSTOMER_POLICY_UPDATED: AuditObjectType.SHOP_CUSTOMER,
         AuditEventType.SHOP_CUSTOMER_DEFAULTS_UPDATED: AuditObjectType.SHOP,
+        AuditEventType.DEBT_CREATED: AuditObjectType.DEBT,
+        AuditEventType.DEBT_ACCEPTED: AuditObjectType.DEBT,
+        AuditEventType.DEBT_REJECTED: AuditObjectType.DEBT,
+        AuditEventType.DEBT_CANCELLED: AuditObjectType.DEBT,
+        AuditEventType.DEBT_EXPIRED: AuditObjectType.DEBT,
     }
 )
 
@@ -177,6 +192,107 @@ class ShopCustomerDefaultsUpdatedAuditPayload:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class DebtCreatedAuditPayload:
+    original_amount: OriginalAmountUZS
+    discount_basis_points: DiscountBasisPoints
+    discounted_amount: DiscountedAmountUZS
+    due_date: date
+    pending_expires_at: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.original_amount, OriginalAmountUZS):
+            raise ValueError("Debt created audit original amount is invalid")
+        if not isinstance(self.discount_basis_points, DiscountBasisPoints):
+            raise ValueError("Debt created audit discount is invalid")
+        if not isinstance(self.discounted_amount, DiscountedAmountUZS):
+            raise ValueError("Debt created audit discounted amount is invalid")
+        if not isinstance(self.due_date, date) or isinstance(self.due_date, datetime):
+            raise ValueError("Debt created audit due date is invalid")
+        object.__setattr__(
+            self,
+            "pending_expires_at",
+            _as_utc(self.pending_expires_at, field_name="pending_expires_at"),
+        )
+
+    def as_candidate_metadata(self) -> Mapping[str, object]:
+        return MappingProxyType(
+            {
+                "original_amount_uzs": int(self.original_amount.value),
+                "discount_basis_points": self.discount_basis_points.value,
+                "discounted_amount_uzs": int(self.discounted_amount.value),
+                "due_date": self.due_date.isoformat(),
+                "pending_expires_at": self.pending_expires_at.isoformat(),
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DebtAcceptedAuditPayload:
+    offer_version_number: int
+    language: OfferLanguage
+    content_hash: str
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.offer_version_number, int)
+            or isinstance(self.offer_version_number, bool)
+            or self.offer_version_number < 1
+        ):
+            raise ValueError("Debt accepted audit offer version is invalid")
+        if not isinstance(self.language, OfferLanguage):
+            raise ValueError("Debt accepted audit language is invalid")
+        if not isinstance(self.content_hash, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", self.content_hash, flags=re.ASCII
+        ):
+            raise ValueError("Debt accepted audit content hash is invalid")
+
+    def as_candidate_metadata(self) -> Mapping[str, object]:
+        return MappingProxyType(
+            {
+                "offer_version_number": self.offer_version_number,
+                "language": self.language.value,
+                "content_hash": self.content_hash,
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DebtRejectedAuditPayload:
+    reason_provided: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.reason_provided, bool):
+            raise ValueError("Debt rejected audit reason indicator is invalid")
+
+    def as_candidate_metadata(self) -> Mapping[str, object]:
+        return MappingProxyType({"reason_provided": self.reason_provided})
+
+
+@dataclass(frozen=True, slots=True)
+class DebtCancelledAuditPayload:
+    reason_provided: bool = True
+
+    def __post_init__(self) -> None:
+        if self.reason_provided is not True:
+            raise ValueError("Debt cancelled audit requires a reason")
+
+    def as_candidate_metadata(self) -> Mapping[str, object]:
+        return MappingProxyType({"reason_provided": True})
+
+
+@dataclass(frozen=True, slots=True)
+class DebtExpiredAuditPayload:
+    source: DebtExpirySource
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source, DebtExpirySource):
+            raise ValueError("Debt expired audit source is invalid")
+
+    def as_candidate_metadata(self) -> Mapping[str, object]:
+        return MappingProxyType({"source": self.source.value})
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class AuditEvent:
     event_type: AuditEventType
@@ -205,13 +321,18 @@ class AuditEvent:
         if self.object_type is not expected_object_type:
             raise ValueError("Audit event object type is invalid")
 
-        is_bootstrap = self.event_type is AuditEventType.PLATFORM_ADMIN_BOOTSTRAPPED
-        if is_bootstrap:
+        is_system_event = self.event_type in {
+            AuditEventType.PLATFORM_ADMIN_BOOTSTRAPPED,
+            AuditEventType.DEBT_EXPIRED,
+        }
+        if is_system_event:
             if (
                 self.actor_kind is not AuditActorKind.SYSTEM
                 or self.actor_user_id is not None
             ):
-                raise ValueError("Bootstrap audit actor must be SYSTEM")
+                if self.event_type is AuditEventType.PLATFORM_ADMIN_BOOTSTRAPPED:
+                    raise ValueError("Bootstrap audit actor must be SYSTEM")
+                raise ValueError("Debt expiry audit actor must be SYSTEM")
         elif self.actor_kind is not AuditActorKind.USER or not isinstance(
             self.actor_user_id, UUID
         ):
@@ -234,6 +355,16 @@ class AuditEvent:
             f"occurred_at={self.occurred_at!r}, actor_user_id=<redacted>, "
             "candidate_metadata=<redacted>)"
         )
+
+
+def _as_utc(value: datetime, *, field_name: str) -> datetime:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() is None
+    ):
+        raise ValueError(f"Audit {field_name} must be timezone-aware")
+    return value.astimezone(UTC)
 
 
 @runtime_checkable
