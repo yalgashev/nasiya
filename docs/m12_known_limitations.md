@@ -1,8 +1,9 @@
 # Nasiya M12 Known Limitations
 
-Status: authoritative planning-time limitations for M12. M12 implementation has
-not started; this document records accepted limits, not missing work that an
-implementation task may infer.
+Status: final-local limitations for M12; implementation and controlled local
+acceptance are GREEN, while exact implementation-SHA remote CI and docs-only
+closeout evidence remain pending. These are accepted limits, not missing work
+that a later task may infer into M12.
 
 ## KL-M12-01 — Existing active customers only
 
@@ -83,6 +84,13 @@ Manual Chrome/PostgreSQL checks use synthetic or operator-controlled data only,
 rebuild/recreate the exact checkpoint image without deleting volumes, and report
 only safe statuses/counts. Production PII, secrets, raw phones, UUIDs, tokens,
 Telegram IDs, and destructive database repair are not accepted evidence.
+
+The approved M12.54 correction assigns disabled-target and active-unverified
+TelegramLink cases to the deterministic real-PostgreSQL integration matrix
+because no approved UI/development provisioning flow can create those states.
+Reachable eligible, draft, missing, tenant, role, platform-admin, suspension,
+defaults, policy, stale, no-op, masked-roster, and own-view cases remain real
+Chrome acceptance evidence. No direct database fixture was used.
 
 ## Explicit OUT scope, not a backlog shortcut
 
