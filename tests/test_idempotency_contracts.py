@@ -16,6 +16,8 @@ from app.debt.values import (
 from app.idempotency.contracts import (
     CanonicalIdempotencyKey,
     CompletedIdempotencyResult,
+    CreatePaymentRequestHash,
+    IdempotencyEndpoint,
     IdempotencyKeyDigest,
     IdempotencyOutcome,
     IdempotencyResolution,
@@ -126,3 +128,52 @@ def test_new_replay_and_conflict_outcomes_do_not_leak_key_or_debt_identifier() -
         IdempotencyResolution(outcome=IdempotencyOutcome.REPLAY)
     with pytest.raises(ValueError, match="Only idempotency replay"):
         IdempotencyResolution(outcome=IdempotencyOutcome.NEW, completed_result=result)
+
+
+def test_m14_endpoint_result_vocabularies_and_generic_result_are_exact() -> None:
+    assert tuple(IdempotencyEndpoint) == (
+        IdempotencyEndpoint.SHOP_DEBTS_CREATE,
+        IdempotencyEndpoint.SHOP_DEBT_PAYMENTS_CREATE,
+    )
+    assert tuple(IdempotencyResultType) == (
+        IdempotencyResultType.DEBT,
+        IdempotencyResultType.PAYMENT,
+    )
+
+    result_id = uuid4()
+    payment_result = CompletedIdempotencyResult(
+        result_type=IdempotencyResultType.PAYMENT,
+        result_object_id=result_id,
+        completed_at=datetime(2026, 5, 1, tzinfo=UTC),
+    )
+    assert (
+        payment_result.require_result_object_id(
+            expected_type=IdempotencyResultType.PAYMENT
+        )
+        == result_id
+    )
+    assert str(result_id) not in repr(payment_result)
+    with pytest.raises(ValueError, match="does not match accessor"):
+        _ = payment_result.debt_id
+
+    for malformed in ("shop.payments.create", "", None):
+        with pytest.raises((TypeError, ValueError)):
+            IdempotencyEndpoint(malformed)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="result type is invalid"):
+        CompletedIdempotencyResult(
+            result_type="payment",  # type: ignore[arg-type]
+            result_object_id=result_id,
+            completed_at=datetime(2026, 5, 1, tzinfo=UTC),
+        )
+    debt_result = CompletedIdempotencyResult(
+        result_type=IdempotencyResultType.DEBT,
+        debt_id=DebtId(uuid4()),
+        completed_at=datetime(2026, 5, 1, tzinfo=UTC),
+    )
+    with pytest.raises(ValueError, match="does not match accessor"):
+        debt_result.require_result_object_id(
+            expected_type=IdempotencyResultType.PAYMENT
+        )
+
+    request_hash = CreatePaymentRequestHash("a" * 64)
+    assert request_hash.value not in repr(request_hash)

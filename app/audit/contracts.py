@@ -9,9 +9,16 @@ from types import MappingProxyType
 from typing import Final, Protocol, runtime_checkable
 from uuid import UUID
 
-from app.debt.enums import DebtExpirySource
-from app.debt.values import DiscountBasisPoints, DiscountedAmountUZS, OriginalAmountUZS
+from app.debt.enums import DebtExpirySource, DebtStatus
+from app.debt.values import (
+    DebtRevision,
+    DiscountBasisPoints,
+    DiscountedAmountUZS,
+    OriginalAmountUZS,
+)
 from app.offers.enums import OfferLanguage
+from app.payment.enums import PaymentMethod
+from app.payment.values import PaymentAmountUZS
 from app.shop_customer.contracts import (
     ShopCustomerPolicy,
     ShopCustomerRevision,
@@ -40,6 +47,8 @@ class AuditEventType(StrEnum):
     DEBT_REJECTED = "debt.rejected"
     DEBT_CANCELLED = "debt.cancelled"
     DEBT_EXPIRED = "debt.expired"
+    PAYMENT_RECORDED = "payment.recorded"
+    DEBT_PAID = "debt.paid"
 
 
 class AuditObjectType(StrEnum):
@@ -53,6 +62,7 @@ class AuditObjectType(StrEnum):
     SHOP_CUSTOMER = "shop_customer"
     SHOP = "shop"
     DEBT = "debt"
+    PAYMENT = "payment"
 
 
 class AuditActorKind(StrEnum):
@@ -86,6 +96,8 @@ _EVENT_OBJECT_TYPES: Final[Mapping[AuditEventType, AuditObjectType]] = MappingPr
         AuditEventType.DEBT_REJECTED: AuditObjectType.DEBT,
         AuditEventType.DEBT_CANCELLED: AuditObjectType.DEBT,
         AuditEventType.DEBT_EXPIRED: AuditObjectType.DEBT,
+        AuditEventType.PAYMENT_RECORDED: AuditObjectType.PAYMENT,
+        AuditEventType.DEBT_PAID: AuditObjectType.DEBT,
     }
 )
 
@@ -291,6 +303,60 @@ class DebtExpiredAuditPayload:
 
     def as_candidate_metadata(self) -> Mapping[str, object]:
         return MappingProxyType({"source": self.source.value})
+
+
+@dataclass(frozen=True, slots=True)
+class PaymentRecordedAuditPayload:
+    """The closed, identifier-free audit payload for an immutable Payment."""
+
+    amount: PaymentAmountUZS
+    method: PaymentMethod
+    from_status: DebtStatus
+    to_status: DebtStatus
+    debt_revision_after: DebtRevision
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.amount, PaymentAmountUZS):
+            raise ValueError("Payment recorded audit amount is invalid")
+        if not isinstance(self.method, PaymentMethod):
+            raise ValueError("Payment recorded audit method is invalid")
+        if self.from_status is not DebtStatus.ACTIVE:
+            raise ValueError("Payment recorded audit source status must be active")
+        if self.to_status not in {DebtStatus.ACTIVE, DebtStatus.PAID}:
+            raise ValueError("Payment recorded audit target status is invalid")
+        if not isinstance(self.debt_revision_after, DebtRevision):
+            raise ValueError("Payment recorded audit debt revision is invalid")
+
+    def as_candidate_metadata(self) -> Mapping[str, object]:
+        return MappingProxyType(
+            {
+                "amount_uzs": int(self.amount.value),
+                "method": self.method.value,
+                "from_status": self.from_status.value,
+                "to_status": self.to_status.value,
+                "debt_revision_after": self.debt_revision_after.value,
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DebtPaidAuditPayload:
+    """The closed, identifier-free audit payload for an active-to-paid Debt."""
+
+    debt_revision_after: DebtRevision
+    source: str = field(default="payment", init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.debt_revision_after, DebtRevision):
+            raise ValueError("Debt paid audit debt revision is invalid")
+
+    def as_candidate_metadata(self) -> Mapping[str, object]:
+        return MappingProxyType(
+            {
+                "source": self.source,
+                "debt_revision_after": self.debt_revision_after.value,
+            }
+        )
 
 
 @dataclass(frozen=True, slots=True, repr=False)

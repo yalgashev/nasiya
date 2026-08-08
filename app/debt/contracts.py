@@ -5,14 +5,22 @@ from __future__ import annotations
 import unicodedata
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from uuid import UUID
 
 from app.debt.business_time import (
+    is_payment_due_date_payable,
     is_pending_expired,
+    normalize_payment_created_at,
     pending_expires_at,
     validate_due_date_not_before_expiry_business_date,
 )
-from app.debt.enums import DebtExpirySource, DebtStatus
+from app.debt.enums import (
+    M14_PERSISTED_STATUSES,
+    DebtExpirySource,
+    DebtPaymentFailure,
+    DebtStatus,
+)
 from app.debt.values import (
     DebtId,
     DebtRevision,
@@ -26,6 +34,7 @@ from app.debt.values import (
 __all__ = (
     "DebtAggregate",
     "DebtLifecycleError",
+    "DebtPaymentTransitionError",
     "DebtProjection",
     "DebtReason",
 )
@@ -33,6 +42,19 @@ __all__ = (
 
 class DebtLifecycleError(ValueError):
     """Raised when an immutable pending-debt transition is unavailable."""
+
+
+class DebtPaymentTransitionError(DebtLifecycleError):
+    """Typed, identifier-free failure from the active payment transition."""
+
+    def __init__(self, failure: DebtPaymentFailure) -> None:
+        if not isinstance(failure, DebtPaymentFailure):
+            raise ValueError("Debt payment failure is invalid")
+        self.failure = failure
+        super().__init__(failure.value)
+
+    def __repr__(self) -> str:
+        return f"DebtPaymentTransitionError(failure={self.failure!r})"
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -73,6 +95,7 @@ class DebtProjection:
     rejected_at: datetime | None
     cancelled_at: datetime | None
     expired_at: datetime | None
+    paid_at: datetime | None
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -95,6 +118,7 @@ class DebtAggregate:
     rejected_at: datetime | None = None
     cancelled_at: datetime | None = None
     expired_at: datetime | None = None
+    paid_at: datetime | None = None
     rejection_reason: DebtReason | None = field(default=None, repr=False)
     cancellation_reason: DebtReason | None = field(default=None, repr=False)
 
@@ -114,7 +138,10 @@ class DebtAggregate:
             raise ValueError("Debt discounted amount cannot exceed original amount")
         if not isinstance(self.due_date, date) or isinstance(self.due_date, datetime):
             raise ValueError("Debt due date is invalid")
-        if not isinstance(self.status, DebtStatus):
+        if (
+            not isinstance(self.status, DebtStatus)
+            or self.status not in M14_PERSISTED_STATUSES
+        ):
             raise ValueError("Debt status is invalid")
         if not isinstance(self.revision, DebtRevision):
             raise ValueError("Debt revision is invalid")
@@ -132,7 +159,13 @@ class DebtAggregate:
         object.__setattr__(self, "created_at", created_at)
         object.__setattr__(self, "updated_at", updated_at)
         object.__setattr__(self, "pending_expires_at", expiry)
-        for field_name in ("accepted_at", "rejected_at", "cancelled_at", "expired_at"):
+        for field_name in (
+            "accepted_at",
+            "rejected_at",
+            "cancelled_at",
+            "expired_at",
+            "paid_at",
+        ):
             value = getattr(self, field_name)
             if value is not None:
                 normalized = _as_utc(value, field_name=field_name)
@@ -226,6 +259,49 @@ class DebtAggregate:
             expired_at=transition_at,
         )
 
+    def record_payment(
+        self,
+        *,
+        payment_amount_uzs: Decimal,
+        current_remaining_due_uzs: Decimal,
+        expected_revision: DebtRevision,
+        payment_created_at: datetime,
+    ) -> DebtAggregate:
+        if self.status is not DebtStatus.ACTIVE:
+            raise DebtPaymentTransitionError(DebtPaymentFailure.NOT_PAYABLE)
+
+        transition_at = normalize_payment_created_at(payment_created_at)
+        if not is_payment_due_date_payable(
+            payment_created_at=transition_at,
+            due_date=self.due_date,
+        ):
+            raise DebtPaymentTransitionError(DebtPaymentFailure.NOT_PAYABLE)
+
+        if (
+            not _is_positive_whole_uzs(current_remaining_due_uzs)
+            or current_remaining_due_uzs > self.discounted_amount.value
+        ):
+            raise DebtPaymentTransitionError(DebtPaymentFailure.NOT_PAYABLE)
+
+        if not isinstance(expected_revision, DebtRevision):
+            raise ValueError("Expected debt revision is invalid")
+        if expected_revision != self.revision:
+            raise DebtPaymentTransitionError(DebtPaymentFailure.CHANGED)
+
+        if not _is_positive_whole_uzs(payment_amount_uzs):
+            raise ValueError("Payment amount is invalid")
+        if payment_amount_uzs > current_remaining_due_uzs:
+            raise DebtPaymentTransitionError(DebtPaymentFailure.AMOUNT_EXCEEDS_BALANCE)
+
+        is_full_payment = payment_amount_uzs == current_remaining_due_uzs
+        return replace(
+            self,
+            status=DebtStatus.PAID if is_full_payment else DebtStatus.ACTIVE,
+            revision=DebtRevision(self.revision.value + 1),
+            updated_at=transition_at,
+            paid_at=transition_at if is_full_payment else None,
+        )
+
     def to_projection(self) -> DebtProjection:
         return DebtProjection(
             original_amount=self.original_amount,
@@ -241,6 +317,7 @@ class DebtAggregate:
             rejected_at=self.rejected_at,
             cancelled_at=self.cancelled_at,
             expired_at=self.expired_at,
+            paid_at=self.paid_at,
         )
 
     def _require_unexpired_pending(self, now: datetime) -> None:
@@ -258,6 +335,8 @@ class DebtAggregate:
             self.cancelled_at,
             self.expired_at,
         )
+        if self.status is not DebtStatus.PAID and self.paid_at is not None:
+            raise ValueError("Only paid debt may have payment timestamp")
         if self.status is DebtStatus.PENDING:
             if self.accepted_at is not None or any(
                 value is not None for value in terminal_times
@@ -321,7 +400,24 @@ class DebtAggregate:
             ):
                 raise ValueError("Expired debt cannot have terminal reasons")
             return
-        raise ValueError("M13 debt cannot use future lifecycle status")
+        if self.status is DebtStatus.PAID:
+            if (
+                self.accepted_at is None
+                or self.paid_at is None
+                or any(value is not None for value in terminal_times)
+            ):
+                raise ValueError(
+                    "Paid debt requires acceptance and payment timestamps only"
+                )
+            if (
+                self.rejection_reason is not None
+                or self.cancellation_reason is not None
+            ):
+                raise ValueError("Paid debt cannot have terminal reasons")
+            if self.paid_at < self.accepted_at:
+                raise ValueError("Debt payment timestamp cannot precede acceptance")
+            return
+        raise ValueError("Debt cannot use a status outside M14")
 
     def __repr__(self) -> str:
         return (
@@ -336,7 +432,7 @@ class DebtAggregate:
             f"updated_at={self.updated_at!r}, accepted_at={self.accepted_at!r}, "
             f"rejected_at={self.rejected_at!r}, cancelled_at={self.cancelled_at!r}, "
             f"expired_at={self.expired_at!r}, rejection_reason=<redacted>, "
-            "cancellation_reason=<redacted>)"
+            f"paid_at={self.paid_at!r}, cancellation_reason=<redacted>)"
         )
 
 
@@ -357,3 +453,12 @@ def _as_utc(value: datetime, *, field_name: str) -> datetime:
 
 def _transition_time(now: datetime) -> datetime:
     return _as_utc(now, field_name="transition time")
+
+
+def _is_positive_whole_uzs(value: object) -> bool:
+    return (
+        isinstance(value, Decimal)
+        and value.is_finite()
+        and value.as_tuple().exponent == 0
+        and value > Decimal("0")
+    )

@@ -2,6 +2,7 @@ import pytest
 
 from app.debt.enums import (
     M13_PERSISTED_STATUSES,
+    M14_PERSISTED_STATUSES,
     DebtStatus,
     DebtTransitionEvent,
     parse_debt_status,
@@ -46,6 +47,23 @@ def test_only_the_five_m13_statuses_are_persistable() -> None:
     )
 
 
+def test_m14_persisted_status_subset_adds_paid_only() -> None:
+    assert M14_PERSISTED_STATUSES == frozenset(
+        {
+            DebtStatus.PENDING,
+            DebtStatus.ACTIVE,
+            DebtStatus.REJECTED,
+            DebtStatus.CANCELLED,
+            DebtStatus.EXPIRED,
+            DebtStatus.PAID,
+        }
+    )
+    assert not (
+        {DebtStatus.OVERDUE, DebtStatus.WRITTEN_OFF, DebtStatus.WRITTEN_OFF_SETTLED}
+        & M14_PERSISTED_STATUSES
+    )
+
+
 def test_m13_transition_events_match_the_exact_audit_vocabulary() -> None:
     assert tuple(DebtTransitionEvent) == (
         DebtTransitionEvent.CREATED,
@@ -53,4 +71,5 @@ def test_m13_transition_events_match_the_exact_audit_vocabulary() -> None:
         DebtTransitionEvent.REJECTED,
         DebtTransitionEvent.CANCELLED,
         DebtTransitionEvent.EXPIRED,
+        DebtTransitionEvent.PAID,
     )

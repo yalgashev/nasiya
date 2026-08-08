@@ -6,12 +6,16 @@ import pytest
 from app.debt.business_time import (
     PENDING_DEBT_TTL,
     TASHKENT_TIMEZONE,
+    is_payment_due_date_payable,
     is_pending_expired,
+    normalize_payment_created_at,
     parse_due_date,
+    payment_business_date,
     pending_expires_at,
     tashkent_business_date,
     validate_acceptance_due_date,
     validate_due_date_not_before_expiry_business_date,
+    validate_payment_due_date,
 )
 
 
@@ -78,4 +82,54 @@ def test_acceptance_requires_tashkent_business_date_not_after_due_date() -> None
     with pytest.raises(ValueError, match="Due date has passed"):
         validate_acceptance_due_date(
             now=datetime(2026, 5, 2, 19, tzinfo=UTC), due_date=due_date
+        )
+
+
+def test_payment_payability_uses_injected_utc_server_time_and_tashkent_date() -> None:
+    due_date = date(2026, 5, 2)
+    due_day_last_microsecond = datetime(2026, 5, 2, 18, 59, 59, 999999, tzinfo=UTC)
+    next_tashkent_day = datetime(2026, 5, 2, 19, tzinfo=UTC)
+
+    assert payment_business_date(due_day_last_microsecond) == due_date
+    assert is_payment_due_date_payable(
+        payment_created_at=due_day_last_microsecond, due_date=due_date
+    )
+    assert (
+        validate_payment_due_date(
+            payment_created_at=due_day_last_microsecond, due_date=due_date
+        )
+        == due_date
+    )
+    assert not is_payment_due_date_payable(
+        payment_created_at=next_tashkent_day, due_date=due_date
+    )
+    with pytest.raises(ValueError, match="not payable"):
+        validate_payment_due_date(
+            payment_created_at=next_tashkent_day, due_date=due_date
+        )
+
+
+def test_payment_business_date_rejects_naive_non_utc_and_utc_date_misuse() -> None:
+    due_date = date(2026, 5, 1)
+    utc_date_still_may_be_the_next_tashkent_date = datetime(2026, 5, 1, 19, tzinfo=UTC)
+
+    assert payment_business_date(utc_date_still_may_be_the_next_tashkent_date) == date(
+        2026, 5, 2
+    )
+    assert not is_payment_due_date_payable(
+        payment_created_at=utc_date_still_may_be_the_next_tashkent_date,
+        due_date=due_date,
+    )
+
+    for invalid in (
+        datetime(2026, 5, 1, 19),
+        datetime(2026, 5, 2, 0, tzinfo=TASHKENT_TIMEZONE),
+        None,
+    ):
+        with pytest.raises(ValueError, match="Payment created at"):
+            normalize_payment_created_at(invalid)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="Due date is invalid"):
+        is_payment_due_date_payable(
+            payment_created_at=datetime(2026, 5, 1, 18, tzinfo=UTC),
+            due_date=datetime(2026, 5, 1, 18, tzinfo=UTC),  # type: ignore[arg-type]
         )

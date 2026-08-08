@@ -55,6 +55,10 @@ class ErrorCode(StrEnum):
     DEBT_NOT_PENDING = "DEBT_NOT_PENDING"
     DEBT_EXPIRED = "DEBT_EXPIRED"
     IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
+    PAYMENT_UNAVAILABLE = "PAYMENT_UNAVAILABLE"
+    PAYMENT_AMOUNT_EXCEEDS_BALANCE = "PAYMENT_AMOUNT_EXCEEDS_BALANCE"
+    DEBT_CHANGED = "DEBT_CHANGED"
+    DEBT_NOT_PAYABLE = "DEBT_NOT_PAYABLE"
 
 
 @dataclass(frozen=True)
@@ -304,6 +308,26 @@ ERROR_CATALOG: Final[Mapping[ErrorCode, ErrorDefinition]] = MappingProxyType(
         ErrorCode.IDEMPOTENCY_CONFLICT: ErrorDefinition(
             code=ErrorCode.IDEMPOTENCY_CONFLICT,
             user_message="Bu takrorlash kaliti boshqa so'rov bilan ishlatilgan.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.PAYMENT_UNAVAILABLE: ErrorDefinition(
+            code=ErrorCode.PAYMENT_UNAVAILABLE,
+            user_message="To'lov hozir mavjud emas.",
+            http_status=HTTPStatus.NOT_FOUND,
+        ),
+        ErrorCode.PAYMENT_AMOUNT_EXCEEDS_BALANCE: ErrorDefinition(
+            code=ErrorCode.PAYMENT_AMOUNT_EXCEEDS_BALANCE,
+            user_message="To'lov summasi qolgan qarzdan oshadi.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.DEBT_CHANGED: ErrorDefinition(
+            code=ErrorCode.DEBT_CHANGED,
+            user_message="Qarz o'zgardi. Sahifani yangilang.",
+            http_status=HTTPStatus.CONFLICT,
+        ),
+        ErrorCode.DEBT_NOT_PAYABLE: ErrorDefinition(
+            code=ErrorCode.DEBT_NOT_PAYABLE,
+            user_message="Bu qarz uchun to'lov hozir qabul qilinmaydi.",
             http_status=HTTPStatus.CONFLICT,
         ),
     }

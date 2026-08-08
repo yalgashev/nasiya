@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from decimal import Decimal
 from types import MappingProxyType
 from uuid import UUID
 
@@ -9,7 +10,13 @@ from app.audit.contracts import (
     AuditEvent,
     AuditEventType,
     AuditObjectType,
+    DebtPaidAuditPayload,
+    PaymentRecordedAuditPayload,
 )
+from app.debt.enums import DebtStatus
+from app.debt.values import DebtRevision
+from app.payment.enums import PaymentMethod
+from app.payment.values import PaymentAmountUZS
 
 ACTOR_ID = UUID("11111111-1111-4111-8111-111111111111")
 OBJECT_ID = UUID("22222222-2222-4222-8222-222222222222")
@@ -38,6 +45,8 @@ def test_audit_contract_registries_include_exact_m12_extensions() -> None:
         "debt.rejected",
         "debt.cancelled",
         "debt.expired",
+        "payment.recorded",
+        "debt.paid",
     }
     assert {object_type.value for object_type in AuditObjectType} == {
         "user",
@@ -50,6 +59,7 @@ def test_audit_contract_registries_include_exact_m12_extensions() -> None:
         "shop_customer",
         "shop",
         "debt",
+        "payment",
     }
     assert {kind.value for kind in AuditActorKind} == {"USER", "SYSTEM"}
 
@@ -175,3 +185,94 @@ def test_audit_event_repr_redacts_actor_and_candidate_metadata() -> None:
     assert str(OBJECT_ID) not in rendered
     assert "SECRET" not in rendered
     assert "candidate_metadata=<redacted>" in rendered
+
+
+def test_m14_payment_audit_payloads_are_closed_and_identifier_free() -> None:
+    recorded = PaymentRecordedAuditPayload(
+        amount=PaymentAmountUZS(Decimal("150000")),
+        method=PaymentMethod.CARD,
+        from_status=DebtStatus.ACTIVE,
+        to_status=DebtStatus.PAID,
+        debt_revision_after=DebtRevision(8),
+    )
+    paid = DebtPaidAuditPayload(debt_revision_after=DebtRevision(8))
+
+    assert dict(recorded.as_candidate_metadata()) == {
+        "amount_uzs": 150_000,
+        "method": "card",
+        "from_status": "active",
+        "to_status": "paid",
+        "debt_revision_after": 8,
+    }
+    assert dict(paid.as_candidate_metadata()) == {
+        "source": "payment",
+        "debt_revision_after": 8,
+    }
+    assert set(recorded.as_candidate_metadata()).isdisjoint(
+        {"payment_id", "debt_id", "shop_id", "customer_id", "user_id"}
+    )
+    with pytest.raises(TypeError):
+        recorded.as_candidate_metadata()["payment_id"] = "forbidden"
+
+
+def test_m14_payment_audit_events_require_user_and_exact_object_type() -> None:
+    event = AuditEvent(
+        event_type=AuditEventType.PAYMENT_RECORDED,
+        actor_kind=AuditActorKind.USER,
+        actor_user_id=ACTOR_ID,
+        object_type=AuditObjectType.PAYMENT,
+        object_id=OBJECT_ID,
+        occurred_at=NOW,
+        candidate_metadata=PaymentRecordedAuditPayload(
+            amount=PaymentAmountUZS(Decimal("1")),
+            method=PaymentMethod.CASH,
+            from_status=DebtStatus.ACTIVE,
+            to_status=DebtStatus.ACTIVE,
+            debt_revision_after=DebtRevision(2),
+        ).as_candidate_metadata(),
+    )
+
+    assert event.object_type is AuditObjectType.PAYMENT
+    with pytest.raises(ValueError, match="event object type is invalid"):
+        AuditEvent(
+            event_type=AuditEventType.DEBT_PAID,
+            actor_kind=AuditActorKind.USER,
+            actor_user_id=ACTOR_ID,
+            object_type=AuditObjectType.PAYMENT,
+            object_id=OBJECT_ID,
+            occurred_at=NOW,
+            candidate_metadata={},
+        )
+    with pytest.raises(ValueError, match="Offer audit actor must be a user"):
+        AuditEvent(
+            event_type=AuditEventType.PAYMENT_RECORDED,
+            actor_kind=AuditActorKind.SYSTEM,
+            actor_user_id=None,
+            object_type=AuditObjectType.PAYMENT,
+            object_id=OBJECT_ID,
+            occurred_at=NOW,
+            candidate_metadata={},
+        )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"from_status": DebtStatus.PENDING},
+        {"to_status": DebtStatus.CANCELLED},
+    ],
+)
+def test_m14_payment_audit_payload_rejects_invalid_transition(
+    kwargs: dict[str, object],
+) -> None:
+    values: dict[str, object] = {
+        "amount": PaymentAmountUZS(Decimal("1")),
+        "method": PaymentMethod.CASH,
+        "from_status": DebtStatus.ACTIVE,
+        "to_status": DebtStatus.ACTIVE,
+        "debt_revision_after": DebtRevision(2),
+    }
+    values.update(kwargs)
+
+    with pytest.raises(ValueError):
+        PaymentRecordedAuditPayload(**values)  # type: ignore[arg-type]

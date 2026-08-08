@@ -1,4 +1,4 @@
-"""Canonical, redacted idempotency key and create-debt hash contracts."""
+"""Canonical, redacted Debt and Payment idempotency contracts."""
 
 from __future__ import annotations
 
@@ -23,12 +23,14 @@ __all__ = (
     "CanonicalIdempotencyKey",
     "CompletedIdempotencyResult",
     "CreateDebtRequestHash",
+    "CreatePaymentRequestHash",
     "IdempotencyEndpoint",
     "IdempotencyKeyDigest",
     "IdempotencyOutcome",
     "IdempotencyResolution",
     "IdempotencyResultType",
     "canonical_idempotency_key_digest",
+    "create_debt_request_hash",
     "parse_idempotency_key",
     "require_matching_idempotency_keys",
 )
@@ -77,12 +79,25 @@ class CreateDebtRequestHash:
         return "CreateDebtRequestHash(<redacted>)"
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class CreatePaymentRequestHash:
+    value: str
+
+    def __post_init__(self) -> None:
+        _require_sha256_hex(self.value, field_name="Create-payment request hash")
+
+    def __repr__(self) -> str:
+        return "CreatePaymentRequestHash(<redacted>)"
+
+
 class IdempotencyEndpoint(StrEnum):
     SHOP_DEBTS_CREATE = "shop.debts.create"
+    SHOP_DEBT_PAYMENTS_CREATE = "shop.debt_payments.create"
 
 
 class IdempotencyResultType(StrEnum):
     DEBT = "debt"
+    PAYMENT = "payment"
 
 
 class IdempotencyOutcome(StrEnum):
@@ -91,29 +106,57 @@ class IdempotencyOutcome(StrEnum):
     CONFLICT = "conflict"
 
 
-@dataclass(frozen=True, slots=True, repr=False)
+@dataclass(frozen=True, slots=True, repr=False, init=False)
 class CompletedIdempotencyResult:
     result_type: IdempotencyResultType
-    debt_id: DebtId = field(repr=False)
+    result_object_id: UUID = field(repr=False)
     completed_at: datetime
 
-    def __post_init__(self) -> None:
-        if self.result_type is not IdempotencyResultType.DEBT:
+    def __init__(
+        self,
+        *,
+        result_type: IdempotencyResultType,
+        completed_at: datetime,
+        result_object_id: UUID | None = None,
+        debt_id: DebtId | None = None,
+    ) -> None:
+        if not isinstance(result_type, IdempotencyResultType):
             raise ValueError("Idempotency result type is invalid")
-        if not isinstance(self.debt_id, DebtId):
-            raise ValueError("Idempotency debt result is invalid")
+        if debt_id is not None:
+            if result_type is not IdempotencyResultType.DEBT:
+                raise ValueError("Debt result alias requires debt result type")
+            if result_object_id is not None or not isinstance(debt_id, DebtId):
+                raise ValueError("Idempotency debt result is invalid")
+            result_object_id = debt_id.as_uuid()
+        if not isinstance(result_object_id, UUID):
+            raise ValueError("Idempotency result object is invalid")
         if (
-            not isinstance(self.completed_at, datetime)
-            or self.completed_at.tzinfo is None
-            or self.completed_at.utcoffset() is None
+            not isinstance(completed_at, datetime)
+            or completed_at.tzinfo is None
+            or completed_at.utcoffset() is None
         ):
             raise ValueError("Idempotency completion time must be timezone-aware")
-        object.__setattr__(self, "completed_at", self.completed_at.astimezone(UTC))
+        object.__setattr__(self, "result_type", result_type)
+        object.__setattr__(self, "result_object_id", result_object_id)
+        object.__setattr__(self, "completed_at", completed_at.astimezone(UTC))
+
+    @property
+    def debt_id(self) -> DebtId:
+        return DebtId(
+            self.require_result_object_id(expected_type=IdempotencyResultType.DEBT)
+        )
+
+    def require_result_object_id(self, *, expected_type: IdempotencyResultType) -> UUID:
+        if not isinstance(expected_type, IdempotencyResultType):
+            raise ValueError("Expected idempotency result type is invalid")
+        if self.result_type is not expected_type:
+            raise ValueError("Idempotency result type does not match accessor")
+        return self.result_object_id
 
     def __repr__(self) -> str:
         return (
             "CompletedIdempotencyResult("
-            f"result_type={self.result_type.value!r}, debt_id=<redacted>, "
+            f"result_type={self.result_type.value!r}, result_object_id=<redacted>, "
             f"completed_at={self.completed_at!r})"
         )
 
