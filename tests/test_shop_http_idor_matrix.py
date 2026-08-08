@@ -34,6 +34,7 @@ class IdorVector(StrEnum):
     FOREIGN_SHOP_UUID = "foreign_shop_uuid"
     FOREIGN_STAFF_UUID = "foreign_staff_uuid"
     FOREIGN_SHOP_CUSTOMER_UUID = "foreign_shop_customer_uuid"
+    FOREIGN_DEBT_UUID = "foreign_debt_uuid"
     NOT_APPLICABLE = "not_applicable"
 
 
@@ -121,6 +122,36 @@ ROUTE_IDOR_CASES = (
         "/shop/customers/{shop_customer_id}/policy",
         IdorVector.FOREIGN_SHOP_CUSTOMER_UUID,
         "path locator is resolved only within detached current-shop authority",
+    ),
+    RouteIdorCase(
+        "GET",
+        "/shop/customers/{shop_customer_id}/debts",
+        IdorVector.FOREIGN_SHOP_CUSTOMER_UUID,
+        "shop_customer_id is resolved only inside the current shop",
+    ),
+    RouteIdorCase(
+        "GET",
+        "/shop/customers/{shop_customer_id}/debts/new",
+        IdorVector.FOREIGN_SHOP_CUSTOMER_UUID,
+        "create form resolves shop_customer_id only inside the current shop",
+    ),
+    RouteIdorCase(
+        "POST",
+        "/shop/customers/{shop_customer_id}/debts",
+        IdorVector.FOREIGN_SHOP_CUSTOMER_UUID,
+        "creation rechecks shop_customer_id under detached current-shop authority",
+    ),
+    RouteIdorCase(
+        "GET",
+        "/shop/debts/{debt_id}",
+        IdorVector.FOREIGN_DEBT_UUID,
+        "debt_id is joined through a ShopCustomer in the current shop",
+    ),
+    RouteIdorCase(
+        "POST",
+        "/shop/debts/{debt_id}/cancel",
+        IdorVector.FOREIGN_DEBT_UUID,
+        "cancel locks and rechecks debt_id through the current shop chain",
     ),
 )
 

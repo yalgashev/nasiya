@@ -28,7 +28,8 @@ from app.debt.values import (
     ShopCustomerId,
     UserId,
 )
-from app.shop.models import Shop
+from app.shop.repository import get_shop, list_shops_by_ids
+from app.shop.values import ShopId
 from app.shop_customer.models import ShopCustomer
 from app.shop_customer.repository import (
     _LockedShopCustomer,
@@ -163,17 +164,22 @@ def list_customer_owned_debts_with_shops(
     """Traverse Customer -> ShopCustomer -> Debt; never accept a shop locator."""
 
     statement = (
-        select(Debt, Shop.name)
+        select(Debt, ShopCustomer.shop_id)
         .select_from(Customer)
         .join(ShopCustomer, ShopCustomer.customer_id == Customer.id)
         .join(Debt, Debt.shop_customer_id == ShopCustomer.id)
-        .join(Shop, Shop.id == ShopCustomer.shop_id)
         .where(Customer.id == customer_id)
         .order_by(Debt.created_at.desc(), Debt.id)
     )
+    rows = list(session.execute(statement))
+    shops = list_shops_by_ids(
+        session,
+        shop_ids={ShopId(shop_id) for _debt, shop_id in rows},
+    )
+    shop_names = {shop.id: shop.name for shop in shops}
     return [
-        CustomerOwnedDebtRow(debt=debt, shop_name=shop_name)
-        for debt, shop_name in session.execute(statement)
+        CustomerOwnedDebtRow(debt=debt, shop_name=shop_names[shop_id])
+        for debt, shop_id in rows
     ]
 
 
@@ -183,18 +189,20 @@ def get_customer_owned_debt_with_shop(
     """Resolve one opaque Debt locator exclusively through the own Customer path."""
 
     statement = (
-        select(Debt, Shop.name)
+        select(Debt, ShopCustomer.shop_id)
         .select_from(Customer)
         .join(ShopCustomer, ShopCustomer.customer_id == Customer.id)
         .join(Debt, Debt.shop_customer_id == ShopCustomer.id)
-        .join(Shop, Shop.id == ShopCustomer.shop_id)
         .where(Customer.id == customer_id, Debt.id == debt_id.as_uuid())
     )
     row = session.execute(statement).one_or_none()
     if row is None:
         return None
-    debt, shop_name = row
-    return CustomerOwnedDebtRow(debt=debt, shop_name=shop_name)
+    debt, shop_id = row
+    shop = get_shop(session, shop_id=ShopId(shop_id))
+    if shop is None:
+        return None
+    return CustomerOwnedDebtRow(debt=debt, shop_name=shop.name)
 
 
 def discover_debt_candidates(

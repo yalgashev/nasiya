@@ -9,6 +9,10 @@ from app.auth.deps import get_detached_mutation_session_context, validate_csrf
 from app.auth.router import get_detached_otp_mutation_context
 from app.customer_activation.router import validate_activation_csrf
 from app.customer_identity.router import upload_document
+from app.debt.dependencies import (
+    get_detached_current_shop_debt_actor_authority,
+    get_detached_customer_debt_authority,
+)
 from app.main import create_app
 from app.settings import Settings
 from app.shop_customer.dependencies import get_detached_shop_customer_authority
@@ -62,6 +66,8 @@ def route_has_csrf_dependency(route: APIRoute) -> bool:
             get_detached_mutation_session_context,
             get_detached_otp_mutation_context,
             get_detached_shop_customer_authority,
+            get_detached_current_shop_debt_actor_authority,
+            get_detached_customer_debt_authority,
         }
         for dependency_call in iter_dependency_calls(route.dependant)
     )
@@ -95,10 +101,13 @@ def test_detached_transaction_dependencies_validate_csrf_before_returning() -> N
     for dependency in (
         get_detached_mutation_session_context,
         get_detached_otp_mutation_context,
+        get_detached_current_shop_debt_actor_authority,
+        get_detached_customer_debt_authority,
     ):
         source = getsource(dependency)
-        assert "await validate_csrf(request, context, now)" in source
-        assert "with session_factory.begin() as db:" in source
+        assert "await validate_csrf(request," in source
+        assert ", now)" in source
+        assert "with session_factory.begin()" in source
 
 
 def test_safe_and_test_only_routes_are_not_in_unsafe_inventory() -> None:

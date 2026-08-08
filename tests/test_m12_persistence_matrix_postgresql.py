@@ -21,6 +21,7 @@ from tests.test_shop_customer_repository_postgresql import (
 )
 
 M12_REVISION = "e3f4a5b6c7d8"
+M13_REVISION = "f4a5b6c7d8e"
 M12_SCHEMA_TABLES = {
     "shop_customers",
     "otp_challenge_events",
@@ -94,17 +95,19 @@ def _row(
 
 
 @pytest.mark.integration
-def test_current_database_matches_exact_m12_metadata_and_head(
+def test_current_database_extends_exact_m12_metadata_at_m13_head(
     m2_test_database: Engine,
 ) -> None:
     inspector = inspect(m2_test_database)
     assert set(inspector.get_table_names()) == {
         "alembic_version",
         *M12_SCHEMA_TABLES,
+        "debts",
+        "idempotency_keys",
     }
     with m2_test_database.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-            M12_REVISION
+            M13_REVISION
         )
 
     shop_columns = {column["name"]: column for column in inspector.get_columns("shops")}

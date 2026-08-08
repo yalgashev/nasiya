@@ -24,6 +24,10 @@ from app.auth.sessions import create_authenticated_session
 from app.customer.models import CUSTOMER_ONBOARDING_STATUS_DRAFT, Customer
 from app.customer_activation.router import validate_activation_csrf
 from app.db import Base, create_database_session_factory
+from app.debt.dependencies import (
+    get_detached_current_shop_debt_actor_authority,
+    get_detached_customer_debt_authority,
+)
 from app.main import create_app
 from app.settings import Settings
 from app.shop_customer.dependencies import get_detached_shop_customer_authority
@@ -134,6 +138,8 @@ def route_has_csrf_dependency(route: APIRoute) -> bool:
             get_detached_mutation_session_context,
             get_detached_otp_mutation_context,
             get_detached_shop_customer_authority,
+            get_detached_current_shop_debt_actor_authority,
+            get_detached_customer_debt_authority,
         }
         for dependency_call in iter_dependency_calls(route.dependant)
     )

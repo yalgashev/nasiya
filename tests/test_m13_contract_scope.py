@@ -44,3 +44,11 @@ def test_m13_runtime_has_only_explicit_transport_and_no_out_imports() -> None:
             assert not imported.startswith(FORBIDDEN_RUNTIME_IMPORTS), (
                 f"{path} imports out-of-scope runtime module {imported}"
             )
+
+
+def test_postgresql_cleanup_respects_registration_acceptance_fk_order() -> None:
+    from tests.postgresql import M2_CLEANUP_TABLE_NAMES
+
+    assert M2_CLEANUP_TABLE_NAMES.index("otp_challenges") < (
+        M2_CLEANUP_TABLE_NAMES.index("offer_acceptances")
+    )

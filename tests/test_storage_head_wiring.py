@@ -25,6 +25,9 @@ M11_CLEANUP_PREFIX = (
     "object_files",
 )
 M13_CLEANUP_PREFIX = (
+    "otp_challenge_events",
+    "otp_dispatches",
+    "otp_challenges",
     "offer_acceptances",
     "idempotency_keys",
     "debts",
@@ -50,7 +53,13 @@ M13_INHERITED_CLEANUP_ORDER = (
     tuple(
         table_name
         for table_name in M11_CLEANUP_PREFIX
-        if table_name != "offer_acceptances"
+        if table_name
+        not in {
+            "otp_challenge_events",
+            "otp_dispatches",
+            "otp_challenges",
+            "offer_acceptances",
+        }
     )
     + INHERITED_CLEANUP_ORDER
 )
@@ -88,6 +97,9 @@ def test_cleanup_extends_current_head_with_m13_children_first_order() -> None:
     assert M2_CLEANUP_TABLE_NAMES == M13_CLEANUP_PREFIX + M13_INHERITED_CLEANUP_ORDER
     assert M2_CLEANUP_TABLE_NAMES.index("offer_acceptances") < (
         M2_CLEANUP_TABLE_NAMES.index("debts")
+    )
+    assert M2_CLEANUP_TABLE_NAMES.index("otp_challenges") < (
+        M2_CLEANUP_TABLE_NAMES.index("offer_acceptances")
     )
     assert M2_CLEANUP_TABLE_NAMES.index("idempotency_keys") < (
         M2_CLEANUP_TABLE_NAMES.index("users")

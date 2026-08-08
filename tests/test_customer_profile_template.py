@@ -81,6 +81,7 @@ def test_customer_profile_template_renders_safe_draft_profile() -> None:
     assert 'href="/customer/onboarding"' in rendered
     assert 'href="/customer/activation"' in rendered
     assert 'href="/customer/shops"' in rendered
+    assert 'href="/customer/debts"' not in rendered
     assert "Faollashtirishga tayyorgarlik" in visible_html
     assert 'href="/auth/account"' in rendered
     assert raw_phone not in visible_html
@@ -117,7 +118,8 @@ def test_customer_profile_active_status_is_scope_safe() -> None:
 
     assert "Faollashtirilgan" in visible_html
     assert 'href="/customer/activation"' in rendered
-    for forbidden in ("qarz", "debt", "credit", "shop_customer", "eligibility"):
+    assert 'href="/customer/debts"' in rendered
+    for forbidden in ("credit", "shop_customer", "eligibility"):
         assert forbidden not in visible_html.casefold()
 
 

@@ -76,10 +76,10 @@ def test_m2_cleanup_tables_use_allowlist_with_m13_child_first_order(
     monkeypatch.setattr(postgresql, "inspect", lambda _: inspector)
 
     assert get_m2_cleanup_tables(Mock()) == [
-        "offer_acceptances",
         "otp_challenge_events",
         "otp_dispatches",
         "otp_challenges",
+        "offer_acceptances",
         "audit_log",
         "offer_texts",
         "offer_versions",

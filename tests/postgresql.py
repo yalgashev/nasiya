@@ -6,13 +6,13 @@ from sqlalchemy import inspect
 from sqlalchemy.engine import URL, Engine, make_url
 
 M2_CLEANUP_TABLE_NAMES = (
+    "otp_challenge_events",
+    "otp_dispatches",
+    "otp_challenges",
     "offer_acceptances",
     "idempotency_keys",
     "debts",
     "shop_customers",
-    "otp_challenge_events",
-    "otp_dispatches",
-    "otp_challenges",
     "customer_documents",
     "customer_identities",
     "audit_log",

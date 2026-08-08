@@ -239,8 +239,14 @@ def test_customer_id_urls_are_not_routable() -> None:
         if route.path_format.startswith("/customer")
     ]
 
-    assert all("{" not in route.path_format for route in customer_routes)
-    assert all(route.dependant.path_params == [] for route in customer_routes)
+    for route in customer_routes:
+        path_params = {param.name for param in route.dependant.path_params}
+        if route.path_format.startswith("/customer/debts/{debt_id}"):
+            assert path_params == {"debt_id"}
+        else:
+            assert path_params == set()
+        assert "{customer_id}" not in route.path_format
+        assert "{user_id}" not in route.path_format
 
     client = TestClient(application)
     response = client.get(f"/customer/{uuid4()}", follow_redirects=False)

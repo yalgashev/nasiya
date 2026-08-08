@@ -11,6 +11,7 @@ from app.auth.router import router as auth_router
 from app.customer.router import router as customer_router
 from app.customer_activation.router import validate_activation_csrf
 from app.customer_identity.router import upload_document
+from app.debt.dependencies import get_detached_customer_debt_authority
 from app.main import create_app
 
 UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -28,6 +29,10 @@ EXPECTED_ALL_CUSTOMER_ROUTES = {
     "/customer/activation/otp/verify": {"POST"},
     "/customer/activation/otp/new-code": {"POST"},
     "/customer/shops": {"GET"},
+    "/customer/debts": {"GET"},
+    "/customer/debts/{debt_id}": {"GET"},
+    "/customer/debts/{debt_id}/accept": {"POST"},
+    "/customer/debts/{debt_id}/reject": {"POST"},
 }
 
 
@@ -103,8 +108,11 @@ def test_customer_routes_forbid_external_ids_and_scope_drift() -> None:
 
     assert _merge_route_methods(customer_routes) == EXPECTED_ALL_CUSTOMER_ROUTES
     for route in customer_routes:
-        assert route.dependant.path_params == []
-        assert "{" not in route.path_format
+        path_param_names = {param.name for param in route.dependant.path_params}
+        if route.path_format.startswith("/customer/debts/{debt_id}"):
+            assert path_param_names == {"debt_id"}
+        else:
+            assert path_param_names == set()
         assert [
             query_param.name
             for query_param in route.dependant.query_params
@@ -136,6 +144,8 @@ def test_customer_routes_forbid_external_ids_and_scope_drift() -> None:
         "/customer/identity/document",
         "/customer/shops",
         "/customer/activation",
+        "/customer/debts",
+        "/customer/debts/{debt_id}",
     }
     assert "/customer/onboarding/start" not in get_customer_routes
 
@@ -149,12 +159,19 @@ def test_customer_routes_forbid_external_ids_and_scope_drift() -> None:
         "/customer/activation/otp/request",
         "/customer/activation/otp/verify",
         "/customer/activation/otp/new-code",
+        "/customer/debts/{debt_id}/accept",
+        "/customer/debts/{debt_id}/reject",
     }
     for route in customer_unsafe_routes:
         if route.endpoint is upload_document:
             continue
         assert any(
-            dependency.call in {validate_csrf, validate_activation_csrf}
+            dependency.call
+            in {
+                validate_csrf,
+                validate_activation_csrf,
+                get_detached_customer_debt_authority,
+            }
             for dependency in route.dependant.dependencies
         )
 

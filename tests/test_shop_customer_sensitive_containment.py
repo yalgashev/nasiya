@@ -35,13 +35,14 @@ def test_redirects_are_fixed_markers_and_never_interpolate_form_material() -> No
     assert "marker = error.value if error is not None else notice" in redirect
 
 
-def test_authorized_locator_is_confined_to_tenant_scoped_policy_form_action() -> None:
+def test_authorized_locator_is_confined_to_tenant_scoped_actions() -> None:
     template = (
         PROJECT_ROOT / "app" / "templates" / "shop_customer" / "roster.html"
     ).read_text(encoding="utf-8")
-    assert template.count("row.locator") == 1
+    assert template.count("row.locator") == 2
     assert 'action="/shop/customers/{{ row.locator }}/policy"' in template
-    assert "{{ row.locator }}" not in template.replace(
-        'action="/shop/customers/{{ row.locator }}/policy"',
-        "",
-    )
+    assert 'href="/shop/customers/{{ row.locator }}/debts"' in template
+    remaining = template.replace(
+        'action="/shop/customers/{{ row.locator }}/policy"', ""
+    ).replace('href="/shop/customers/{{ row.locator }}/debts"', "")
+    assert "{{ row.locator }}" not in remaining
