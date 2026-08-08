@@ -1,8 +1,23 @@
 # Nasiya M13 Known Limitations
 
-Status: authoritative accepted M13 scope limitations; implementation has not
-started. These are frozen boundaries, not work that a later M13 task may infer
-into scope.
+Status: authoritative accepted M13 scope limitations; implemented and manually
+verified locally through the seventh checkpoint. The eighth implementation
+checkpoint and all remote evidence remain pending. These are frozen boundaries,
+not work that a later M13 task may infer into scope.
+
+## Local manual evidence
+
+The exact seventh-checkpoint image was exercised with Google Chrome 150 and a
+real PostgreSQL database using synthetic data only. The shop matrix covered all
+three live roles, idempotent replay and conflict, limit/count/list gates,
+wrong-tenant access, suspended and revoked authority, and safe list/detail
+rendering. The customer matrix covered own legal views, accept replay, optional
+reject reason, required cancel reason, wrong-customer access, current-offer
+switch and refresh, suspended-shop decisions, exact reachable expiry, and a
+single terminal winner. Safe aggregate counts confirmed one acceptance/audit
+per successful accept and no payment, rating, notification, or scheduler
+surface. Temporary browser profiles and session-bearing fixtures were removed
+after the run and are not repository evidence.
 
 ## KL-M13-01 — Pending foundation, not a payment ledger
 
