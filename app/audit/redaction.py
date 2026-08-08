@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Final
 from uuid import UUID
 
@@ -16,6 +16,8 @@ from app.audit.contracts import (
 )
 from app.customer_document.contracts import CustomerDocumentStatus
 from app.customer_identity.contracts import CustomerDocumentType
+from app.debt.enums import DebtExpirySource
+from app.debt.values import MAX_DEBT_AMOUNT_UZS
 from app.offers.enums import OfferLanguage, OfferPurpose, OfferStatus
 from app.shop_customer.enums import ShopCustomerListStatus
 from app.shop_customer.values import MAX_CREDIT_LIMIT_UZS, MAX_OPEN_DEBTS
@@ -337,6 +339,67 @@ def _shop_customer_defaults_updated_payload(
     return payload
 
 
+def _debt_created_payload(metadata: Mapping[str, object]) -> AuditPayload:
+    values = _required(
+        metadata,
+        "original_amount_uzs",
+        "discount_basis_points",
+        "discounted_amount_uzs",
+        "due_date",
+        "pending_expires_at",
+    )
+    original_amount = _debt_amount_uzs(values["original_amount_uzs"])
+    discounted_amount = _debt_amount_uzs(values["discounted_amount_uzs"])
+    if discounted_amount > original_amount:
+        raise ValueError("Debt created audit discounted amount is invalid")
+    return {
+        "original_amount_uzs": original_amount,
+        "discount_basis_points": _discount_basis_points(
+            values["discount_basis_points"]
+        ),
+        "discounted_amount_uzs": discounted_amount,
+        "due_date": _iso_date(values["due_date"]),
+        "pending_expires_at": _serialized_utc_iso8601(values["pending_expires_at"]),
+    }
+
+
+def _debt_accepted_payload(metadata: Mapping[str, object]) -> AuditPayload:
+    values = _required(
+        metadata,
+        "offer_version_number",
+        "language",
+        "content_hash",
+    )
+    return {
+        "offer_version_number": _positive_integer(values["offer_version_number"]),
+        "language": _serialized_language(values["language"]),
+        "content_hash": _content_hash(values["content_hash"]),
+    }
+
+
+def _debt_rejected_payload(metadata: Mapping[str, object]) -> AuditPayload:
+    values = _required(metadata, "reason_provided")
+    return {"reason_provided": _boolean(values["reason_provided"])}
+
+
+def _debt_cancelled_payload(metadata: Mapping[str, object]) -> AuditPayload:
+    values = _required(metadata, "reason_provided")
+    if values["reason_provided"] is not True:
+        raise ValueError("Debt cancelled audit requires a reason")
+    return {"reason_provided": True}
+
+
+def _debt_expired_payload(metadata: Mapping[str, object]) -> AuditPayload:
+    values = _required(metadata, "source")
+    source = values["source"]
+    if not isinstance(source, str):
+        raise ValueError("Debt expired audit source is invalid")
+    try:
+        return {"source": DebtExpirySource(source).value}
+    except ValueError as exc:
+        raise ValueError("Debt expired audit source is invalid") from exc
+
+
 _PAYLOAD_BUILDERS: Final[
     Mapping[AuditEventType, Callable[[Mapping[str, object]], AuditPayload]]
 ] = {
@@ -361,6 +424,11 @@ _PAYLOAD_BUILDERS: Final[
     AuditEventType.SHOP_CUSTOMER_DEFAULTS_UPDATED: (
         _shop_customer_defaults_updated_payload
     ),
+    AuditEventType.DEBT_CREATED: _debt_created_payload,
+    AuditEventType.DEBT_ACCEPTED: _debt_accepted_payload,
+    AuditEventType.DEBT_REJECTED: _debt_rejected_payload,
+    AuditEventType.DEBT_CANCELLED: _debt_cancelled_payload,
+    AuditEventType.DEBT_EXPIRED: _debt_expired_payload,
 }
 
 
@@ -422,6 +490,68 @@ def _shop_customer_list_status(value: object) -> str:
     if not isinstance(value, ShopCustomerListStatus):
         raise ValueError("Shop customer audit list status is invalid")
     return value.value
+
+
+def _debt_amount_uzs(value: object) -> int:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not 1 <= value <= int(MAX_DEBT_AMOUNT_UZS)
+    ):
+        raise ValueError("Debt created audit amount is invalid")
+    return value
+
+
+def _discount_basis_points(value: object) -> int:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not 0 <= value <= 10_000
+    ):
+        raise ValueError("Debt created audit discount is invalid")
+    return value
+
+
+def _iso_date(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Debt created audit due date is invalid")
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("Debt created audit due date is invalid") from exc
+    if parsed.isoformat() != value:
+        raise ValueError("Debt created audit due date is invalid")
+    return value
+
+
+def _serialized_utc_iso8601(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Debt created audit expiry is invalid")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("Debt created audit expiry is invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("Debt created audit expiry is invalid")
+    normalized = parsed.astimezone(UTC).isoformat()
+    if normalized != value:
+        raise ValueError("Debt created audit expiry is invalid")
+    return value
+
+
+def _serialized_language(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Debt accepted audit language is invalid")
+    try:
+        return OfferLanguage(value).value
+    except ValueError as exc:
+        raise ValueError("Debt accepted audit language is invalid") from exc
+
+
+def _boolean(value: object) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError("Debt audit boolean is invalid")
+    return value
 
 
 def _content_hash(value: object) -> str:

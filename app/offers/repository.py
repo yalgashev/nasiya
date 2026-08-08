@@ -249,6 +249,34 @@ class SqlAlchemyCurrentOfferResolver:
             lock_for_acceptance=True,
         )
 
+    def lock_current_version_with_all_texts(
+        self,
+        *,
+        purpose: OfferPurpose,
+    ) -> tuple[OfferVersion, tuple[StoredOfferText, ...]] | None:
+        """Lock the exact current version and read its complete language set."""
+
+        statement = (
+            select(OfferVersionModel)
+            .where(
+                OfferVersionModel.purpose == purpose.value,
+                OfferVersionModel.status == OfferStatus.CURRENT.value,
+            )
+            .with_for_update(read=True, of=OfferVersionModel)
+        )
+        model = self._session.scalar(statement)
+        if model is None:
+            return None
+        text_statement = (
+            select(OfferTextModel)
+            .where(OfferTextModel.offer_version_id == model.id)
+            .order_by(OfferTextModel.language, OfferTextModel.id)
+        )
+        texts = tuple(
+            _to_stored_text(text) for text in self._session.scalars(text_statement)
+        )
+        return _to_domain_version(model), texts
+
     def _resolve(
         self,
         *,

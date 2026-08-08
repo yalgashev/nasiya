@@ -15,6 +15,7 @@ from app.audit.contracts import (
     DebtExpiredAuditPayload,
     DebtRejectedAuditPayload,
 )
+from app.audit.redaction import redact_audit_payload
 from app.auth.error_codes import ERROR_CATALOG, ErrorCode
 from app.debt.enums import DebtExpirySource
 from app.debt.values import DiscountBasisPoints, DiscountedAmountUZS, OriginalAmountUZS
@@ -51,6 +52,40 @@ def test_exact_five_debt_audit_payloads_are_identifier_and_reason_safe() -> None
     assert expired.as_candidate_metadata() == {"source": "inline"}
     with pytest.raises(ValueError, match="requires a reason"):
         DebtCancelledAuditPayload(reason_provided=False)
+
+    cases = (
+        (AuditEventType.DEBT_CREATED, created),
+        (AuditEventType.DEBT_ACCEPTED, accepted),
+        (AuditEventType.DEBT_REJECTED, rejected),
+        (AuditEventType.DEBT_CANCELLED, cancelled),
+        (AuditEventType.DEBT_EXPIRED, expired),
+    )
+    forbidden = {
+        "reason": "private reason",
+        "phone": "+998901234567",
+        "raw_form": "private form",
+    }
+    for event_type, payload in cases:
+        actor_kind = (
+            AuditActorKind.SYSTEM
+            if event_type is AuditEventType.DEBT_EXPIRED
+            else AuditActorKind.USER
+        )
+        actor_user_id = None if actor_kind is AuditActorKind.SYSTEM else uuid4()
+        metadata = {**payload.as_candidate_metadata(), **forbidden}
+        redacted = redact_audit_payload(
+            AuditEvent(
+                event_type=event_type,
+                actor_kind=actor_kind,
+                actor_user_id=actor_user_id,
+                object_type=AuditObjectType.DEBT,
+                object_id=uuid4(),
+                occurred_at=datetime(2026, 5, 4, tzinfo=UTC),
+                candidate_metadata=metadata,
+            )
+        )
+        assert redacted == payload.as_candidate_metadata()
+        assert set(redacted).isdisjoint(forbidden)
 
 
 def test_debt_expired_is_only_new_system_audit_event_and_errors_are_catalogued() -> (

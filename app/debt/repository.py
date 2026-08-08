@@ -20,6 +20,10 @@ from app.debt.policy import (
 )
 from app.debt.values import DebtId, ShopCustomerId
 from app.shop_customer.models import ShopCustomer
+from app.shop_customer.repository import (
+    _LockedShopCustomer,
+    _validate_locked_shop_customer,
+)
 
 __all__ = (
     "LockedDebtPredecessor",
@@ -47,13 +51,12 @@ class LockedDebtPredecessor:
 
 
 def mark_debt_predecessor_locked(
-    session: Session, *, shop_customer: ShopCustomer
+    session: Session, *, locked_shop_customer: _LockedShopCustomer
 ) -> LockedDebtPredecessor:
-    if not isinstance(shop_customer, ShopCustomer):
-        raise TypeError("shop_customer must be a locked ShopCustomer")
+    locked = _validate_locked_shop_customer(session, locked_shop_customer)
     return LockedDebtPredecessor(
-        shop_customer_id=shop_customer.id,
-        customer_id=shop_customer.customer_id,
+        shop_customer_id=locked.row.id,
+        customer_id=locked.row.customer_id,
         _session=session,
     )
 

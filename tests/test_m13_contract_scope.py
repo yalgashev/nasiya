@@ -14,8 +14,10 @@ FORBIDDEN_RUNTIME_IMPORTS = (
     "app.storage",
     "app.customer_identity",
 )
+RUNTIME_IMPORT_EXCEPTIONS = {
+    Path("app/debt/dependencies.py"): ("fastapi",),
+}
 PERSISTENCE_OR_TRANSPORT_FILES = {
-    "service.py",
     "router.py",
 }
 
@@ -31,14 +33,17 @@ def _imports(path: Path) -> tuple[str, ...]:
     return tuple(imported)
 
 
-def test_m13_model_checkpoint_has_only_models_and_no_transport_or_out_imports() -> None:
+def test_m13_runtime_has_only_explicit_transport_and_no_out_imports() -> None:
     python_files = tuple(
         path for root in PACKAGE_ROOTS for path in sorted(root.glob("*.py"))
     )
     assert python_files
     assert PERSISTENCE_OR_TRANSPORT_FILES.isdisjoint(path.name for path in python_files)
     for path in python_files:
+        exceptions = RUNTIME_IMPORT_EXCEPTIONS.get(path, ())
         for imported in _imports(path):
+            if imported.startswith(exceptions):
+                continue
             assert not imported.startswith(FORBIDDEN_RUNTIME_IMPORTS), (
                 f"{path} imports out-of-scope runtime module {imported}"
             )
