@@ -1,9 +1,13 @@
 # Nasiya M13 Known Limitations
 
-Status: authoritative accepted M13 scope limitations; implemented and manually
-verified locally through the seventh checkpoint. The eighth implementation
-checkpoint and all remote evidence remain pending. These are frozen boundaries,
-not work that a later M13 task may infer into scope.
+Status: authoritative accepted M13 scope limitations; implementation and manual
+evidence are locally GREEN, and the exact eighth checkpoint is remote GREEN.
+These are frozen boundaries, not work that a later task may infer into scope.
+
+Remote closure evidence is GitHub Actions run `31261604184`, job
+`93113180042`, for exact implementation tree
+`c6b5eb0aed9fcf0b87dd1aabbc5816957e25b840`: 3643 PostgreSQL tests passed with
+zero failed, skipped, xfailed, or xpassed outcomes.
 
 ## Local manual evidence
 

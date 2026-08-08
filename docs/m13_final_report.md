@@ -1,11 +1,11 @@
-# M13 Final Technical Report — Pre-Remote Draft
+# M13 Final Technical Report
 
-Status: `LOCAL GREEN — EIGHTH CHECKPOINT AND REMOTE EVIDENCE PENDING`
+Status: `M13 REMOTE GREEN — CLOSED`
 Date: 2026-08-08
 
-This draft records the implemented M13 tree through its immutable seventh
-checkpoint, real PostgreSQL and Chrome acceptance, and local validation. It does
-not claim an eighth checkpoint, push, GitHub Actions run, or remote green.
+This report records the exact pushed implementation tree, all eight immutable
+checkpoints, real PostgreSQL and Chrome acceptance, repeated local validation,
+and successful remote GitHub Actions evidence for M13 closure.
 
 ## Baseline And Authority
 
@@ -15,6 +15,9 @@ not claim an eighth checkpoint, push, GitHub Actions run, or remote green.
   `d9c80a272a1df86c5aefa1a7e0ff81e68e65c13d`.
 - Pre-M13 Alembic head: `e3f4a5b6c7d8`.
 - Current M13 Alembic head/current: `f4a5b6c7d8e` / `f4a5b6c7d8e`.
+- Eighth implementation checkpoint and exact remote-tested tree:
+  `c6b5eb0aed9fcf0b87dd1aabbc5816957e25b840`.
+- Implementation CI: run `31261604184`, job `93113180042`.
 - Authority order and protected-document policy remain those frozen in
   `docs/m13_scope_contract.md`; TT, Product Gate, Final Scope Freeze, and the
   micro-task guide were not edited.
@@ -88,6 +91,7 @@ Debt, idempotency-key, decision, or acceptance mutation.
 | Full real-PostgreSQL suite at M13.65/M13.66 | 3643 passed; zero failed/skipped/xfailed/xpassed |
 | Alembic current / single head | `f4a5b6c7d8e` / `f4a5b6c7d8e` |
 | M13.69 repeated full suite after docs draft | 3643 passed in 331.65s; zero failed/skipped/xfailed/xpassed |
+| Exact implementation remote CI | 3643 passed in 179.29s; zero failed/skipped/xfailed/xpassed |
 
 The two reported warnings are upstream deprecations and are not nonpass test
 outcomes.
@@ -128,10 +132,32 @@ sessions are not recorded here.
 5. `b3996e81d7ba821438c58dfe61e4241b7e0ad7af` — `M13: add customer debt decisions`
 6. `84aa3640b123d8472e42dbab32ad37f34b12d07d` — `M13: expose pending debt web flows`
 7. `afef31649251ee4f6abf257e51164a9c71c78701` — `M13: harden debt security and concurrency`
-8. PENDING — `M13: complete pending debt foundation`
+8. `c6b5eb0aed9fcf0b87dd1aabbc5816957e25b840` — `M13: complete pending debt foundation`
 
-The first seven subjects have intact linear ancestry. The eighth checkpoint is
-deliberately not created by M13.69, and nothing has been pushed.
+All eight subjects have intact linear ancestry from the M12 docs-only closeout.
+The exact eighth checkpoint was pushed normally without amend, rebase, squash,
+or force push.
+
+## Remote Evidence
+
+| Evidence | Final value |
+|---|---|
+| Exact pushed implementation tree | `c6b5eb0aed9fcf0b87dd1aabbc5816957e25b840` |
+| GitHub Actions run / job | `31261604184` / `93113180042` (`dependency-sync`) |
+| Checkout head | `c6b5eb0aed9fcf0b87dd1aabbc5816957e25b840` |
+| Frozen dependency sync | GREEN |
+| Alembic migration/current/head | GREEN / `f4a5b6c7d8e` / `f4a5b6c7d8e` |
+| Ruff check / format check | GREEN / GREEN |
+| Narrow real MinIO integration | 16 passed |
+| Remote full PostgreSQL pytest | 3643 passed in 179.29s; zero nonpass outcomes |
+| Required workflow steps | all completed successfully |
+
+The implementation run is available in [GitHub Actions run
+31261604184](https://github.com/yalgashev/nasiya/actions/runs/31261604184).
+The only annotation is the hosted-runner Node.js action-runtime deprecation;
+it did not skip or fail a required M13 gate. This docs-only closeout uses the
+exact subject `docs: close M13 remote evidence` and changes only the three
+documents authorized by M13.73.
 
 ## Accepted OUT Boundary
 
