@@ -10,7 +10,8 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.debt.contracts import DebtAggregate
+from app.customer.models import Customer
+from app.debt.contracts import DebtAggregate, DebtReason
 from app.debt.enums import DebtStatus
 from app.debt.models import Debt
 from app.debt.policy import (
@@ -18,7 +19,16 @@ from app.debt.policy import (
     OpenDebtCount,
     OpenDebtExposure,
 )
-from app.debt.values import DebtId, ShopCustomerId
+from app.debt.values import (
+    DebtId,
+    DebtRevision,
+    DiscountBasisPoints,
+    DiscountedAmountUZS,
+    OriginalAmountUZS,
+    ShopCustomerId,
+    UserId,
+)
+from app.shop.models import Shop
 from app.shop_customer.models import ShopCustomer
 from app.shop_customer.repository import (
     _LockedShopCustomer,
@@ -28,11 +38,15 @@ from app.shop_customer.repository import (
 __all__ = (
     "LockedDebtPredecessor",
     "SqlAlchemyDebtOpenSetReader",
+    "CustomerOwnedDebtRow",
     "discover_debt_candidates",
+    "debt_aggregate_from_row",
     "get_customer_owned_debt",
+    "get_customer_owned_debt_with_shop",
     "get_tenant_debt",
     "insert_debt",
     "list_customer_owned_debts",
+    "list_customer_owned_debts_with_shops",
     "list_tenant_debts",
     "lock_debts_in_id_order",
     "mark_debt_predecessor_locked",
@@ -48,6 +62,48 @@ class LockedDebtPredecessor:
 
     def __repr__(self) -> str:
         return "LockedDebtPredecessor(<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class CustomerOwnedDebtRow:
+    """Trusted repository result; the service emits the redacted public view."""
+
+    debt: Debt
+    shop_name: str
+
+    def __repr__(self) -> str:
+        return "CustomerOwnedDebtRow(<redacted>)"
+
+
+def debt_aggregate_from_row(row: Debt) -> DebtAggregate:
+    if not isinstance(row, Debt):
+        raise TypeError("row must be a Debt")
+    return DebtAggregate(
+        id=DebtId(row.id),
+        shop_customer_id=ShopCustomerId(row.shop_customer_id),
+        created_by_user_id=UserId(row.created_by_user_id),
+        original_amount=OriginalAmountUZS(row.original_amount_uzs),
+        discount_basis_points=DiscountBasisPoints(row.discount_basis_points),
+        discounted_amount=DiscountedAmountUZS(row.discounted_amount_uzs),
+        due_date=row.due_date,
+        pending_expires_at=row.pending_expires_at,
+        status=DebtStatus(row.status),
+        revision=DebtRevision(row.revision),
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        accepted_at=row.accepted_at,
+        rejected_at=row.rejected_at,
+        cancelled_at=row.cancelled_at,
+        expired_at=row.expired_at,
+        rejection_reason=(
+            None if row.rejection_reason is None else DebtReason(row.rejection_reason)
+        ),
+        cancellation_reason=(
+            None
+            if row.cancellation_reason is None
+            else DebtReason(row.cancellation_reason)
+        ),
+    )
 
 
 def mark_debt_predecessor_locked(
@@ -99,6 +155,46 @@ def get_customer_owned_debt(
         .join(ShopCustomer, ShopCustomer.id == Debt.shop_customer_id)
         .where(ShopCustomer.customer_id == customer_id, Debt.id == debt_id.as_uuid())
     )
+
+
+def list_customer_owned_debts_with_shops(
+    session: Session, *, customer_id: UUID
+) -> list[CustomerOwnedDebtRow]:
+    """Traverse Customer -> ShopCustomer -> Debt; never accept a shop locator."""
+
+    statement = (
+        select(Debt, Shop.name)
+        .select_from(Customer)
+        .join(ShopCustomer, ShopCustomer.customer_id == Customer.id)
+        .join(Debt, Debt.shop_customer_id == ShopCustomer.id)
+        .join(Shop, Shop.id == ShopCustomer.shop_id)
+        .where(Customer.id == customer_id)
+        .order_by(Debt.created_at.desc(), Debt.id)
+    )
+    return [
+        CustomerOwnedDebtRow(debt=debt, shop_name=shop_name)
+        for debt, shop_name in session.execute(statement)
+    ]
+
+
+def get_customer_owned_debt_with_shop(
+    session: Session, *, customer_id: UUID, debt_id: DebtId
+) -> CustomerOwnedDebtRow | None:
+    """Resolve one opaque Debt locator exclusively through the own Customer path."""
+
+    statement = (
+        select(Debt, Shop.name)
+        .select_from(Customer)
+        .join(ShopCustomer, ShopCustomer.customer_id == Customer.id)
+        .join(Debt, Debt.shop_customer_id == ShopCustomer.id)
+        .join(Shop, Shop.id == ShopCustomer.shop_id)
+        .where(Customer.id == customer_id, Debt.id == debt_id.as_uuid())
+    )
+    row = session.execute(statement).one_or_none()
+    if row is None:
+        return None
+    debt, shop_name = row
+    return CustomerOwnedDebtRow(debt=debt, shop_name=shop_name)
 
 
 def discover_debt_candidates(

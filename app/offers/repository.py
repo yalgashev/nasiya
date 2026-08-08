@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.debt.values import DebtId
 from app.offers.contracts import (
     DebtOfferAcceptanceSnapshot,
     LegalReviewEvidence,
@@ -249,6 +250,17 @@ class SqlAlchemyCurrentOfferResolver:
             lock_for_acceptance=True,
         )
 
+    def resolve_current_debt_for_acceptance(
+        self,
+        *,
+        language: OfferLanguage,
+    ) -> ResolvedCurrentOffer | None:
+        return self._resolve(
+            purpose=OfferPurpose.DEBT_ACCEPTANCE,
+            language=language,
+            lock_for_acceptance=True,
+        )
+
     def lock_current_version_with_all_texts(
         self,
         *,
@@ -267,6 +279,25 @@ class SqlAlchemyCurrentOfferResolver:
         model = self._session.scalar(statement)
         if model is None:
             return None
+        return _to_domain_version(model), self._read_all_texts(model)
+
+    def resolve_current_version_with_all_texts(
+        self,
+        *,
+        purpose: OfferPurpose,
+    ) -> tuple[OfferVersion, tuple[StoredOfferText, ...]] | None:
+        """Read the exact current version and all of its text variants."""
+
+        statement = select(OfferVersionModel).where(
+            OfferVersionModel.purpose == purpose.value,
+            OfferVersionModel.status == OfferStatus.CURRENT.value,
+        )
+        model = self._session.scalar(statement)
+        if model is None:
+            return None
+        return _to_domain_version(model), self._read_all_texts(model)
+
+    def _read_all_texts(self, model: OfferVersionModel) -> tuple[StoredOfferText, ...]:
         text_statement = (
             select(OfferTextModel)
             .where(OfferTextModel.offer_version_id == model.id)
@@ -275,7 +306,7 @@ class SqlAlchemyCurrentOfferResolver:
         texts = tuple(
             _to_stored_text(text) for text in self._session.scalars(text_statement)
         )
-        return _to_domain_version(model), texts
+        return texts
 
     def _resolve(
         self,
@@ -330,6 +361,21 @@ class SqlAlchemyOfferAcceptanceRepository:
         )
         model = self._session.scalar(statement)
         return None if model is None else _to_stored_acceptance(model)
+
+    def get_debt_acceptance(
+        self,
+        *,
+        debt_id: DebtId,
+    ) -> StoredDebtOfferAcceptance | None:
+        if not isinstance(debt_id, DebtId):
+            raise TypeError("debt_id must be a DebtId")
+        model = self._session.scalar(
+            select(OfferAcceptanceModel).where(
+                OfferAcceptanceModel.debt_id == debt_id.as_uuid(),
+                OfferAcceptanceModel.purpose == OfferPurpose.DEBT_ACCEPTANCE.value,
+            )
+        )
+        return None if model is None else _to_stored_debt_acceptance(model)
 
     def lock_earliest_exact_current_registration_acceptance(
         self,
@@ -499,6 +545,28 @@ def _to_stored_acceptance(
         id=model.id,
         acceptance=RegistrationOfferAcceptance(
             user_id=model.user_id,
+            offer_version_id=model.offer_version_id,
+            offer_text_id=model.offer_text_id,
+            purpose=OfferPurpose(model.purpose),
+            language=OfferLanguage(model.language),
+            version_number=model.version_number,
+            content_hash=model.content_hash,
+            accepted_at=model.accepted_at,
+            user_agent=model.user_agent,
+        ),
+    )
+
+
+def _to_stored_debt_acceptance(
+    model: OfferAcceptanceModel,
+) -> StoredDebtOfferAcceptance:
+    if model.debt_id is None:
+        raise ValueError("Persisted debt acceptance is missing its debt")
+    return StoredDebtOfferAcceptance(
+        id=model.id,
+        acceptance=DebtOfferAcceptanceSnapshot(
+            user_id=model.user_id,
+            debt_id=DebtId(model.debt_id),
             offer_version_id=model.offer_version_id,
             offer_text_id=model.offer_text_id,
             purpose=OfferPurpose(model.purpose),
