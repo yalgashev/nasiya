@@ -68,10 +68,10 @@ jobs:
       - name: Show Alembic current revision
         run: uv run alembic current
 
-      - name: Verify Alembic M12 head
+      - name: Verify Alembic M13 head
         run: |
           current_revision="$(uv run alembic current | awk '{print $1}')"
-          test "$current_revision" = "e3f4a5b6c7d8"
+          test "$current_revision" = "f4a5b6c7d8e"
 
       - name: Run Ruff
         run: |

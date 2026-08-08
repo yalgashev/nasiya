@@ -270,11 +270,21 @@ class OfferText(Base):
 class OfferAcceptance(Base):
     __tablename__ = "offer_acceptances"
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "uq_offer_acceptances_user_id_offer_text_id_purpose",
             "user_id",
             "offer_text_id",
             "purpose",
-            name="uq_offer_acceptances_user_id_offer_text_id_purpose",
+            unique=True,
+            postgresql_where=sqlalchemy_text(
+                f"purpose = '{OfferPurpose.REGISTRATION.value}' AND debt_id IS NULL"
+            ),
+        ),
+        Index(
+            "uq_offer_acceptances_debt_id",
+            "debt_id",
+            unique=True,
+            postgresql_where=sqlalchemy_text("debt_id IS NOT NULL"),
         ),
         CheckConstraint(
             (
@@ -310,6 +320,15 @@ class OfferAcceptance(Base):
                 "AND user_agent !~ '  +')"
             ),
             name="ck_offer_acceptances_user_agent_normalized",
+        ),
+        CheckConstraint(
+            (
+                f"(purpose = '{OfferPurpose.REGISTRATION.value}' "
+                "AND debt_id IS NULL) "
+                f"OR (purpose = '{OfferPurpose.DEBT_ACCEPTANCE.value}' "
+                "AND debt_id IS NOT NULL)"
+            ),
+            name="ck_offer_acceptances_purpose_debt_id_consistent",
         ),
     )
 
@@ -358,6 +377,15 @@ class OfferAcceptance(Base):
         String(512),
         nullable=True,
     )
+    debt_id: Mapped[UUID | None] = mapped_column(
+        PostgresUUID(as_uuid=True),
+        ForeignKey(
+            "debts.id",
+            name="fk_offer_acceptances_debt_id_debts_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
+    )
 
     def __repr__(self) -> str:
         return (
@@ -370,5 +398,5 @@ class OfferAcceptance(Base):
             f"version_number={self.version_number!r}, "
             f"content_hash={self.content_hash!r}, "
             f"accepted_at={self.accepted_at!r}, "
-            "user_id=<redacted>, user_agent=<redacted>)"
+            "user_id=<redacted>, user_agent=<redacted>, debt_id=<redacted>)"
         )

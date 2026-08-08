@@ -14,7 +14,6 @@ from app.customer.models import Customer
 from app.db import create_database_session_factory
 from app.shop.models import Shop
 from app.shop_customer.models import ShopCustomer
-from tests.postgresql import M2_CLEANUP_TABLE_NAMES
 from tests.test_shop_customer_repository_postgresql import (
     _add_active_customer,
     _add_shop,
@@ -22,6 +21,33 @@ from tests.test_shop_customer_repository_postgresql import (
 )
 
 M12_REVISION = "e3f4a5b6c7d8"
+M12_SCHEMA_TABLES = {
+    "shop_customers",
+    "otp_challenge_events",
+    "otp_dispatches",
+    "otp_challenges",
+    "customer_documents",
+    "customer_identities",
+    "audit_log",
+    "offer_acceptances",
+    "offer_texts",
+    "offer_versions",
+    "object_files",
+    "otp_dispatcher_state",
+    "telegram_update_failures",
+    "telegram_polling_state",
+    "telegram_link_events",
+    "telegram_link_tokens",
+    "telegram_links",
+    "customers",
+    "auth_rate_limits",
+    "sessions",
+    "shop_staff_events",
+    "shop_status_events",
+    "shop_staff",
+    "shops",
+    "users",
+}
 NOW = datetime(2026, 8, 7, 15, 0, tzinfo=UTC)
 
 
@@ -74,7 +100,7 @@ def test_current_database_matches_exact_m12_metadata_and_head(
     inspector = inspect(m2_test_database)
     assert set(inspector.get_table_names()) == {
         "alembic_version",
-        *M2_CLEANUP_TABLE_NAMES,
+        *M12_SCHEMA_TABLES,
     }
     with m2_test_database.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (

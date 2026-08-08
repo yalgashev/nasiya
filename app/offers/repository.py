@@ -8,11 +8,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.offers.contracts import (
+    DebtOfferAcceptanceSnapshot,
     LegalReviewEvidence,
     OfferTextVariant,
     OfferVersion,
     RegistrationOfferAcceptance,
     ResolvedCurrentOffer,
+    StoredDebtOfferAcceptance,
     StoredOfferText,
     StoredRegistrationOfferAcceptance,
     next_offer_version_number,
@@ -25,6 +27,7 @@ from app.offers.models import OfferVersion as OfferVersionModel
 _VERSION_NUMBER_CONSTRAINT = "uq_offer_versions_purpose_version_number"
 _TEXT_LANGUAGE_CONSTRAINT = "uq_offer_texts_offer_version_id_language"
 _ACCEPTANCE_REPLAY_CONSTRAINT = "uq_offer_acceptances_user_id_offer_text_id_purpose"
+_DEBT_ACCEPTANCE_CONSTRAINT = "uq_offer_acceptances_debt_id"
 
 
 class OfferVersionAllocationConflict(RuntimeError):
@@ -295,6 +298,7 @@ class SqlAlchemyOfferAcceptanceRepository:
             OfferAcceptanceModel.user_id == user_id,
             OfferAcceptanceModel.offer_text_id == offer_text_id,
             OfferAcceptanceModel.purpose == purpose.value,
+            OfferAcceptanceModel.debt_id.is_(None),
         )
         model = self._session.scalar(statement)
         return None if model is None else _to_stored_acceptance(model)
@@ -321,6 +325,7 @@ class SqlAlchemyOfferAcceptanceRepository:
                 OfferAcceptanceModel.user_id == user_id,
                 OfferAcceptanceModel.offer_version_id == current_version.id,
                 OfferAcceptanceModel.purpose == OfferPurpose.REGISTRATION.value,
+                OfferAcceptanceModel.debt_id.is_(None),
                 OfferAcceptanceModel.version_number == current_version.version_number,
                 OfferAcceptanceModel.language == OfferTextModel.language,
                 OfferAcceptanceModel.content_hash == OfferTextModel.content_hash,
@@ -362,6 +367,33 @@ class SqlAlchemyOfferAcceptanceRepository:
                 ) from None
             raise
         return _to_stored_acceptance(model)
+
+    def create_debt_acceptance(
+        self, *, acceptance: DebtOfferAcceptanceSnapshot
+    ) -> StoredDebtOfferAcceptance:
+        model = OfferAcceptanceModel(
+            user_id=acceptance.user_id,
+            offer_version_id=acceptance.offer_version_id,
+            offer_text_id=acceptance.offer_text_id,
+            purpose=acceptance.purpose.value,
+            language=acceptance.language.value,
+            version_number=acceptance.version_number,
+            content_hash=acceptance.content_hash,
+            accepted_at=acceptance.accepted_at,
+            user_agent=acceptance.user_agent,
+            debt_id=acceptance.debt_id.as_uuid(),
+        )
+        try:
+            with self._session.begin_nested():
+                self._session.add(model)
+                self._session.flush()
+        except IntegrityError as exc:
+            if _constraint_name(exc) == _DEBT_ACCEPTANCE_CONSTRAINT:
+                raise OfferAcceptanceInsertConflict(
+                    "Debt offer acceptance insert conflicted"
+                ) from None
+            raise
+        return StoredDebtOfferAcceptance(id=model.id, acceptance=acceptance)
 
 
 class SqlAlchemyHasAcceptedCurrentRegistrationOffer:

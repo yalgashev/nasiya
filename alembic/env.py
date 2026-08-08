@@ -11,6 +11,8 @@ from app.customer import models as _customer_models  # noqa: F401
 from app.customer_document import models as _customer_document_models  # noqa: F401
 from app.customer_identity import models as _customer_identity_models  # noqa: F401
 from app.db import Base
+from app.debt import models as _debt_models  # noqa: F401
+from app.idempotency import models as _idempotency_models  # noqa: F401
 from app.offers import models as _offer_models  # noqa: F401
 from app.otp import models as _otp_models  # noqa: F401
 from app.settings import Settings

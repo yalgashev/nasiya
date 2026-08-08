@@ -4,7 +4,6 @@ from pathlib import Path
 PACKAGE_ROOTS = (Path("app/debt"), Path("app/idempotency"))
 FORBIDDEN_RUNTIME_IMPORTS = (
     "fastapi",
-    "sqlalchemy",
     "starlette",
     "app.payment",
     "app.payments",
@@ -16,8 +15,6 @@ FORBIDDEN_RUNTIME_IMPORTS = (
     "app.customer_identity",
 )
 PERSISTENCE_OR_TRANSPORT_FILES = {
-    "models.py",
-    "repository.py",
     "service.py",
     "router.py",
 }
@@ -34,7 +31,7 @@ def _imports(path: Path) -> tuple[str, ...]:
     return tuple(imported)
 
 
-def test_m13_contract_checkpoint_has_no_persistence_transport_or_out_imports() -> None:
+def test_m13_model_checkpoint_has_only_models_and_no_transport_or_out_imports() -> None:
     python_files = tuple(
         path for root in PACKAGE_ROOTS for path in sorted(root.glob("*.py"))
     )

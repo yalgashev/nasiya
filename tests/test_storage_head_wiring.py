@@ -11,6 +11,7 @@ M10_REVISION = "b0c1d2e3f4a5"
 M11_ORIGINAL_REVISION = "c1d2e3f4a5b6"
 M11_RECOVERY_REVISION = "d2e3f4a5b6c7"
 M12_REVISION = "e3f4a5b6c7d8"
+M13_REVISION = "f4a5b6c7d8e"
 M11_CLEANUP_PREFIX = (
     "otp_challenge_events",
     "otp_dispatches",
@@ -23,7 +24,12 @@ M11_CLEANUP_PREFIX = (
     "offer_versions",
     "object_files",
 )
-M12_CLEANUP_PREFIX = ("shop_customers",) + M11_CLEANUP_PREFIX
+M13_CLEANUP_PREFIX = (
+    "offer_acceptances",
+    "idempotency_keys",
+    "debts",
+    "shop_customers",
+)
 INHERITED_CLEANUP_ORDER = (
     "otp_dispatcher_state",
     "telegram_update_failures",
@@ -40,14 +46,22 @@ INHERITED_CLEANUP_ORDER = (
     "shops",
     "users",
 )
+M13_INHERITED_CLEANUP_ORDER = (
+    tuple(
+        table_name
+        for table_name in M11_CLEANUP_PREFIX
+        if table_name != "offer_acceptances"
+    )
+    + INHERITED_CLEANUP_ORDER
+)
 
 
-def test_code_and_ci_are_wired_to_exact_m12_head() -> None:
+def test_code_and_ci_are_wired_to_exact_m13_head() -> None:
     workflow = (PROJECT_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
-    assert get_alembic_head() == M12_REVISION
-    assert "Verify Alembic M12 head" in workflow
-    assert f'test "$current_revision" = "{M12_REVISION}"' in workflow
+    assert get_alembic_head() == M13_REVISION
+    assert "Verify Alembic M13 head" in workflow
+    assert f'test "$current_revision" = "{M13_REVISION}"' in workflow
     assert f'test "$current_revision" = "{M11_RECOVERY_REVISION}"' not in workflow
     assert f'test "$current_revision" = "{M11_ORIGINAL_REVISION}"' not in workflow
     assert f'test "$current_revision" = "{M10_REVISION}"' not in workflow
@@ -70,15 +84,16 @@ def test_alembic_metadata_has_minimal_storage_model_import() -> None:
     assert env_source.count("app.shop_customer") == 1
 
 
-def test_cleanup_keeps_m11_order_source_scoped_with_one_m12_child() -> None:
-    assert M2_CLEANUP_TABLE_NAMES == M12_CLEANUP_PREFIX + INHERITED_CLEANUP_ORDER
-    assert (
-        tuple(
-            table_name
-            for table_name in M2_CLEANUP_TABLE_NAMES
-            if table_name != "shop_customers"
-        )
-        == M11_CLEANUP_PREFIX + INHERITED_CLEANUP_ORDER
+def test_cleanup_extends_current_head_with_m13_children_first_order() -> None:
+    assert M2_CLEANUP_TABLE_NAMES == M13_CLEANUP_PREFIX + M13_INHERITED_CLEANUP_ORDER
+    assert M2_CLEANUP_TABLE_NAMES.index("offer_acceptances") < (
+        M2_CLEANUP_TABLE_NAMES.index("debts")
+    )
+    assert M2_CLEANUP_TABLE_NAMES.index("idempotency_keys") < (
+        M2_CLEANUP_TABLE_NAMES.index("users")
+    )
+    assert M2_CLEANUP_TABLE_NAMES.index("debts") < (
+        M2_CLEANUP_TABLE_NAMES.index("shop_customers")
     )
     assert M2_CLEANUP_TABLE_NAMES.index("shop_customers") < (
         M2_CLEANUP_TABLE_NAMES.index("customers")

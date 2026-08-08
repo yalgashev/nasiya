@@ -10,6 +10,8 @@ import app.auth.models  # noqa: F401
 import app.customer.models  # noqa: F401
 import app.customer_document.models  # noqa: F401
 import app.customer_identity.models  # noqa: F401
+import app.debt.models  # noqa: F401
+import app.idempotency.models  # noqa: F401
 import app.offers.models  # noqa: F401
 import app.otp.models  # noqa: F401
 import app.shop.models  # noqa: F401
@@ -61,6 +63,7 @@ M8_M9_AND_M10_AUTHORIZED_TABLES = {
     "customer_documents",
 }
 M12_AUTHORIZED_TABLES = {"shop_customers"}
+M13_AUTHORIZED_TABLES = {"debts", "idempotency_keys"}
 M8_M9_AND_M10_MIGRATIONS = (
     PROJECT_ROOT / "alembic/versions/f8a9b0c1d2e3_create_object_files.py",
     PROJECT_ROOT / "alembic/versions/a9b0c1d2e3f4_create_legal_offer_foundation.py",
@@ -119,9 +122,11 @@ def test_m8_m9_and_m10_table_contracts_remain_source_scoped() -> None:
         assert '"shop_customers"' not in migration.read_text(encoding="utf-8")
 
 
-def test_current_metadata_has_exact_m12_authorized_table_extension() -> None:
+def test_current_metadata_has_exact_m13_authorized_table_extension() -> None:
     all_tables = set(Base.metadata.tables)
-    expected_new_tables = M8_M9_AND_M10_AUTHORIZED_TABLES | M12_AUTHORIZED_TABLES
+    expected_new_tables = (
+        M8_M9_AND_M10_AUTHORIZED_TABLES | M12_AUTHORIZED_TABLES | M13_AUTHORIZED_TABLES
+    )
 
     assert all_tables - PRE_M8_TABLES == expected_new_tables
     assert PRE_M8_TABLES <= all_tables

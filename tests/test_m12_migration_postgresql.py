@@ -14,6 +14,7 @@ from alembic import command
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 M11_REVISION = "d2e3f4a5b6c7"
 M12_REVISION = "e3f4a5b6c7d8"
+M13_REVISION = "f4a5b6c7d8e"
 NOW = datetime(2026, 8, 7, 10, 0, tzinfo=UTC)
 
 
@@ -39,7 +40,7 @@ def test_m12_revision_is_the_single_linear_child_of_m11() -> None:
     scripts = ScriptDirectory.from_config(_config())
     revision = scripts.get_revision(M12_REVISION)
 
-    assert scripts.get_heads() == [M12_REVISION]
+    assert scripts.get_heads() == [M13_REVISION]
     assert revision is not None
     assert revision.down_revision == M11_REVISION
 
@@ -118,7 +119,7 @@ def test_m12_full_walk_backfills_defaults_and_cleanly_round_trips(
         )
 
         command.upgrade(config, "head")
-        assert _current_revision(m2_test_database) == M12_REVISION
+        assert _current_revision(m2_test_database) == M13_REVISION
     finally:
         command.upgrade(config, "head")
 
@@ -134,6 +135,7 @@ def test_m12_downgrade_guards_fail_before_destructive_ddl(
     shop_customer_id = uuid4()
     audit_id = uuid4()
     try:
+        command.downgrade(config, M12_REVISION)
         command.upgrade(config, M12_REVISION)
         with m2_test_database.begin() as connection:
             connection.execute(

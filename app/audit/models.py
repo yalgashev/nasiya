@@ -259,6 +259,57 @@ _AUDIT_PAYLOAD_EXACT_SHAPE_SQL = (
                     "payload -> 'new_default_max_open_debts')"
                 ),
             ),
+            _exact_payload_clause(
+                AuditEventType.DEBT_CREATED,
+                (
+                    "original_amount_uzs",
+                    "discount_basis_points",
+                    "discounted_amount_uzs",
+                    "due_date",
+                    "pending_expires_at",
+                ),
+                extra_predicate=(
+                    _whole_number_predicate(
+                        "original_amount_uzs", minimum=1, maximum=1_000_000_000_000
+                    )
+                    + " AND "
+                    + _whole_number_predicate(
+                        "discount_basis_points", minimum=0, maximum=10_000
+                    )
+                    + " AND "
+                    + _whole_number_predicate("discounted_amount_uzs", minimum=1)
+                    + " AND (payload ->> 'discounted_amount_uzs')::numeric <= "
+                    "(payload ->> 'original_amount_uzs')::numeric "
+                    "AND payload ->> 'due_date' ~ '^\\d{4}-\\d{2}-\\d{2}$' "
+                    "AND payload ->> 'pending_expires_at' <> ''"
+                ),
+            ),
+            _exact_payload_clause(
+                AuditEventType.DEBT_ACCEPTED,
+                ("offer_version_number", "language", "content_hash"),
+                extra_predicate=(
+                    _whole_number_predicate("offer_version_number", minimum=1)
+                    + " AND payload ->> 'language' IN ('UZ_LATN', 'UZ_CYRL', 'RU') "
+                    "AND payload ->> 'content_hash' ~ '^[0-9a-f]{64}$'"
+                ),
+            ),
+            _exact_payload_clause(
+                AuditEventType.DEBT_REJECTED,
+                ("reason_provided",),
+                extra_predicate=(
+                    "jsonb_typeof(payload -> 'reason_provided') = 'boolean'"
+                ),
+            ),
+            _exact_payload_clause(
+                AuditEventType.DEBT_CANCELLED,
+                ("reason_provided",),
+                extra_predicate="payload -> 'reason_provided' = 'true'::jsonb",
+            ),
+            _exact_payload_clause(
+                AuditEventType.DEBT_EXPIRED,
+                ("source",),
+                extra_predicate="payload ->> 'source' IN ('inline', 'batch')",
+            ),
         )
     )
     + ")"
@@ -286,6 +337,11 @@ class AuditLog(Base):
                 f", '{AuditEventType.SHOP_CUSTOMER_LINKED.value}'"
                 f", '{AuditEventType.SHOP_CUSTOMER_POLICY_UPDATED.value}'"
                 f", '{AuditEventType.SHOP_CUSTOMER_DEFAULTS_UPDATED.value}'"
+                f", '{AuditEventType.DEBT_CREATED.value}'"
+                f", '{AuditEventType.DEBT_ACCEPTED.value}'"
+                f", '{AuditEventType.DEBT_REJECTED.value}'"
+                f", '{AuditEventType.DEBT_CANCELLED.value}'"
+                f", '{AuditEventType.DEBT_EXPIRED.value}'"
                 ")"
             ),
             name="ck_audit_log_event_type_allowed",
@@ -310,18 +366,21 @@ class AuditLog(Base):
                 f", '{AuditObjectType.CUSTOMER.value}'"
                 f", '{AuditObjectType.SHOP_CUSTOMER.value}'"
                 f", '{AuditObjectType.SHOP.value}'"
+                f", '{AuditObjectType.DEBT.value}'"
                 ")"
             ),
             name="ck_audit_log_object_type_allowed",
         ),
         CheckConstraint(
             (
-                f"(event_type = "
-                f"'{AuditEventType.PLATFORM_ADMIN_BOOTSTRAPPED.value}' "
+                "(event_type IN ("
+                f"'{AuditEventType.PLATFORM_ADMIN_BOOTSTRAPPED.value}', "
+                f"'{AuditEventType.DEBT_EXPIRED.value}') "
                 f"AND actor_kind = '{AuditActorKind.SYSTEM.value}' "
                 "AND actor_user_id IS NULL) "
-                f"OR (event_type <> "
-                f"'{AuditEventType.PLATFORM_ADMIN_BOOTSTRAPPED.value}' "
+                "OR (event_type NOT IN ("
+                f"'{AuditEventType.PLATFORM_ADMIN_BOOTSTRAPPED.value}', "
+                f"'{AuditEventType.DEBT_EXPIRED.value}') "
                 f"AND actor_kind = '{AuditActorKind.USER.value}' "
                 "AND actor_user_id IS NOT NULL)"
             ),
@@ -360,6 +419,12 @@ class AuditLog(Base):
                 f" OR (event_type = "
                 f"'{AuditEventType.SHOP_CUSTOMER_DEFAULTS_UPDATED.value}' "
                 f"AND object_type = '{AuditObjectType.SHOP.value}')"
+                f" OR (event_type IN ('{AuditEventType.DEBT_CREATED.value}', "
+                f"'{AuditEventType.DEBT_ACCEPTED.value}', "
+                f"'{AuditEventType.DEBT_REJECTED.value}', "
+                f"'{AuditEventType.DEBT_CANCELLED.value}', "
+                f"'{AuditEventType.DEBT_EXPIRED.value}') "
+                f"AND object_type = '{AuditObjectType.DEBT.value}')"
             ),
             name="ck_audit_log_object_matches_event",
         ),

@@ -17,9 +17,12 @@ import app.customer.models  # noqa: F401
 import app.customer_activation.contracts as activation_contracts
 import app.customer_document.models  # noqa: F401
 import app.customer_identity.models  # noqa: F401
+import app.debt.models  # noqa: F401
+import app.idempotency.models  # noqa: F401
 import app.offers.models  # noqa: F401
 import app.otp.models  # noqa: F401
 import app.shop.models  # noqa: F401
+import app.shop_customer.models  # noqa: F401
 import app.storage.models  # noqa: F401
 import app.telegram.models  # noqa: F401
 from app.customer_activation.contracts import (
@@ -92,6 +95,7 @@ M11_HISTORICAL_TABLES = {
     "users",
 }
 M12_CURRENT_TABLE_EXTENSION = {"shop_customers"}
+M13_CURRENT_TABLE_EXTENSION = {"debts", "idempotency_keys"}
 M11_SCHEMA_MIGRATIONS = (
     PROJECT_ROOT
     / "alembic/versions/c1d2e3f4a5b6_extend_customer_activation_foundation.py",
@@ -104,7 +108,9 @@ def _assert_m11_table_contract_is_source_scoped() -> None:
     for migration in M11_SCHEMA_MIGRATIONS:
         assert '"shop_customers"' not in migration.read_text(encoding="utf-8")
     assert set(Base.metadata.tables) == (
-        M11_HISTORICAL_TABLES | M12_CURRENT_TABLE_EXTENSION
+        M11_HISTORICAL_TABLES
+        | M12_CURRENT_TABLE_EXTENSION
+        | M13_CURRENT_TABLE_EXTENSION
     )
 
 
