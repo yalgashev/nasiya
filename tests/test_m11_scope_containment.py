@@ -21,6 +21,7 @@ import app.debt.models  # noqa: F401
 import app.idempotency.models  # noqa: F401
 import app.offers.models  # noqa: F401
 import app.otp.models  # noqa: F401
+import app.payment.models  # noqa: F401
 import app.shop.models  # noqa: F401
 import app.shop_customer.models  # noqa: F401
 import app.storage.models  # noqa: F401
@@ -96,6 +97,7 @@ M11_HISTORICAL_TABLES = {
 }
 M12_CURRENT_TABLE_EXTENSION = {"shop_customers"}
 M13_CURRENT_TABLE_EXTENSION = {"debts", "idempotency_keys"}
+M14_CURRENT_TABLE_EXTENSION = {"payments"}
 M11_SCHEMA_MIGRATIONS = (
     PROJECT_ROOT
     / "alembic/versions/c1d2e3f4a5b6_extend_customer_activation_foundation.py",
@@ -111,6 +113,7 @@ def _assert_m11_table_contract_is_source_scoped() -> None:
         M11_HISTORICAL_TABLES
         | M12_CURRENT_TABLE_EXTENSION
         | M13_CURRENT_TABLE_EXTENSION
+        | M14_CURRENT_TABLE_EXTENSION
     )
 
 

@@ -29,6 +29,13 @@ _PERSISTED_AUDIT_EVENT_TYPES = frozenset(
         AuditEventType.SHOP_CUSTOMER_LINKED,
         AuditEventType.SHOP_CUSTOMER_POLICY_UPDATED,
         AuditEventType.SHOP_CUSTOMER_DEFAULTS_UPDATED,
+        AuditEventType.DEBT_CREATED,
+        AuditEventType.DEBT_ACCEPTED,
+        AuditEventType.DEBT_REJECTED,
+        AuditEventType.DEBT_CANCELLED,
+        AuditEventType.DEBT_EXPIRED,
+        AuditEventType.PAYMENT_RECORDED,
+        AuditEventType.DEBT_PAID,
     }
 )
 _PERSISTED_AUDIT_OBJECT_TYPES = frozenset(
@@ -42,6 +49,8 @@ _PERSISTED_AUDIT_OBJECT_TYPES = frozenset(
         AuditObjectType.CUSTOMER,
         AuditObjectType.SHOP_CUSTOMER,
         AuditObjectType.SHOP,
+        AuditObjectType.DEBT,
+        AuditObjectType.PAYMENT,
     }
 )
 
@@ -88,7 +97,7 @@ def test_audit_actor_foreign_key_is_named_and_restrictive() -> None:
     assert foreign_key.ondelete == "RESTRICT"
 
 
-def test_audit_model_matches_current_m12_exact_shape_registry() -> None:
+def test_audit_model_matches_current_m14_exact_shape_registry() -> None:
     checks = _checks()
 
     assert set(checks) == {
@@ -134,6 +143,23 @@ def test_audit_model_matches_current_m12_exact_shape_registry() -> None:
     assert "event_type = 'shop_customer.linked'" in payload_sql
     assert "event_type = 'shop_customer.policy_updated'" in payload_sql
     assert "event_type = 'shop.customer_defaults_updated'" in payload_sql
+    assert "event_type = 'payment.recorded'" in payload_sql
+    assert "event_type = 'debt.paid'" in payload_sql
+    assert "ARRAY['amount_uzs', 'method', 'from_status', 'to_status', " in payload_sql
+    assert "'debt_revision_after']" in payload_sql
+    assert "payload ->> 'method' IN ('cash', 'card', 'transfer', 'other')" in (
+        payload_sql
+    )
+    assert "payload ->> 'from_status' = 'active'" in payload_sql
+    assert "payload ->> 'to_status' IN ('active', 'paid')" in payload_sql
+    assert "ARRAY['source', 'debt_revision_after']" in payload_sql
+    assert "payload ->> 'source' = 'payment'" in payload_sql
+
+    object_mapping_sql = str(checks["ck_audit_log_object_matches_event"].sqltext)
+    assert "event_type = 'payment.recorded' AND object_type = 'payment'" in (
+        object_mapping_sql
+    )
+    assert "'debt.paid') AND object_type = 'debt'" in object_mapping_sql
 
 
 def test_audit_model_has_no_query_update_or_delete_application_api() -> None:

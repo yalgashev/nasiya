@@ -51,7 +51,7 @@ class Debt(Base):
                 "status IN "
                 f"('{DebtStatus.PENDING.value}', '{DebtStatus.ACTIVE.value}', "
                 f"'{DebtStatus.REJECTED.value}', '{DebtStatus.CANCELLED.value}', "
-                f"'{DebtStatus.EXPIRED.value}')"
+                f"'{DebtStatus.EXPIRED.value}', '{DebtStatus.PAID.value}')"
             ),
             name="ck_debts_status_allowed",
         ),
@@ -82,23 +82,32 @@ class Debt(Base):
                 f"(status = '{DebtStatus.PENDING.value}' "
                 "AND accepted_at IS NULL AND rejected_at IS NULL "
                 "AND cancelled_at IS NULL AND expired_at IS NULL "
-                "AND rejection_reason IS NULL AND cancellation_reason IS NULL) "
+                "AND paid_at IS NULL AND rejection_reason IS NULL "
+                "AND cancellation_reason IS NULL) "
                 f"OR (status = '{DebtStatus.ACTIVE.value}' "
                 "AND accepted_at IS NOT NULL AND rejected_at IS NULL "
                 "AND cancelled_at IS NULL AND expired_at IS NULL "
-                "AND rejection_reason IS NULL AND cancellation_reason IS NULL) "
+                "AND paid_at IS NULL AND rejection_reason IS NULL "
+                "AND cancellation_reason IS NULL) "
                 f"OR (status = '{DebtStatus.REJECTED.value}' "
                 "AND accepted_at IS NULL AND rejected_at IS NOT NULL "
                 "AND cancelled_at IS NULL AND expired_at IS NULL "
-                "AND cancellation_reason IS NULL) "
+                "AND paid_at IS NULL AND cancellation_reason IS NULL) "
                 f"OR (status = '{DebtStatus.CANCELLED.value}' "
                 "AND accepted_at IS NULL AND rejected_at IS NULL "
                 "AND cancelled_at IS NOT NULL AND expired_at IS NULL "
-                "AND rejection_reason IS NULL AND cancellation_reason IS NOT NULL) "
+                "AND paid_at IS NULL AND rejection_reason IS NULL "
+                "AND cancellation_reason IS NOT NULL) "
                 f"OR (status = '{DebtStatus.EXPIRED.value}' "
                 "AND accepted_at IS NULL AND rejected_at IS NULL "
                 "AND cancelled_at IS NULL AND expired_at IS NOT NULL "
-                "AND rejection_reason IS NULL AND cancellation_reason IS NULL)"
+                "AND paid_at IS NULL AND rejection_reason IS NULL "
+                "AND cancellation_reason IS NULL) "
+                f"OR (status = '{DebtStatus.PAID.value}' "
+                "AND accepted_at IS NOT NULL AND rejected_at IS NULL "
+                "AND cancelled_at IS NULL AND expired_at IS NULL "
+                "AND paid_at IS NOT NULL AND rejection_reason IS NULL "
+                "AND cancellation_reason IS NULL)"
             ),
             name="ck_debts_status_metadata_matches_status",
         ),
@@ -112,7 +121,9 @@ class Debt(Base):
                 "AND (accepted_at IS NULL OR accepted_at >= created_at) "
                 "AND (rejected_at IS NULL OR rejected_at >= created_at) "
                 "AND (cancelled_at IS NULL OR cancelled_at >= created_at) "
-                "AND (expired_at IS NULL OR expired_at >= created_at)"
+                "AND (expired_at IS NULL OR expired_at >= created_at) "
+                "AND (paid_at IS NULL OR (accepted_at IS NOT NULL "
+                "AND paid_at >= accepted_at AND updated_at >= paid_at))"
             ),
             name="ck_debts_timestamp_order",
         ),
@@ -187,6 +198,7 @@ class Debt(Base):
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -210,5 +222,5 @@ class Debt(Base):
             "revision=<redacted>, rejection_reason=<redacted>, "
             "cancellation_reason=<redacted>, accepted_at=<redacted>, "
             "rejected_at=<redacted>, cancelled_at=<redacted>, expired_at=<redacted>, "
-            "created_at=<redacted>, updated_at=<redacted>)"
+            "paid_at=<redacted>, created_at=<redacted>, updated_at=<redacted>)"
         )

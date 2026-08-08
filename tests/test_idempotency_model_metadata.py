@@ -8,7 +8,7 @@ from app.db import Base
 from app.idempotency.models import IdempotencyKey
 
 
-def test_idempotency_key_is_one_registered_raw_key_free_m13_table() -> None:
+def test_idempotency_key_is_one_registered_raw_key_free_m14_table() -> None:
     table = IdempotencyKey.__table__
 
     assert Base.metadata.tables["idempotency_keys"] is table
@@ -68,13 +68,14 @@ def test_idempotency_key_identity_checks_and_actor_foreign_key_are_exact() -> No
     foreign_key = next(iter(table.c.actor_user_id.foreign_keys))
 
     assert checks == {
-        "ck_idempotency_keys_endpoint_allowed": "endpoint = 'shop.debts.create'",
+        "ck_idempotency_keys_endpoint_result_pair_allowed": (
+            "(endpoint = 'shop.debts.create' AND result_object_type = 'debt') "
+            "OR (endpoint = 'shop.debt_payments.create' "
+            "AND result_object_type = 'payment')"
+        ),
         "ck_idempotency_keys_key_digest_sha256_hex": ("key_digest ~ '^[0-9a-f]{64}$'"),
         "ck_idempotency_keys_request_hash_sha256_hex": (
             "request_hash ~ '^[0-9a-f]{64}$'"
-        ),
-        "ck_idempotency_keys_result_object_type_allowed": (
-            "result_object_type = 'debt'"
         ),
     }
     assert uniques == {
@@ -89,6 +90,30 @@ def test_idempotency_key_identity_checks_and_actor_foreign_key_are_exact() -> No
     assert foreign_key.ondelete == "RESTRICT"
     assert not hasattr(IdempotencyKey, "update")
     assert not hasattr(IdempotencyKey, "delete")
+
+
+def test_idempotency_pairwise_check_allows_only_the_two_frozen_pairs() -> None:
+    pair_check = next(
+        str(constraint.sqltext)
+        for constraint in IdempotencyKey.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+        and constraint.name == "ck_idempotency_keys_endpoint_result_pair_allowed"
+    )
+
+    assert "(endpoint = 'shop.debts.create' AND result_object_type = 'debt')" in (
+        pair_check
+    )
+    assert (
+        "(endpoint = 'shop.debt_payments.create' AND result_object_type = 'payment')"
+        in pair_check
+    )
+    for crossed_or_unknown in (
+        "(endpoint = 'shop.debts.create' AND result_object_type = 'payment')",
+        "(endpoint = 'shop.debt_payments.create' AND result_object_type = 'debt')",
+        "shop.payments.create",
+        "result_object_type = 'unknown'",
+    ):
+        assert crossed_or_unknown not in pair_check
 
 
 def test_idempotency_key_repr_redacts_identity_digest_hash_and_result() -> None:

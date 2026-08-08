@@ -31,16 +31,18 @@ from app.debt.targeting import (
 )
 from app.debt.values import DebtId, ShopCustomerId, ShopId, UserId
 from app.idempotency.contracts import (
-    CompletedIdempotencyResult,
     CreateDebtRequestHash,
     IdempotencyEndpoint,
     IdempotencyOutcome,
-    IdempotencyResultType,
     canonical_idempotency_key_digest,
     create_debt_request_hash,
 )
 from app.idempotency.models import IdempotencyKey
-from app.idempotency.repository import find_completed_key, insert_or_resolve_key
+from app.idempotency.repository import (
+    completed_idempotency_result_from_row,
+    find_completed_key,
+    insert_or_resolve_key,
+)
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -226,11 +228,7 @@ def _resolve_completed_key(
 
 
 def _completed_result(row: IdempotencyKey) -> CreateDebtProposalResult:
-    completed = CompletedIdempotencyResult(
-        result_type=IdempotencyResultType(row.result_object_type),
-        debt_id=DebtId(row.result_object_id),
-        completed_at=row.created_at,
-    )
+    completed = completed_idempotency_result_from_row(row)
     return CreateDebtProposalResult(
         outcome=IdempotencyOutcome.REPLAY,
         debt_id=completed.debt_id,

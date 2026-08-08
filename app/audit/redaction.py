@@ -19,6 +19,8 @@ from app.customer_identity.contracts import CustomerDocumentType
 from app.debt.enums import DebtExpirySource
 from app.debt.values import MAX_DEBT_AMOUNT_UZS
 from app.offers.enums import OfferLanguage, OfferPurpose, OfferStatus
+from app.payment.enums import PaymentMethod
+from app.payment.values import MAX_PAYMENT_AMOUNT_UZS
 from app.shop_customer.enums import ShopCustomerListStatus
 from app.shop_customer.values import MAX_CREDIT_LIMIT_UZS, MAX_OPEN_DEBTS
 
@@ -400,6 +402,45 @@ def _debt_expired_payload(metadata: Mapping[str, object]) -> AuditPayload:
         raise ValueError("Debt expired audit source is invalid") from exc
 
 
+def _payment_recorded_payload(metadata: Mapping[str, object]) -> AuditPayload:
+    values = _exact_required(
+        metadata,
+        "amount_uzs",
+        "method",
+        "from_status",
+        "to_status",
+        "debt_revision_after",
+    )
+    method = values["method"]
+    if not isinstance(method, str):
+        raise ValueError("Payment recorded audit method is invalid")
+    try:
+        canonical_method = PaymentMethod(method).value
+    except ValueError as exc:
+        raise ValueError("Payment recorded audit method is invalid") from exc
+    if values["from_status"] != "active":
+        raise ValueError("Payment recorded audit source status is invalid")
+    if values["to_status"] not in {"active", "paid"}:
+        raise ValueError("Payment recorded audit target status is invalid")
+    return {
+        "amount_uzs": _payment_amount_uzs(values["amount_uzs"]),
+        "method": canonical_method,
+        "from_status": "active",
+        "to_status": values["to_status"],
+        "debt_revision_after": _payment_revision(values["debt_revision_after"]),
+    }
+
+
+def _debt_paid_payload(metadata: Mapping[str, object]) -> AuditPayload:
+    values = _exact_required(metadata, "source", "debt_revision_after")
+    if values["source"] != "payment":
+        raise ValueError("Debt paid audit source is invalid")
+    return {
+        "source": "payment",
+        "debt_revision_after": _payment_revision(values["debt_revision_after"]),
+    }
+
+
 _PAYLOAD_BUILDERS: Final[
     Mapping[AuditEventType, Callable[[Mapping[str, object]], AuditPayload]]
 ] = {
@@ -429,6 +470,8 @@ _PAYLOAD_BUILDERS: Final[
     AuditEventType.DEBT_REJECTED: _debt_rejected_payload,
     AuditEventType.DEBT_CANCELLED: _debt_cancelled_payload,
     AuditEventType.DEBT_EXPIRED: _debt_expired_payload,
+    AuditEventType.PAYMENT_RECORDED: _payment_recorded_payload,
+    AuditEventType.DEBT_PAID: _debt_paid_payload,
 }
 
 
@@ -440,6 +483,17 @@ def _required(
     if missing:
         raise ValueError("Audit payload is missing required metadata")
     return {key: metadata[key] for key in keys}
+
+
+def _exact_required(
+    metadata: Mapping[str, object],
+    *keys: str,
+) -> dict[str, object]:
+    values = _required(metadata, *keys)
+    unexpected = set(metadata).difference(keys)
+    if unexpected:
+        raise ValueError("Audit payload contains unexpected metadata")
+    return values
 
 
 def _purpose(value: object) -> str:
@@ -499,6 +553,22 @@ def _debt_amount_uzs(value: object) -> int:
         or not 1 <= value <= int(MAX_DEBT_AMOUNT_UZS)
     ):
         raise ValueError("Debt created audit amount is invalid")
+    return value
+
+
+def _payment_amount_uzs(value: object) -> int:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not 1 <= value <= int(MAX_PAYMENT_AMOUNT_UZS)
+    ):
+        raise ValueError("Payment recorded audit amount is invalid")
+    return value
+
+
+def _payment_revision(value: object) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError("Payment audit debt revision is invalid")
     return value
 
 

@@ -310,6 +310,34 @@ _AUDIT_PAYLOAD_EXACT_SHAPE_SQL = (
                 ("source",),
                 extra_predicate="payload ->> 'source' IN ('inline', 'batch')",
             ),
+            _exact_payload_clause(
+                AuditEventType.PAYMENT_RECORDED,
+                (
+                    "amount_uzs",
+                    "method",
+                    "from_status",
+                    "to_status",
+                    "debt_revision_after",
+                ),
+                extra_predicate=(
+                    _whole_number_predicate(
+                        "amount_uzs", minimum=1, maximum=1_000_000_000_000
+                    )
+                    + " AND payload ->> 'method' IN "
+                    "('cash', 'card', 'transfer', 'other') "
+                    "AND payload ->> 'from_status' = 'active' "
+                    "AND payload ->> 'to_status' IN ('active', 'paid') AND "
+                    + _whole_number_predicate("debt_revision_after", minimum=1)
+                ),
+            ),
+            _exact_payload_clause(
+                AuditEventType.DEBT_PAID,
+                ("source", "debt_revision_after"),
+                extra_predicate=(
+                    "payload ->> 'source' = 'payment' AND "
+                    + _whole_number_predicate("debt_revision_after", minimum=1)
+                ),
+            ),
         )
     )
     + ")"
@@ -342,6 +370,8 @@ class AuditLog(Base):
                 f", '{AuditEventType.DEBT_REJECTED.value}'"
                 f", '{AuditEventType.DEBT_CANCELLED.value}'"
                 f", '{AuditEventType.DEBT_EXPIRED.value}'"
+                f", '{AuditEventType.PAYMENT_RECORDED.value}'"
+                f", '{AuditEventType.DEBT_PAID.value}'"
                 ")"
             ),
             name="ck_audit_log_event_type_allowed",
@@ -367,6 +397,7 @@ class AuditLog(Base):
                 f", '{AuditObjectType.SHOP_CUSTOMER.value}'"
                 f", '{AuditObjectType.SHOP.value}'"
                 f", '{AuditObjectType.DEBT.value}'"
+                f", '{AuditObjectType.PAYMENT.value}'"
                 ")"
             ),
             name="ck_audit_log_object_type_allowed",
@@ -423,8 +454,11 @@ class AuditLog(Base):
                 f"'{AuditEventType.DEBT_ACCEPTED.value}', "
                 f"'{AuditEventType.DEBT_REJECTED.value}', "
                 f"'{AuditEventType.DEBT_CANCELLED.value}', "
-                f"'{AuditEventType.DEBT_EXPIRED.value}') "
+                f"'{AuditEventType.DEBT_EXPIRED.value}', "
+                f"'{AuditEventType.DEBT_PAID.value}') "
                 f"AND object_type = '{AuditObjectType.DEBT.value}')"
+                f" OR (event_type = '{AuditEventType.PAYMENT_RECORDED.value}' "
+                f"AND object_type = '{AuditObjectType.PAYMENT.value}')"
             ),
             name="ck_audit_log_object_matches_event",
         ),

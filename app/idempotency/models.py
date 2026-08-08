@@ -30,8 +30,15 @@ class IdempotencyKey(Base):
             name="uq_idempotency_keys_actor_user_id_endpoint_key_digest",
         ),
         CheckConstraint(
-            f"endpoint = '{IdempotencyEndpoint.SHOP_DEBTS_CREATE.value}'",
-            name="ck_idempotency_keys_endpoint_allowed",
+            (
+                f"(endpoint = '{IdempotencyEndpoint.SHOP_DEBTS_CREATE.value}' "
+                f"AND result_object_type = '{IdempotencyResultType.DEBT.value}') "
+                "OR "
+                f"(endpoint = "
+                f"'{IdempotencyEndpoint.SHOP_DEBT_PAYMENTS_CREATE.value}' "
+                f"AND result_object_type = '{IdempotencyResultType.PAYMENT.value}')"
+            ),
+            name="ck_idempotency_keys_endpoint_result_pair_allowed",
         ),
         CheckConstraint(
             "key_digest ~ '^[0-9a-f]{64}$'",
@@ -40,10 +47,6 @@ class IdempotencyKey(Base):
         CheckConstraint(
             "request_hash ~ '^[0-9a-f]{64}$'",
             name="ck_idempotency_keys_request_hash_sha256_hex",
-        ),
-        CheckConstraint(
-            f"result_object_type = '{IdempotencyResultType.DEBT.value}'",
-            name="ck_idempotency_keys_result_object_type_allowed",
         ),
     )
 

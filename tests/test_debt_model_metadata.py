@@ -45,6 +45,7 @@ def test_debt_is_one_registered_pii_free_m13_table() -> None:
         "rejected_at",
         "cancelled_at",
         "expired_at",
+        "paid_at",
         "created_at",
         "updated_at",
     )
@@ -95,6 +96,7 @@ def test_debt_columns_defaults_and_timestamps_are_exact() -> None:
         "rejected_at",
         "cancelled_at",
         "expired_at",
+        "paid_at",
         "created_at",
         "updated_at",
     ):
@@ -135,7 +137,8 @@ def test_debt_constraints_indexes_and_foreign_keys_are_exact() -> None:
             "discounted_amount_uzs BETWEEN 1 AND original_amount_uzs"
         ),
         "ck_debts_status_allowed": (
-            "status IN ('pending', 'active', 'rejected', 'cancelled', 'expired')"
+            "status IN ('pending', 'active', 'rejected', 'cancelled', 'expired', "
+            "'paid')"
         ),
         "ck_debts_revision_positive": "revision > 0",
         "ck_debts_rejection_reason_normalized": (
@@ -151,19 +154,26 @@ def test_debt_constraints_indexes_and_foreign_keys_are_exact() -> None:
         "ck_debts_status_metadata_matches_status": (
             "(status = 'pending' AND accepted_at IS NULL AND rejected_at IS NULL "
             "AND cancelled_at IS NULL AND expired_at IS NULL AND "
-            "rejection_reason IS NULL AND cancellation_reason IS NULL) OR "
+            "paid_at IS NULL AND rejection_reason IS NULL AND "
+            "cancellation_reason IS NULL) OR "
             "(status = 'active' AND accepted_at IS NOT NULL AND rejected_at IS NULL "
             "AND cancelled_at IS NULL AND expired_at IS NULL AND "
-            "rejection_reason IS NULL AND cancellation_reason IS NULL) OR "
+            "paid_at IS NULL AND rejection_reason IS NULL AND "
+            "cancellation_reason IS NULL) OR "
             "(status = 'rejected' AND accepted_at IS NULL AND rejected_at IS NOT NULL "
             "AND cancelled_at IS NULL AND expired_at IS NULL AND "
-            "cancellation_reason IS NULL) OR (status = 'cancelled' AND "
+            "paid_at IS NULL AND cancellation_reason IS NULL) OR "
+            "(status = 'cancelled' AND "
             "accepted_at IS NULL AND rejected_at IS NULL AND cancelled_at IS NOT NULL "
-            "AND expired_at IS NULL AND rejection_reason IS NULL AND "
-            "cancellation_reason IS NOT NULL) OR (status = 'expired' AND "
+            "AND expired_at IS NULL AND paid_at IS NULL AND rejection_reason IS NULL "
+            "AND cancellation_reason IS NOT NULL) OR "
+            "(status = 'expired' AND "
             "accepted_at IS NULL AND rejected_at IS NULL AND cancelled_at IS NULL "
-            "AND expired_at IS NOT NULL AND rejection_reason IS NULL AND "
-            "cancellation_reason IS NULL)"
+            "AND expired_at IS NOT NULL AND paid_at IS NULL AND "
+            "rejection_reason IS NULL AND cancellation_reason IS NULL) OR "
+            "(status = 'paid' AND accepted_at IS NOT NULL AND rejected_at IS NULL "
+            "AND cancelled_at IS NULL AND expired_at IS NULL AND paid_at IS NOT NULL "
+            "AND rejection_reason IS NULL AND cancellation_reason IS NULL)"
         ),
         "ck_debts_pending_expires_at_exact": (
             "pending_expires_at = created_at + INTERVAL '72 hours'"
@@ -172,7 +182,9 @@ def test_debt_constraints_indexes_and_foreign_keys_are_exact() -> None:
             "updated_at >= created_at AND (accepted_at IS NULL OR accepted_at >= "
             "created_at) AND (rejected_at IS NULL OR rejected_at >= created_at) AND "
             "(cancelled_at IS NULL OR cancelled_at >= created_at) AND "
-            "(expired_at IS NULL OR expired_at >= created_at)"
+            "(expired_at IS NULL OR expired_at >= created_at) AND "
+            "(paid_at IS NULL OR (accepted_at IS NOT NULL AND paid_at >= accepted_at "
+            "AND updated_at >= paid_at))"
         ),
     }
     assert indexes == {
@@ -202,6 +214,7 @@ def test_debt_constraints_indexes_and_foreign_keys_are_exact() -> None:
     }
     assert "Asia/Tashkent" in Debt.__doc__
     assert "due_date" not in checks["ck_debts_timestamp_order"]
+    assert "paid_at IS NULL" in checks["ck_debts_status_metadata_matches_status"]
 
 
 def test_debt_repr_redacts_identifiers_money_reasons_and_timestamps() -> None:
@@ -220,6 +233,7 @@ def test_debt_repr_redacts_identifiers_money_reasons_and_timestamps() -> None:
         revision=2,
         cancellation_reason="SECRET CANCELLATION REASON",
         cancelled_at=created_at + timedelta(minutes=1),
+        paid_at=None,
         created_at=created_at,
         updated_at=created_at + timedelta(minutes=1),
     )

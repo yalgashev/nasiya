@@ -52,6 +52,7 @@ __all__ = (
     "lock_debts_in_id_order",
     "mark_debt_predecessor_locked",
     "update_locked_debt",
+    "validate_locked_debt_predecessor",
 )
 
 
@@ -96,6 +97,7 @@ def debt_aggregate_from_row(row: Debt) -> DebtAggregate:
         rejected_at=row.rejected_at,
         cancelled_at=row.cancelled_at,
         expired_at=row.expired_at,
+        paid_at=row.paid_at,
         rejection_reason=(
             None if row.rejection_reason is None else DebtReason(row.rejection_reason)
         ),
@@ -266,6 +268,7 @@ def insert_debt(
         rejected_at=debt.rejected_at,
         cancelled_at=debt.cancelled_at,
         expired_at=debt.expired_at,
+        paid_at=debt.paid_at,
         created_at=debt.created_at,
         updated_at=debt.updated_at,
     )
@@ -294,6 +297,7 @@ def update_locked_debt(session: Session, *, row: Debt, debt: DebtAggregate) -> D
         ("rejected_at", debt.rejected_at),
         ("cancelled_at", debt.cancelled_at),
         ("expired_at", debt.expired_at),
+        ("paid_at", debt.paid_at),
         ("updated_at", debt.updated_at),
     ):
         setattr(row, name, value)
@@ -359,6 +363,14 @@ def _validate_predecessor(session: Session, token: object) -> LockedDebtPredeces
             "locked_predecessor was created by a different SQLAlchemy session"
         )
     return token
+
+
+def validate_locked_debt_predecessor(
+    session: Session, token: object
+) -> LockedDebtPredecessor:
+    """Validate the bounded lock token for cross-package persistence adapters."""
+
+    return _validate_predecessor(session, token)
 
 
 def _require_aware(value: datetime) -> None:

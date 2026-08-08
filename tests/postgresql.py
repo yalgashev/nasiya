@@ -10,6 +10,7 @@ M2_CLEANUP_TABLE_NAMES = (
     "otp_dispatches",
     "otp_challenges",
     "offer_acceptances",
+    "payments",
     "idempotency_keys",
     "debts",
     "shop_customers",

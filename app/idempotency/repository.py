@@ -12,7 +12,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.idempotency.contracts import (
+    CompletedIdempotencyResult,
     CreateDebtRequestHash,
+    CreatePaymentRequestHash,
     IdempotencyEndpoint,
     IdempotencyKeyDigest,
     IdempotencyOutcome,
@@ -21,6 +23,7 @@ from app.idempotency.contracts import (
 from app.idempotency.models import IdempotencyKey
 
 _UNIQUE = "uq_idempotency_keys_actor_user_id_endpoint_key_digest"
+_RequestHash = CreateDebtRequestHash | CreatePaymentRequestHash
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -30,6 +33,19 @@ class IdempotencyInsertResult:
 
     def __repr__(self) -> str:
         return "IdempotencyInsertResult(row=<redacted>)"
+
+
+def completed_idempotency_result_from_row(
+    row: IdempotencyKey,
+) -> CompletedIdempotencyResult:
+    """Map a persisted idempotency row to its typed, fail-closed result."""
+    if not isinstance(row, IdempotencyKey):
+        raise TypeError("row must be an IdempotencyKey")
+    return CompletedIdempotencyResult(
+        result_type=IdempotencyResultType(row.result_object_type),
+        result_object_id=row.result_object_id,
+        completed_at=row.created_at,
+    )
 
 
 def find_completed_key(
@@ -54,16 +70,20 @@ def insert_or_resolve_key(
     actor_user_id: UUID,
     endpoint: IdempotencyEndpoint,
     key_digest: IdempotencyKeyDigest,
-    request_hash: CreateDebtRequestHash,
+    request_hash: _RequestHash,
     result_object_id: UUID,
     now: datetime,
 ) -> IdempotencyInsertResult:
+    result_type = _result_type_for_request(
+        endpoint=endpoint,
+        request_hash=request_hash,
+    )
     row = IdempotencyKey(
         actor_user_id=actor_user_id,
         endpoint=endpoint.value,
         key_digest=key_digest.value,
         request_hash=request_hash.value,
-        result_object_type=IdempotencyResultType.DEBT.value,
+        result_object_type=result_type.value,
         result_object_id=result_object_id,
         created_at=now,
     )
@@ -88,6 +108,28 @@ def insert_or_resolve_key(
             return IdempotencyInsertResult(IdempotencyOutcome.REPLAY, existing)
         return IdempotencyInsertResult(IdempotencyOutcome.CONFLICT, None)
     return IdempotencyInsertResult(IdempotencyOutcome.NEW, row)
+
+
+def _result_type_for_request(
+    *,
+    endpoint: IdempotencyEndpoint,
+    request_hash: _RequestHash,
+) -> IdempotencyResultType:
+    if not isinstance(endpoint, IdempotencyEndpoint):
+        raise TypeError("endpoint must be an IdempotencyEndpoint")
+    if endpoint is IdempotencyEndpoint.SHOP_DEBTS_CREATE:
+        if not isinstance(request_hash, CreateDebtRequestHash):
+            raise TypeError(
+                "request_hash must be a CreateDebtRequestHash for debt creation"
+            )
+        return IdempotencyResultType.DEBT
+    if endpoint is IdempotencyEndpoint.SHOP_DEBT_PAYMENTS_CREATE:
+        if not isinstance(request_hash, CreatePaymentRequestHash):
+            raise TypeError(
+                "request_hash must be a CreatePaymentRequestHash for payment creation"
+            )
+        return IdempotencyResultType.PAYMENT
+    raise ValueError("unsupported idempotency endpoint")
 
 
 def _constraint_name(exc: IntegrityError) -> str | None:

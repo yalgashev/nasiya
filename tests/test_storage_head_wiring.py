@@ -12,6 +12,7 @@ M11_ORIGINAL_REVISION = "c1d2e3f4a5b6"
 M11_RECOVERY_REVISION = "d2e3f4a5b6c7"
 M12_REVISION = "e3f4a5b6c7d8"
 M13_REVISION = "f4a5b6c7d8e"
+M14_REVISION = "a5b6c7d8e9f0"
 M11_CLEANUP_PREFIX = (
     "otp_challenge_events",
     "otp_dispatches",
@@ -29,6 +30,16 @@ M13_CLEANUP_PREFIX = (
     "otp_dispatches",
     "otp_challenges",
     "offer_acceptances",
+    "idempotency_keys",
+    "debts",
+    "shop_customers",
+)
+M14_CLEANUP_PREFIX = (
+    "otp_challenge_events",
+    "otp_dispatches",
+    "otp_challenges",
+    "offer_acceptances",
+    "payments",
     "idempotency_keys",
     "debts",
     "shop_customers",
@@ -65,12 +76,13 @@ M13_INHERITED_CLEANUP_ORDER = (
 )
 
 
-def test_code_and_ci_are_wired_to_exact_m13_head() -> None:
+def test_code_and_ci_are_wired_to_exact_m14_head() -> None:
     workflow = (PROJECT_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
-    assert get_alembic_head() == M13_REVISION
-    assert "Verify Alembic M13 head" in workflow
-    assert f'test "$current_revision" = "{M13_REVISION}"' in workflow
+    assert get_alembic_head() == M14_REVISION
+    assert "Verify Alembic M14 head" in workflow
+    assert f'test "$current_revision" = "{M14_REVISION}"' in workflow
+    assert f'test "$current_revision" = "{M13_REVISION}"' not in workflow
     assert f'test "$current_revision" = "{M11_RECOVERY_REVISION}"' not in workflow
     assert f'test "$current_revision" = "{M11_ORIGINAL_REVISION}"' not in workflow
     assert f'test "$current_revision" = "{M10_REVISION}"' not in workflow
@@ -93,8 +105,8 @@ def test_alembic_metadata_has_minimal_storage_model_import() -> None:
     assert env_source.count("app.shop_customer") == 1
 
 
-def test_cleanup_extends_current_head_with_m13_children_first_order() -> None:
-    assert M2_CLEANUP_TABLE_NAMES == M13_CLEANUP_PREFIX + M13_INHERITED_CLEANUP_ORDER
+def test_cleanup_extends_current_head_with_m14_children_first_order() -> None:
+    assert M2_CLEANUP_TABLE_NAMES == M14_CLEANUP_PREFIX + M13_INHERITED_CLEANUP_ORDER
     assert M2_CLEANUP_TABLE_NAMES.index("offer_acceptances") < (
         M2_CLEANUP_TABLE_NAMES.index("debts")
     )
@@ -103,6 +115,12 @@ def test_cleanup_extends_current_head_with_m13_children_first_order() -> None:
     )
     assert M2_CLEANUP_TABLE_NAMES.index("idempotency_keys") < (
         M2_CLEANUP_TABLE_NAMES.index("users")
+    )
+    assert M2_CLEANUP_TABLE_NAMES.index("payments") < (
+        M2_CLEANUP_TABLE_NAMES.index("idempotency_keys")
+    )
+    assert M2_CLEANUP_TABLE_NAMES.index("payments") < (
+        M2_CLEANUP_TABLE_NAMES.index("debts")
     )
     assert M2_CLEANUP_TABLE_NAMES.index("debts") < (
         M2_CLEANUP_TABLE_NAMES.index("shop_customers")
