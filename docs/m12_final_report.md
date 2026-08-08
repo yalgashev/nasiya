@@ -1,11 +1,11 @@
 # M12 Final Technical Report
 
-Status: `M12 LOCAL GREEN — REMOTE PENDING`
+Status: `M12 REMOTE GREEN — CLOSED`
 Date: 2026-08-08
 
-This report records the final-local implementation baseline, controlled Chrome
-and PostgreSQL acceptance, local validation, preserved scope, and the exact
-remote evidence still required before M12 closure.
+This report records the exact pushed implementation tree, controlled Chrome and
+PostgreSQL acceptance, local validation, preserved scope, and successful remote
+evidence for M12 closure.
 
 ## Baseline And Authority
 
@@ -13,12 +13,12 @@ remote evidence still required before M12 closure.
   `7d8e14b2da2a77008cf3e999d77aabf277d72137`.
 - Authority: TT, M12 Product Gate, M12 Final Scope Freeze, and the tracked M12
   scope contract, decisions, repository map, and known limitations.
-- Current hardened checkpoint:
-  `5ba01e18d668d6249a8c330ad7a1d93194ba9cac`.
-- Seven required checkpoint subjects are intact. The eighth implementation
-  checkpoint is created only by M12.57 after this final-local gate.
-- Exact pushed implementation SHA, GitHub Actions run/job, and remote counts:
-  `pending` until M12.59.
+- Eighth implementation checkpoint:
+  `4a36e96c887c5bda51317a80a13d5aeda9384278`.
+- All eight required checkpoint subjects and their linear ancestry are intact.
+- Exact pushed tree: `d9c80a272a1df86c5aefa1a7e0ff81e68e65c13d`.
+  Its only descendant change after checkpoint eight is the approved docs-only
+  correction of the M11 closeout SHA in this report; no product code changed.
 
 ## Delivered Capability
 
@@ -92,7 +92,7 @@ Telegram identifiers, PII, or internal metadata.
 
 ## Checkpoints And Remote Evidence
 
-The seven current implementation checkpoints are:
+The eight implementation checkpoints are:
 
 1. `1e586da00c78b189151a1a891a4f5b89fd5ff476` — `M12: freeze shop customer scope`
 2. `ef2dfbc0b128b6717149bc7c2d07401e67536bd0` — `M12: add shop customer contracts`
@@ -101,14 +101,16 @@ The seven current implementation checkpoints are:
 5. `616fd7facda27e900b98e4d46b76bc57e545ed65` — `M12: add customer credit policy`
 6. `788b48d8ac151253f9fca239329ada712115bae7` — `M12: expose shop customer web flows`
 7. `5ba01e18d668d6249a8c330ad7a1d93194ba9cac` — `M12: harden tenant customer security and concurrency`
+8. `4a36e96c887c5bda51317a80a13d5aeda9384278` — `M12: complete shop customer foundation`
 
-| Remote evidence | Current value |
+| Remote evidence | Final value |
 |---|---|
-| Eighth implementation SHA | `pending` |
-| Pushed implementation SHA | `pending` |
-| GitHub Actions run / job | `pending` |
-| Remote full pytest and outcome matrix | `pending` |
-| Docs-only closeout SHA / CI outcome | `pending` |
+| Eighth implementation checkpoint | `4a36e96c887c5bda51317a80a13d5aeda9384278` |
+| Exact pushed tree | `d9c80a272a1df86c5aefa1a7e0ff81e68e65c13d` |
+| GitHub Actions run / job | `31238158808` / `93054450292` (`dependency-sync`) |
+| Remote full pytest | 3472 passed; zero failed/skipped/xfailed/xpassed |
+| Required remote workflow | All required steps completed successfully |
+| Docs-only closeout | `docs: close M12 remote evidence` |
 
-M12 is not closed until M12.57–60 establish the eighth checkpoint, clean
-pre-push audit, exact-SHA remote GREEN, and docs-only closeout ancestry.
+The docs-only closeout is a linear descendant of the exact remote-GREEN tree.
+It changes only the three M12 closeout documents authorized by M12.60.

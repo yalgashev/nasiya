@@ -1,9 +1,8 @@
 # Nasiya M12 Known Limitations
 
-Status: final-local limitations for M12; implementation and controlled local
-acceptance are GREEN, while exact implementation-SHA remote CI and docs-only
-closeout evidence remain pending. These are accepted limits, not missing work
-that a later task may infer into M12.
+Status: final accepted limitations for closed M12. Local/manual evidence and
+exact pushed-tree remote CI are GREEN. These are accepted limits, not missing
+work that a later task may infer into M12.
 
 ## KL-M12-01 — Existing active customers only
 
