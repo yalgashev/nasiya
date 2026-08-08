@@ -10,7 +10,7 @@ remote evidence still required before M12 closure.
 ## Baseline And Authority
 
 - Closed parent: M11 docs-only closeout
-  `7d8e14b2fe72c77777779d236b8515bb50dacece`.
+  `7d8e14b2da2a77008cf3e999d77aabf277d72137`.
 - Authority: TT, M12 Product Gate, M12 Final Scope Freeze, and the tracked M12
   scope contract, decisions, repository map, and known limitations.
 - Current hardened checkpoint:
