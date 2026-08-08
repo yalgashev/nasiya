@@ -256,6 +256,66 @@ dd {
     font-size: 0.875rem;
 }
 
+.debt-page {
+    max-width: 720px;
+    overflow-wrap: anywhere;
+}
+
+.debt-list {
+    display: grid;
+    gap: 16px;
+    padding: 0;
+    list-style: none;
+}
+
+.debt-card,
+.legal-offer {
+    margin-top: 16px;
+    border: 1px solid #cbd5e1;
+    border-radius: 10px;
+    padding: 16px;
+    background: #ffffff;
+}
+
+.debt-card h2,
+.legal-offer h2 {
+    margin: 0;
+    font-size: 1.25rem;
+}
+
+.legal-offer p {
+    margin-top: 12px;
+    white-space: pre-wrap;
+}
+
+.debt-actions {
+    display: grid;
+    gap: 16px;
+}
+
+.primary-link,
+.debt-page nav a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+}
+
+@media (max-width: 375px) {
+    main {
+        width: min(100% - 24px, 640px);
+        padding: 20px 0;
+    }
+
+    h1 {
+        font-size: 1.65rem;
+    }
+
+    .debt-card,
+    .legal-offer {
+        padding: 12px;
+    }
+}
+
 .customer-page h1,
 .customer-page h2,
 .customer-page p,

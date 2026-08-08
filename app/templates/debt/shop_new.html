@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}{{ copy.new_debt }} - Nasiya{% endblock %}
+{% block content %}
+<main class="debt-page">
+  <h1>{{ copy.new_debt }}</h1>
+  {% if error_message %}<p role="alert">{{ error_message }}</p>{% endif %}
+  <form action="/shop/customers/{{ shop_customer_id }}/debts" method="post" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
+    <label for="debt-amount">{{ copy.amount }}</label>
+    <input id="debt-amount" name="original_amount_uzs" inputmode="decimal" required>
+    <label for="debt-discount">{{ copy.discount }}</label>
+    <input id="debt-discount" name="discount_percent" inputmode="decimal" value="0" required>
+    <label for="debt-due">{{ copy.due }}</label>
+    <input id="debt-due" name="due_date" type="date" required>
+    <button type="submit">{{ copy.create }}</button>
+  </form>
+  <nav aria-label="Do‘kon navigatsiyasi"><a href="/shop/customers/{{ shop_customer_id }}/debts">{{ copy.back }}</a></nav>
+</main>
+{% endblock %}

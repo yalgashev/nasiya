@@ -25,6 +25,7 @@ from app.auth.sessions import (
     create_authenticated_session,
 )
 from app.db import create_database_session_factory
+from app.debt.dependencies import get_detached_current_shop_debt_actor_authority
 from app.main import create_app
 from app.security_headers import AUTH_NO_STORE_CACHE_CONTROL, CONTENT_SECURITY_POLICY
 from app.settings import Settings
@@ -40,6 +41,8 @@ class RouteClass(StrEnum):
     TENANT_READ = "tenant_read"
     OWNER_BUSINESS_MUTATION = "owner_business_mutation"
     TENANT_BUSINESS_MUTATION = "tenant_business_mutation"
+    TENANT_LOCATOR_READ = "tenant_locator_read"
+    TENANT_ACTIVE_FORM = "tenant_active_form"
 
 
 @dataclass(frozen=True)
@@ -60,6 +63,27 @@ ROUTE_POLICIES = (
     RoutePolicy("GET", "/shop/staff", RouteClass.TENANT_READ),
     RoutePolicy("GET", "/shop/customers", RouteClass.TENANT_READ),
     RoutePolicy("GET", "/shop/settings/credit", RouteClass.TENANT_READ),
+    RoutePolicy(
+        "GET",
+        "/shop/customers/{shop_customer_id}/debts",
+        RouteClass.TENANT_LOCATOR_READ,
+    ),
+    RoutePolicy(
+        "GET",
+        "/shop/customers/{shop_customer_id}/debts/new",
+        RouteClass.TENANT_ACTIVE_FORM,
+    ),
+    RoutePolicy(
+        "POST",
+        "/shop/customers/{shop_customer_id}/debts",
+        RouteClass.TENANT_BUSINESS_MUTATION,
+    ),
+    RoutePolicy("GET", "/shop/debts/{debt_id}", RouteClass.TENANT_LOCATOR_READ),
+    RoutePolicy(
+        "POST",
+        "/shop/debts/{debt_id}/cancel",
+        RouteClass.TENANT_BUSINESS_MUTATION,
+    ),
     RoutePolicy(
         "POST",
         "/shop/customers/link",
@@ -226,7 +250,9 @@ def actual_path(policy: RoutePolicy, staff_id: UUID | None = None) -> str:
     if "{staff_id}" in path:
         assert staff_id is not None
         path = path.replace("{staff_id}", str(staff_id))
-    return path.replace("{shop_customer_id}", str(uuid4()))
+    return path.replace("{shop_customer_id}", str(uuid4())).replace(
+        "{debt_id}", str(uuid4())
+    )
 
 
 def post_data_for(
@@ -299,7 +325,12 @@ def iter_dependency_calls(dependant: Dependant) -> Iterator[object]:
 
 def route_has_csrf_dependency(route: APIRoute) -> bool:
     return any(
-        dependency_call in {validate_csrf, get_detached_shop_customer_authority}
+        dependency_call
+        in {
+            validate_csrf,
+            get_detached_shop_customer_authority,
+            get_detached_current_shop_debt_actor_authority,
+        }
         for dependency_call in iter_dependency_calls(route.dependant)
     )
 

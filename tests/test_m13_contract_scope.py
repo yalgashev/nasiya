@@ -16,9 +16,7 @@ FORBIDDEN_RUNTIME_IMPORTS = (
 )
 RUNTIME_IMPORT_EXCEPTIONS = {
     Path("app/debt/dependencies.py"): ("fastapi",),
-}
-PERSISTENCE_OR_TRANSPORT_FILES = {
-    "router.py",
+    Path("app/debt/router.py"): ("fastapi", "starlette"),
 }
 
 
@@ -38,7 +36,6 @@ def test_m13_runtime_has_only_explicit_transport_and_no_out_imports() -> None:
         path for root in PACKAGE_ROOTS for path in sorted(root.glob("*.py"))
     )
     assert python_files
-    assert PERSISTENCE_OR_TRANSPORT_FILES.isdisjoint(path.name for path in python_files)
     for path in python_files:
         exceptions = RUNTIME_IMPORT_EXCEPTIONS.get(path, ())
         for imported in _imports(path):

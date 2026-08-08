@@ -263,7 +263,6 @@ def test_profile_activation_discovery_is_read_only_for_draft_and_active(
         forbidden not in active_response.text.casefold()
         for forbidden in (
             "shop_customer",
-            "debt",
             "credit",
             "eligibility",
             "telegram_chat_id",

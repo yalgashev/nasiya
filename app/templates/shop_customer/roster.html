@@ -29,6 +29,7 @@
                 <p>{{ copy.credit_limit_label }}: {{ row.credit_limit_uzs }}</p>
                 <p>{{ copy.max_open_debts_label }}: {{ row.max_open_debts }}</p>
                 <p>{{ copy.list_status_label }}: {{ list_status_labels[row.list_status] }}</p>
+                <p><a href="/shop/customers/{{ row.locator }}/debts">Qarzlar / Долги</a></p>
                 {% if can_edit_policy %}
                 <form action="/shop/customers/{{ row.locator }}/policy" method="post">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

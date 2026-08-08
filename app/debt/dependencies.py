@@ -19,6 +19,10 @@ from app.auth.deps import (
     validate_csrf,
 )
 from app.auth.models import User
+from app.debt.customer_authority import (
+    CustomerDebtAuthority,
+    resolve_own_customer_debt_authority,
+)
 from app.debt.values import ShopId, UserId
 from app.settings import Settings
 from app.shop.context import resolve_current_shop
@@ -74,6 +78,22 @@ class LockedLiveDebtActor:
         return "LockedLiveDebtActor(<redacted>)"
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class DetachedCustomerDebtAuthority:
+    status: CurrentSessionStatus
+    authority: CustomerDebtAuthority | None = field(default=None, repr=False)
+
+    @property
+    def is_authenticated(self) -> bool:
+        return self.status is CurrentSessionStatus.AUTHENTICATED
+
+    def __repr__(self) -> str:
+        return (
+            "DetachedCustomerDebtAuthority("
+            f"status={self.status!s}, authority=<redacted>)"
+        )
+
+
 async def get_detached_current_shop_debt_actor_authority(
     request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
@@ -100,6 +120,29 @@ async def get_detached_current_shop_debt_actor_authority(
             current_shop_id=shop_id,
             request_context=DebtRequestContext(
                 is_htmx=request.headers.get("HX-Request") == "true"
+            ),
+        )
+
+
+async def get_detached_customer_debt_authority(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings)],
+    now: Annotated[datetime, Depends(get_current_time)],
+) -> DetachedCustomerDebtAuthority:
+    """Close customer auth/CSRF TX-A and transfer only immutable identifiers."""
+
+    session_factory = request.app.state.database_session_factory
+    with session_factory.begin() as session:
+        current = get_current_session_context(request, session, settings, now)
+        await validate_csrf(request, current, now)
+        user = current.get_authenticated_user()
+        if user is None:
+            return DetachedCustomerDebtAuthority(status=current.status)
+        return DetachedCustomerDebtAuthority(
+            status=current.status,
+            authority=resolve_own_customer_debt_authority(
+                session,
+                authenticated_user=user,
             ),
         )
 

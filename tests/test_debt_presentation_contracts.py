@@ -123,13 +123,22 @@ def test_exact_nine_debt_routes_and_post_form_contracts_are_frozen() -> None:
         "idempotency_key",
         "csrf_token",
     )
-    assert post_forms["/shop/debts/{debt_id}/cancel"] == ("reason", "csrf_token")
+    assert post_forms["/shop/debts/{debt_id}/cancel"] == (
+        "expected_revision",
+        "reason",
+        "csrf_token",
+    )
     assert post_forms["/customer/debts/{debt_id}/accept"] == (
+        "expected_revision",
         "language",
         "displayed_offer_text_id",
         "csrf_token",
     )
-    assert post_forms["/customer/debts/{debt_id}/reject"] == ("reason", "csrf_token")
+    assert post_forms["/customer/debts/{debt_id}/reject"] == (
+        "expected_revision",
+        "reason",
+        "csrf_token",
+    )
 
 
 def test_exact_m13_errors_have_safe_feature_local_uzbek_and_russian_copy() -> None:

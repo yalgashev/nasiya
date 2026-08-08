@@ -53,6 +53,15 @@ _UZ_LATN_ERRORS: Final[Mapping[ErrorCode, str]] = MappingProxyType(
         ErrorCode.IDEMPOTENCY_CONFLICT: (
             "Takroriy so'rov ma'lumotlari avvalgi so'rovga mos emas."
         ),
+        ErrorCode.UNAUTHORIZED: "Kirish talab qilinadi.",
+        ErrorCode.FORBIDDEN: "Bu amal uchun ruxsat yo‘q.",
+        ErrorCode.SHOP_SUSPENDED: "Do‘kon vaqtincha faqat ko‘rish rejimida.",
+        ErrorCode.VALIDATION_ERROR: "Kiritilgan ma’lumotlarni tekshiring.",
+        ErrorCode.REASON_REQUIRED: "Sababni kiriting.",
+        ErrorCode.OFFER_UNAVAILABLE: "Amaldagi qarz shartlari mavjud emas.",
+        ErrorCode.OFFER_CHANGED: "Qarz shartlari yangilandi. Sahifani yangilang.",
+        ErrorCode.CSRF_FAILED: "Forma muddati tugagan. Sahifani yangilang.",
+        ErrorCode.SHOP_CUSTOMER_UNAVAILABLE: "Mijoz hozir mavjud emas.",
     }
 )
 _RU_ERRORS: Final[Mapping[ErrorCode, str]] = MappingProxyType(
@@ -72,6 +81,15 @@ _RU_ERRORS: Final[Mapping[ErrorCode, str]] = MappingProxyType(
         ErrorCode.IDEMPOTENCY_CONFLICT: (
             "Данные повторного запроса не совпадают с предыдущим запросом."
         ),
+        ErrorCode.UNAUTHORIZED: "Требуется вход.",
+        ErrorCode.FORBIDDEN: "Недостаточно прав для этой операции.",
+        ErrorCode.SHOP_SUSPENDED: "Магазин временно доступен только для чтения.",
+        ErrorCode.VALIDATION_ERROR: "Проверьте введённые данные.",
+        ErrorCode.REASON_REQUIRED: "Укажите причину.",
+        ErrorCode.OFFER_UNAVAILABLE: "Актуальные условия долга недоступны.",
+        ErrorCode.OFFER_CHANGED: "Условия долга обновились. Обновите страницу.",
+        ErrorCode.CSRF_FAILED: "Срок формы истёк. Обновите страницу.",
+        ErrorCode.SHOP_CUSTOMER_UNAVAILABLE: "Клиент сейчас недоступен.",
     }
 )
 
@@ -255,15 +273,21 @@ DEBT_ROUTE_CONTRACTS: Final[tuple[DebtRouteContract, ...]] = (
         ),
     ),
     DebtRouteContract("GET", "/shop/debts/{debt_id}"),
-    DebtRouteContract("POST", "/shop/debts/{debt_id}/cancel", ("reason", "csrf_token")),
+    DebtRouteContract(
+        "POST",
+        "/shop/debts/{debt_id}/cancel",
+        ("expected_revision", "reason", "csrf_token"),
+    ),
     DebtRouteContract("GET", "/customer/debts"),
     DebtRouteContract("GET", "/customer/debts/{debt_id}"),
     DebtRouteContract(
         "POST",
         "/customer/debts/{debt_id}/accept",
-        ("language", "displayed_offer_text_id", "csrf_token"),
+        ("expected_revision", "language", "displayed_offer_text_id", "csrf_token"),
     ),
     DebtRouteContract(
-        "POST", "/customer/debts/{debt_id}/reject", ("reason", "csrf_token")
+        "POST",
+        "/customer/debts/{debt_id}/reject",
+        ("expected_revision", "reason", "csrf_token"),
     ),
 )

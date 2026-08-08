@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}{{ copy.debts }} - Nasiya{% endblock %}
+{% block content %}
+<main class="debt-page">
+  <h1>{{ copy.debts }}</h1>
+  {% if error_message %}<p role="alert">{{ error_message }}</p>{% endif %}
+  {% if notice %}<p class="form-notice" role="status">{{ notice }}</p>{% endif %}
+  <article class="debt-card">
+    <h2>{{ copy.status }}: {{ detail.status.value }}</h2>
+    <dl>
+      <dt>{{ copy.amount }}</dt><dd>{{ detail.original_amount.value }}</dd>
+      <dt>{{ copy.discount }}</dt><dd>{{ detail.discount_basis_points.value }} bp</dd>
+      <dt>{{ copy.discounted }}</dt><dd>{{ detail.discounted_amount_uzs }}</dd>
+      <dt>{{ copy.due }}</dt><dd>{{ detail.due_date }}</dd>
+      <dt>{{ copy.expiry }}</dt><dd>{{ detail.pending_expires_at }}</dd>
+      {% if detail.decision_reason %}<dt>{{ copy.reason_required }}</dt><dd>{{ detail.decision_reason }}</dd>{% endif %}
+    </dl>
+  </article>
+  {% if can_cancel %}
+  <form action="/shop/debts/{{ detail.debt_id.as_uuid() }}/cancel" method="post" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="expected_revision" value="{{ detail.expected_revision }}">
+    <label for="cancel-reason">{{ copy.reason_required }}</label>
+    <input id="cancel-reason" name="reason" maxlength="500" required>
+    <button class="button-danger" type="submit">{{ copy.cancel }}</button>
+  </form>
+  {% endif %}
+  <nav aria-label="Do‘kon navigatsiyasi"><a href="/shop/customers/{{ detail.shop_customer_id.as_uuid() }}/debts">{{ copy.back }}</a></nav>
+</main>
+{% endblock %}

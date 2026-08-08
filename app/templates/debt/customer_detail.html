@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}{{ copy.debts }} - Nasiya{% endblock %}
+{% block content %}
+<main class="debt-page">
+  <h1>{{ detail.projection.shop_name }}</h1>
+  {% if error_message %}<p role="alert">{{ error_message }}</p>{% endif %}
+  {% if notice %}<p class="form-notice" role="status">{{ notice }}</p>{% endif %}
+  <article class="debt-card">
+    <h2>{{ copy.status }}: {{ detail.projection.status.value }}</h2>
+    <dl>
+      <dt>{{ copy.amount }}</dt><dd>{{ detail.projection.original_amount.value }}</dd>
+      <dt>{{ copy.discount }}</dt><dd>{{ detail.projection.discount_basis_points.value }} bp</dd>
+      <dt>{{ copy.discounted }}</dt><dd>{{ detail.projection.discounted_amount.value }}</dd>
+      <dt>{{ copy.due }}</dt><dd>{{ detail.projection.due_date }}</dd>
+      <dt>{{ copy.expiry }}</dt><dd>{{ detail.projection.pending_expires_at }}</dd>
+      {% if detail.projection.decision_reason %}<dt>{{ copy.reason_required }}</dt><dd>{{ detail.projection.decision_reason }}</dd>{% endif %}
+    </dl>
+  </article>
+  {% if detail.projection.status.value == "pending" and detail.projection.legal_offer %}
+  <article class="legal-offer" lang="{{ detail.projection.legal_offer.language.value }}">
+    <h2>{{ detail.projection.legal_offer.title }}</h2>
+    <p>{{ detail.projection.legal_offer.body }}</p>
+  </article>
+  <div class="debt-actions">
+    <form action="/customer/debts/{{ detail.debt_id.as_uuid() }}/accept" method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="expected_revision" value="{{ detail.expected_revision }}">
+      <input type="hidden" name="language" value="{{ detail.projection.legal_offer.language.value }}">
+      <input type="hidden" name="displayed_offer_text_id" value="{{ detail.displayed_offer_text_id }}">
+      <button type="submit">{{ copy.accept }}</button>
+    </form>
+    <form action="/customer/debts/{{ detail.debt_id.as_uuid() }}/reject" method="post" autocomplete="off">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="expected_revision" value="{{ detail.expected_revision }}">
+      <label for="reject-reason">{{ copy.reason_optional }}</label>
+      <input id="reject-reason" name="reason" maxlength="500">
+      <button class="button-danger" type="submit">{{ copy.reject }}</button>
+    </form>
+  </div>
+  {% endif %}
+  <nav aria-label="Mijoz navigatsiyasi"><a href="/customer/debts">{{ copy.back }}</a></nav>
+</main>
+{% endblock %}

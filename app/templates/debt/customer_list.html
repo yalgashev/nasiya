@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}{{ copy.debts }} - Nasiya{% endblock %}
+{% block content %}
+<main class="debt-page">
+  <h1>{{ copy.debts }}</h1>
+  {% if has_rows %}
+  <ul class="debt-list">
+    {% for row in rows %}
+    <li class="debt-card">
+      <h2><a href="/customer/debts/{{ row.debt_id.as_uuid() }}">{{ row.projection.shop_name }}</a></h2>
+      <dl>
+        <dt>{{ copy.status }}</dt><dd>{{ row.projection.status.value }}</dd>
+        <dt>{{ copy.discounted }}</dt><dd>{{ row.projection.discounted_amount.value }}</dd>
+        <dt>{{ copy.due }}</dt><dd>{{ row.projection.due_date }}</dd>
+      </dl>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}<p>{{ copy.empty }}</p>{% endif %}
+  <nav aria-label="Mijoz navigatsiyasi"><a href="/customer/profile">{{ copy.back }}</a></nav>
+</main>
+{% endblock %}

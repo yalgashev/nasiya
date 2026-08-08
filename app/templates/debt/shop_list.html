@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}{{ copy.debts }} - Nasiya{% endblock %}
+{% block content %}
+<main class="debt-page">
+  <h1>{{ copy.debts }}</h1>
+  {% if error_message %}<p role="alert">{{ error_message }}</p>{% endif %}
+  {% if notice %}<p class="form-notice" role="status">{{ notice }}</p>{% endif %}
+  {% if can_create %}<a class="primary-link" href="/shop/customers/{{ shop_customer_id }}/debts/new">{{ copy.new_debt }}</a>{% endif %}
+  {% if has_rows %}
+  <ul class="debt-list">
+    {% for row in rows %}
+    <li class="debt-card">
+      <h2><a href="/shop/debts/{{ row.debt_id.as_uuid() }}">{{ copy.status }}: {{ row.status.value }}</a></h2>
+      <dl>
+        <dt>{{ copy.amount }}</dt><dd>{{ row.original_amount.value }}</dd>
+        <dt>{{ copy.discounted }}</dt><dd>{{ row.discounted_amount_uzs }}</dd>
+        <dt>{{ copy.due }}</dt><dd>{{ row.due_date }}</dd>
+        <dt>{{ copy.expiry }}</dt><dd>{{ row.pending_expires_at }}</dd>
+      </dl>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}<p>{{ copy.empty }}</p>{% endif %}
+  <nav aria-label="Do‘kon navigatsiyasi"><a href="/shop/customers">{{ copy.back }}</a></nav>
+</main>
+{% endblock %}
