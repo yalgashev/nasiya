@@ -77,6 +77,7 @@ def _form(html: str, *, amount: str) -> dict[str, str]:
         "csrf_token": _hidden(html, "csrf_token"),
         "idempotency_key": _hidden(html, "idempotency_key"),
         "expected_revision": _hidden(html, "expected_revision"),
+        "expected_balance_basis": _hidden(html, "expected_balance_basis"),
         "amount_uzs": amount,
         "method": "cash",
     }
@@ -213,7 +214,6 @@ def test_validation_stale_overpay_and_csrf_fail_through_safe_results(
     ("state", "expected_error"),
     (
         ("suspended", ErrorCode.SHOP_SUSPENDED),
-        ("past_due", ErrorCode.DEBT_NOT_PAYABLE),
         ("paid", ErrorCode.DEBT_NOT_PAYABLE),
     ),
 )
@@ -230,10 +230,6 @@ def test_nonpayable_controls_are_hidden_and_direct_form_get_is_denied(
         assert shop is not None and debt is not None
         if state == "suspended":
             shop.status = "suspended"
-        elif state == "past_due":
-            debt.due_date = date(2026, 8, 9)
-            assert debt.accepted_at is not None
-            debt.updated_at = debt.accepted_at + timedelta(hours=1)
         else:
             debt.status = "paid"
             debt.paid_at = PAYMENT_TIME
@@ -255,6 +251,26 @@ def test_nonpayable_controls_are_hidden_and_direct_form_get_is_denied(
         f"/shop/debts/{debt_id}?error={expected_error.value}"
     )
     assert direct.headers["cache-control"] == AUTH_NO_STORE_CACHE_CONTROL
+
+
+def test_effective_overdue_form_advertises_original_basis(
+    m2_test_database: Engine,
+) -> None:
+    actor_id, shop_id, _staff_id, _relation_id, debt_id = _seed_one(m2_test_database)
+    factory = create_database_session_factory(m2_test_database)
+    with factory.begin() as db:
+        debt = db.get_one(Debt, debt_id)
+        debt.due_date = date(2026, 8, 9)
+        assert debt.accepted_at is not None
+        debt.updated_at = debt.accepted_at + timedelta(hours=1)
+
+    client, _settings = _client(m2_test_database, actor_id=actor_id, shop_id=shop_id)
+    history_path = f"/shop/debts/{debt_id}/payments"
+    history = client.get(history_path)
+    assert f'{history_path}/new"' in history.text
+    page = client.get(f"{history_path}/new")
+    assert page.status_code == 200
+    assert _hidden(unescape(page.text), "expected_balance_basis") == "original"
 
 
 def test_shop_history_and_receipt_render_authoritative_balances_without_leaks(

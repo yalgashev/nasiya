@@ -1,4 +1,4 @@
-"""Caller-owned atomic orchestration for M14 partial and full payments."""
+"""Caller-owned M15 orchestration for on-time and late Debt payments."""
 
 from __future__ import annotations
 
@@ -14,8 +14,14 @@ from sqlalchemy.orm import Session
 from app.audit.contracts import DebtPaidAuditPayload, PaymentRecordedAuditPayload
 from app.audit.repository import append_debt_paid_audit, append_payment_recorded_audit
 from app.auth.error_codes import ErrorCode
-from app.debt.repository import debt_aggregate_from_row, update_locked_debt
-from app.debt.values import DebtId, DiscountedAmountUZS
+from app.debt.enums import DebtBalanceBasis, DebtOverdueSource
+from app.debt.overdue_service import materialize_locked_overdue_debt
+from app.debt.repository import (
+    debt_aggregate_from_row,
+    mark_locked_debt_transition_scope,
+    update_locked_debt,
+)
+from app.debt.values import DebtId, DiscountedAmountUZS, OriginalAmountUZS
 from app.idempotency.contracts import (
     IdempotencyEndpoint,
     IdempotencyOutcome,
@@ -27,7 +33,10 @@ from app.idempotency.repository import (
     find_completed_key,
     insert_or_resolve_key,
 )
-from app.payment.commands import CreatePaymentCommand
+from app.payment.commands import (
+    CompletedM14PaymentReplayCandidate,
+    CreatePaymentV2Command,
+)
 from app.payment.contracts import PaymentAggregate, payment_id_from_completed_result
 from app.payment.dependencies import DetachedPaymentActorContext
 from app.payment.policy import (
@@ -35,6 +44,7 @@ from app.payment.policy import (
     evaluate_locked_debt_payability,
 )
 from app.payment.repository import (
+    SqlAlchemyLockedDebtPostedTotalReader,
     get_tenant_payment,
     insert_payment,
     posted_payment_total,
@@ -51,8 +61,9 @@ from app.payment.values import (
     IncoherentPaymentLedgerError,
     PaymentAmountUZS,
     PaymentId,
+    PostedPaymentTotalUZS,
     RemainingDueUZS,
-    calculate_remaining_due,
+    calculate_remaining_due_for_basis,
 )
 
 __all__ = (
@@ -63,6 +74,7 @@ __all__ = (
     "decide_locked_payment_amount",
     "read_locked_payment_balance",
     "record_debt_payment",
+    "resolve_completed_m14_payment_replay",
 )
 
 PaymentServerClock = Callable[[], datetime]
@@ -101,6 +113,7 @@ class PaymentMutationRejected(RuntimeError):
             ErrorCode.PAYMENT_UNAVAILABLE,
             ErrorCode.FORBIDDEN,
             ErrorCode.SHOP_SUSPENDED,
+            ErrorCode.VALIDATION_ERROR,
         }:
             raise ValueError("Payment mutation error is invalid")
         self.error = error
@@ -129,17 +142,21 @@ class RecordDebtPaymentResult:
 
 
 def read_locked_payment_balance(
-    session: Session, *, locked_debt: LockedTenantPaymentDebt
+    session: Session,
+    *,
+    locked_debt: LockedTenantPaymentDebt,
+    balance_basis: DebtBalanceBasis,
 ) -> LockedPaymentBalance:
     """Re-read the ledger under the Debt lock and fail closed on bad/zero state."""
 
     locked = validate_locked_tenant_payment_debt(session, locked_debt)
     try:
-        remaining = calculate_remaining_due(
+        remaining = calculate_remaining_due_for_basis(
+            basis=balance_basis,
+            original_amount=OriginalAmountUZS(locked.row.original_amount_uzs),
             discounted_amount=DiscountedAmountUZS(locked.row.discounted_amount_uzs),
-            posted_total=posted_payment_total(
-                session,
-                debt_id=DebtId(locked.row.id),
+            posted_total=PostedPaymentTotalUZS(
+                posted_payment_total(session, debt_id=DebtId(locked.row.id)).value
             ),
         )
     except IncoherentPaymentLedgerError:
@@ -167,7 +184,7 @@ def record_debt_payment(
     session: Session,
     *,
     actor: DetachedPaymentActorContext,
-    command: CreatePaymentCommand,
+    command: CreatePaymentV2Command,
     payment_clock: PaymentServerClock | None = None,
 ) -> RecordDebtPaymentResult:
     """Append one idempotent Payment/Debt/audit unit in the borrowed TX-B.
@@ -244,13 +261,32 @@ def record_debt_payment(
     )
     if payability.error is not None:
         raise PaymentMutationRejected(payability.error)
+    assert payability.balance_basis is not None
+    if command.expected_revision != debt.revision:
+        raise PaymentMutationRejected(ErrorCode.DEBT_CHANGED)
+    if command.expected_balance_basis is not payability.balance_basis:
+        raise PaymentMutationRejected(ErrorCode.DEBT_CHANGED)
 
-    balance = read_locked_payment_balance(session, locked_debt=locked_debt)
+    if payability.requires_overdue_transition:
+        materialize_locked_overdue_debt(
+            session,
+            locked_debt=mark_locked_debt_transition_scope(
+                session, locked_row=locked_debt.row
+            ),
+            now=payability.payment_created_at,
+            source=DebtOverdueSource.INLINE_PAYMENT,
+            posted_total_reader=SqlAlchemyLockedDebtPostedTotalReader(session),
+        )
+        debt = debt_aggregate_from_row(locked_debt.row)
+
+    balance = read_locked_payment_balance(
+        session,
+        locked_debt=locked_debt,
+        balance_basis=payability.balance_basis,
+    )
     if balance.error is not None:
         raise PaymentMutationRejected(balance.error)
     assert balance.remaining is not None
-    if command.expected_revision != debt.revision:
-        raise PaymentMutationRejected(ErrorCode.DEBT_CHANGED)
     amount_outcome = decide_locked_payment_amount(
         amount=command.amount,
         remaining=balance.remaining,
@@ -259,7 +295,7 @@ def record_debt_payment(
     updated_debt = debt.record_payment(
         payment_amount_uzs=command.amount.value,
         current_remaining_due_uzs=balance.remaining.value,
-        expected_revision=command.expected_revision,
+        expected_revision=debt.revision,
         payment_created_at=payability.payment_created_at,
     )
     payment = PaymentAggregate(
@@ -307,7 +343,7 @@ def _resolve_completed_payment(
     *,
     row: IdempotencyKey,
     actor: DetachedPaymentActorContext,
-    command: CreatePaymentCommand,
+    command: CreatePaymentV2Command,
 ) -> RecordDebtPaymentResult:
     authority_error = recheck_tenant_payment_replay_authority(
         session,
@@ -331,7 +367,8 @@ def _resolve_completed_payment(
         or scoped.payment.recorded_by_user_id != actor.actor_user_id
         or scoped.payment.amount_uzs != command.amount.value
         or scoped.payment.method != command.method.value
-        or scoped.payment.debt_revision_after != command.expected_revision.value + 1
+        or scoped.payment.debt_revision_after
+        not in _allowed_completed_revisions(command)
     ):
         raise PaymentMutationRejected(ErrorCode.PAYMENT_UNAVAILABLE)
     return RecordDebtPaymentResult(
@@ -341,12 +378,12 @@ def _resolve_completed_payment(
 
 
 def _validate_service_inputs(
-    *, actor: DetachedPaymentActorContext, command: CreatePaymentCommand
+    *, actor: DetachedPaymentActorContext, command: CreatePaymentV2Command
 ) -> None:
     if not isinstance(actor, DetachedPaymentActorContext):
         raise TypeError("actor must be a DetachedPaymentActorContext")
-    if not isinstance(command, CreatePaymentCommand):
-        raise TypeError("command must be a CreatePaymentCommand")
+    if not isinstance(command, CreatePaymentV2Command):
+        raise TypeError("command must be a CreatePaymentV2Command")
     if (
         command.actor_user_id != actor.actor_user_id
         or command.current_shop_id != actor.current_shop_id
@@ -356,3 +393,63 @@ def _validate_service_inputs(
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def resolve_completed_m14_payment_replay(
+    session: Session,
+    *,
+    actor: DetachedPaymentActorContext,
+    candidate: CompletedM14PaymentReplayCandidate,
+) -> RecordDebtPaymentResult:
+    """Resolve only an already-completed v1 row; this path never owns a clock."""
+
+    if not isinstance(actor, DetachedPaymentActorContext):
+        raise TypeError("actor must be a DetachedPaymentActorContext")
+    if not isinstance(candidate, CompletedM14PaymentReplayCandidate):
+        raise TypeError("candidate must be a CompletedM14PaymentReplayCandidate")
+    if (
+        candidate.actor_user_id != actor.actor_user_id
+        or candidate.current_shop_id != actor.current_shop_id
+    ):
+        raise ValueError("Replay candidate does not match detached actor context")
+    row = find_completed_key(
+        session,
+        actor_user_id=actor.actor_user_id,
+        endpoint=IdempotencyEndpoint.SHOP_DEBT_PAYMENTS_CREATE,
+        key_digest=canonical_idempotency_key_digest(candidate.idempotency_key),
+    )
+    if row is None:
+        raise PaymentMutationRejected(ErrorCode.VALIDATION_ERROR)
+    authority_error = recheck_tenant_payment_replay_authority(session, actor=actor)
+    if authority_error is not None:
+        raise PaymentMutationRejected(authority_error)
+    if not hmac.compare_digest(row.request_hash, candidate.request_hash.value):
+        raise PaymentMutationRejected(ErrorCode.IDEMPOTENCY_CONFLICT)
+    payment_id = payment_id_from_completed_result(
+        completed_idempotency_result_from_row(row)
+    )
+    scoped = get_tenant_payment(
+        session,
+        shop_id=candidate.current_shop_id,
+        payment_id=payment_id,
+    )
+    if (
+        scoped is None
+        or scoped.payment.debt_id != candidate.debt_id.as_uuid()
+        or scoped.payment.recorded_by_user_id != actor.actor_user_id
+        or scoped.payment.amount_uzs != candidate.amount.value
+        or scoped.payment.method != candidate.method.value
+        or scoped.payment.debt_revision_after != candidate.expected_revision.value + 1
+    ):
+        raise PaymentMutationRejected(ErrorCode.PAYMENT_UNAVAILABLE)
+    return RecordDebtPaymentResult(
+        outcome=IdempotencyOutcome.REPLAY,
+        payment_id=payment_id,
+    )
+
+
+def _allowed_completed_revisions(command: CreatePaymentV2Command) -> set[int]:
+    base = command.expected_revision.value
+    if command.expected_balance_basis.value == "original":
+        return {base + 1, base + 2}
+    return {base + 1}

@@ -441,11 +441,13 @@ def test_locked_policy_and_pending_active_original_exposure_apply_exact_limits(
         db_session,
         locked_target=locked,
         original_amount=OriginalAmountUZS(Decimal("300")),
+        as_of_business_date=date(2026, 8, 10),
     )
     exceeded = evaluate_locked_debt_creation(
         db_session,
         locked_target=locked,
         original_amount=OriginalAmountUZS(Decimal("301")),
+        as_of_business_date=date(2026, 8, 10),
     )
 
     assert boundary.decision is DebtCreationEligibilityDecision.ALLOWED
@@ -477,6 +479,7 @@ def test_blacklist_and_strict_max_fail_without_policy_mutation(
         db_session,
         locked_target=locked,
         original_amount=OriginalAmountUZS(Decimal("1")),
+        as_of_business_date=date(2026, 8, 10),
     )
 
     assert denied.error is ErrorCode.CUSTOMER_BLACKLISTED
@@ -495,7 +498,7 @@ def test_locked_customer_hard_block_port_denies_without_m13_block_rows(
         def __init__(self) -> None:
             self.customer_ids = []
 
-        def read_global_hard_block(self, *, customer_id):
+        def read_global_hard_block(self, *, customer_id, as_of_business_date):
             self.customer_ids.append(customer_id)
             return GlobalHardBlockProjection(is_blocked=True)
 
@@ -696,6 +699,7 @@ def test_policy_update_serializes_and_each_reader_sees_one_complete_policy(
                 session,
                 locked_target=target,
                 original_amount=OriginalAmountUZS(Decimal("500")),
+                as_of_business_date=date(2026, 8, 10),
             )
             evaluated.set()
             assert release.wait(timeout=5)
@@ -730,6 +734,7 @@ def test_policy_update_serializes_and_each_reader_sees_one_complete_policy(
             session,
             locked_target=target,
             original_amount=OriginalAmountUZS(Decimal("500")),
+            as_of_business_date=date(2026, 8, 10),
         )
         assert after.error is ErrorCode.CREDIT_LIMIT_EXCEEDED
 
@@ -758,6 +763,7 @@ def test_parallel_distinct_create_attempts_serialize_on_open_count(
                 session,
                 locked_target=target,
                 original_amount=OriginalAmountUZS(Decimal("100")),
+                as_of_business_date=date(2026, 8, 10),
             )
             if gate.error is None:
                 session.add(
@@ -871,6 +877,67 @@ def test_every_active_shop_role_can_create_pending_proposal(
 
     assert result.outcome is IdempotencyOutcome.NEW
     assert result.error is None
+
+
+def test_create_customer_lock_midnight_wait_uses_post_lock_business_date(
+    db_session: Session, m2_test_database: Engine
+) -> None:
+    seed = _seed_target(db_session, credit_limit="10000", max_open_debts=3)
+    _add_complete_offer(db_session, actor=seed.actor)
+    _add_debt(db_session, seed=seed, amount="100", status=DebtStatus.ACTIVE)
+    existing = db_session.scalar(select(Debt))
+    assert existing is not None
+    existing.created_at = datetime(2026, 8, 1, tzinfo=UTC)
+    existing.pending_expires_at = datetime(2026, 8, 4, tzinfo=UTC)
+    existing.accepted_at = datetime(2026, 8, 4, tzinfo=UTC)
+    existing.updated_at = existing.accepted_at
+    existing.due_date = date(2026, 8, 9)
+    authority = seed.authority
+    customer_id = seed.customer.id
+    shop_customer_id = seed.shop_customer.id
+    db_session.commit()
+    factory = create_database_session_factory(m2_test_database)
+    lock_held = Event()
+    release = Event()
+    clock_called = Event()
+
+    def hold_customer() -> None:
+        with factory.begin() as session:
+            session.scalar(
+                select(Customer).where(Customer.id == customer_id).with_for_update()
+            )
+            lock_held.set()
+            assert release.wait(timeout=10)
+
+    def create() -> ErrorCode | None:
+        assert lock_held.wait(timeout=10)
+
+        def clock() -> datetime:
+            clock_called.set()
+            return datetime(2026, 8, 9, 19, tzinfo=UTC)
+
+        with factory.begin() as session:
+            return create_pending_debt_proposal(
+                session,
+                authority=authority,
+                shop_customer_id=ShopCustomerId(shop_customer_id),
+                command=_create_command(),
+                hard_block_clock=clock,
+            ).error
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        holder = pool.submit(hold_customer)
+        creator = pool.submit(create)
+        assert lock_held.wait(timeout=10)
+        assert not clock_called.is_set()
+        release.set()
+        holder.result(timeout=10)
+        assert creator.result(timeout=10) is ErrorCode.CUSTOMER_RATING_BLOCKED
+
+    assert clock_called.is_set()
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(Debt)) == 1
+        assert session.scalar(select(func.count()).select_from(IdempotencyKey)) == 0
 
 
 @pytest.mark.parametrize(

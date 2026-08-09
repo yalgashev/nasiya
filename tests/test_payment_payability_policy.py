@@ -6,7 +6,7 @@ import pytest
 
 from app.auth.error_codes import ErrorCode
 from app.debt.contracts import DebtAggregate, DebtReason
-from app.debt.enums import DebtExpirySource, DebtStatus
+from app.debt.enums import DebtBalanceBasis, DebtExpirySource, DebtStatus
 from app.debt.values import (
     DebtId,
     DiscountBasisPoints,
@@ -40,7 +40,7 @@ def _active_debt(*, due_date: date = date(2026, 8, 9)) -> DebtAggregate:
     )
 
 
-def test_active_debt_is_payable_through_last_tashkent_microsecond() -> None:
+def test_active_debt_switches_to_original_basis_at_tashkent_midnight() -> None:
     debt = _active_debt()
 
     allowed = evaluate_locked_debt_payability(
@@ -49,7 +49,7 @@ def test_active_debt_is_payable_through_last_tashkent_microsecond() -> None:
             datetime(2026, 8, 9, 18, 59, 59, 999999, tzinfo=UTC)
         ),
     )
-    denied = evaluate_locked_debt_payability(
+    late = evaluate_locked_debt_payability(
         debt=debt,
         captured_now=capture_payment_server_now(datetime(2026, 8, 9, 19, tzinfo=UTC)),
     )
@@ -58,8 +58,10 @@ def test_active_debt_is_payable_through_last_tashkent_microsecond() -> None:
     assert allowed.payment_created_at == datetime(
         2026, 8, 9, 18, 59, 59, 999999, tzinfo=UTC
     )
-    assert not denied.is_payable
-    assert denied.error is ErrorCode.DEBT_NOT_PAYABLE
+    assert allowed.balance_basis is DebtBalanceBasis.DISCOUNTED
+    assert late.is_payable and late.error is None
+    assert late.balance_basis is DebtBalanceBasis.ORIGINAL
+    assert late.requires_overdue_transition
 
 
 @pytest.mark.parametrize(
@@ -72,9 +74,7 @@ def test_active_debt_is_payable_through_last_tashkent_microsecond() -> None:
         DebtStatus.PAID,
     ),
 )
-def test_non_active_status_is_denied_before_due_date_predicate(
-    monkeypatch: pytest.MonkeyPatch, status: DebtStatus
-) -> None:
+def test_non_payable_status_is_denied(status: DebtStatus) -> None:
     debt = _pending_debt()
     if status is DebtStatus.PENDING:
         pass
@@ -98,12 +98,6 @@ def test_non_active_status_is_denied_before_due_date_predicate(
             source=DebtExpirySource.INLINE,
         )
 
-    monkeypatch.setattr(
-        "app.payment.policy.is_payment_due_date_payable",
-        lambda **_kwargs: pytest.fail(
-            "due-date predicate must not run for non-active Debt"
-        ),
-    )
     decision = evaluate_locked_debt_payability(
         debt=debt,
         captured_now=capture_payment_server_now(datetime(2026, 8, 9, tzinfo=UTC)),
@@ -119,4 +113,9 @@ def test_gate_has_no_mutation_inputs_or_side_effects() -> None:
     )
 
     assert decision.is_payable
-    assert set(decision.__dataclass_fields__) == {"payment_created_at", "error"}
+    assert set(decision.__dataclass_fields__) == {
+        "payment_created_at",
+        "balance_basis",
+        "requires_overdue_transition",
+        "error",
+    }

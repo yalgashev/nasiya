@@ -93,7 +93,7 @@ def test_progress_is_server_derived_and_uses_tashkent_due_boundary() -> None:
     assert active.is_payable is True
     assert active.balance_basis is DebtBalanceBasis.DISCOUNTED
     assert active.is_effectively_overdue is False
-    assert past_due.is_payable is False
+    assert past_due.is_payable is True
     assert past_due.remaining_due_uzs == Decimal("600")
     assert past_due.balance_basis is DebtBalanceBasis.ORIGINAL
     assert past_due.is_effectively_overdue is True

@@ -269,3 +269,12 @@ def _validate_locked_debt_target(session: Session, token: object) -> LockedDebtT
         raise RuntimeError("locked target belongs to a different session")
     _validate_before_offer(session, token._before_offer)
     return token
+
+
+def locked_debt_target_customer(
+    session: Session, *, locked_target: LockedDebtTarget
+) -> Customer:
+    """Expose only the already locked Customer row to debt-owned adapters."""
+
+    target = _validate_locked_debt_target(session, locked_target)
+    return target._before_offer.locked_customer.customer

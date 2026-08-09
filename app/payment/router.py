@@ -1,4 +1,4 @@
-"""Thin authenticated SSR/PRG adapters for the frozen M14 payment routes."""
+"""Thin authenticated SSR/PRG adapters for the frozen six Payment routes."""
 
 from __future__ import annotations
 
@@ -33,8 +33,8 @@ from app.debt.tenant_read_service import TenantDebtDetailProjection
 from app.debt.values import DebtId
 from app.debt.web_presentation import resolve_debt_web_language
 from app.payment.commands import (
-    CreatePaymentRawForm,
-    assemble_create_payment_command,
+    CreatePaymentV2RawForm,
+    assemble_create_payment_request,
 )
 from app.payment.dependencies import (
     DetachedPaymentActorContext,
@@ -51,7 +51,11 @@ from app.payment.read_service import (
     get_tenant_payment_history_view,
     get_tenant_payment_receipt_view,
 )
-from app.payment.service import PaymentMutationRejected, record_debt_payment
+from app.payment.service import (
+    PaymentMutationRejected,
+    record_debt_payment,
+    resolve_completed_m14_payment_replay,
+)
 from app.payment.values import PaymentId
 from app.security_headers import mark_auth_response_no_store
 from app.settings import Settings
@@ -170,6 +174,7 @@ def new_shop_debt_payment_page(
                 "debt_id": parsed_debt_id.as_uuid(),
                 "idempotency_key": str(uuid4()),
                 "expected_revision": detail.expected_revision,
+                "expected_balance_basis": (detail.payment_progress.balance_basis.value),
                 "remaining_due_uzs": detail.payment_progress.remaining_due_uzs,
                 "methods": tuple(PaymentMethod),
                 "error_message": _payment_error_message(language, error),
@@ -188,7 +193,6 @@ def new_shop_debt_payment_page(
 def create_shop_debt_payment(
     debt_id: str,
     request: Request,
-    now: Annotated[datetime, Depends(get_current_time)],
     authority: Annotated[
         DetachedPaymentActorContext,
         Depends(get_detached_current_shop_payment_actor_context),
@@ -197,33 +201,41 @@ def create_shop_debt_payment(
     method: Annotated[str, Form()] = "",
     idempotency_key: Annotated[str | None, Form()] = None,
     expected_revision: Annotated[str, Form()] = "",
+    expected_balance_basis: Annotated[str | None, Form()] = None,
 ) -> Response:
     parsed_debt_id = _parse_debt_path_locator(debt_id)
     if parsed_debt_id is None:
         return _redirect("/shop/customers", error=ErrorCode.DEBT_UNAVAILABLE)
     new_path = f"/shop/debts/{parsed_debt_id.as_uuid()}/payments/new"
-    assembled = assemble_create_payment_command(
+    assembled = assemble_create_payment_request(
         actor=authority,
-        form=CreatePaymentRawForm(
+        form=CreatePaymentV2RawForm(
             debt_id=str(parsed_debt_id.as_uuid()),
             amount_uzs=amount_uzs,
             method=method,
             idempotency_key=idempotency_key,
             expected_revision=expected_revision,
+            expected_balance_basis=expected_balance_basis,
         ),
         header_idempotency_key=request.headers.get("Idempotency-Key"),
     )
     if assembled.error is not None:
         return _redirect(new_path, error=assembled.error)
-    assert assembled.command is not None
     try:
         with request.app.state.database_session_factory.begin() as db:
-            result = record_debt_payment(
-                db,
-                actor=authority,
-                command=assembled.command,
-                payment_clock=lambda: now,
-            )
+            if assembled.command is not None:
+                result = record_debt_payment(
+                    db,
+                    actor=authority,
+                    command=assembled.command,
+                )
+            else:
+                assert assembled.legacy_completed_replay is not None
+                result = resolve_completed_m14_payment_replay(
+                    db,
+                    actor=authority,
+                    candidate=assembled.legacy_completed_replay,
+                )
     except PaymentMutationRejected as rejected:
         return _redirect(new_path, error=rejected.error)
     return _redirect(f"/shop/payments/{result.payment_id.as_uuid()}")
@@ -238,6 +250,7 @@ def create_shop_debt_payment(
 def shop_payment_receipt(
     payment_id: str,
     request: Request,
+    now: Annotated[datetime, Depends(get_current_time)],
     actor: Annotated[
         DetachedPaymentReadActorContext,
         Depends(get_detached_current_shop_payment_read_actor_context),
@@ -248,7 +261,7 @@ def shop_payment_receipt(
         return _redirect("/shop/customers", error=ErrorCode.PAYMENT_UNAVAILABLE)
     with request.app.state.database_session_factory() as db:
         view = get_tenant_payment_receipt_view(
-            db, actor=actor, payment_id=parsed_payment_id
+            db, actor=actor, payment_id=parsed_payment_id, server_now=now
         )
     if view.error is not None:
         return _redirect("/shop/customers", error=view.error)
@@ -321,6 +334,7 @@ def customer_debt_payment_list(
 def customer_payment_receipt(
     payment_id: str,
     request: Request,
+    now: Annotated[datetime, Depends(get_current_time)],
     db: Annotated[DatabaseSession, Depends(get_database_session, scope="function")],
     settings: Annotated[Settings, Depends(get_settings)],
     context: Annotated[CurrentSessionContext, Depends(get_current_session_context)],
@@ -332,7 +346,10 @@ def customer_payment_receipt(
     if parsed_payment_id is None:
         return _redirect("/customer/debts", error=ErrorCode.PAYMENT_UNAVAILABLE)
     view = get_own_customer_payment_receipt_view(
-        db, authenticated_user=user, payment_id=parsed_payment_id
+        db,
+        authenticated_user=user,
+        payment_id=parsed_payment_id,
+        server_now=now,
     )
     language = resolve_debt_web_language(request.headers.get("accept-language"))
     if view.error is not None:
@@ -425,7 +442,7 @@ def _shop_payment_form_detail(
         return ErrorCode.DEBT_UNAVAILABLE, None
     progress = detail.payment_progress
     if (
-        detail.status is not DebtStatus.ACTIVE
+        detail.status not in {DebtStatus.ACTIVE, DebtStatus.OVERDUE}
         or progress is None
         or not progress.is_payable
         or progress.remaining_due_uzs <= 0

@@ -22,6 +22,7 @@ from tests.test_shop_customer_repository_postgresql import (
 
 M12_REVISION = "e3f4a5b6c7d8"
 M14_REVISION = "a5b6c7d8e9f0"
+M15_REVISION = "b6c7d8e9f0a1"
 M12_SCHEMA_TABLES = {
     "shop_customers",
     "otp_challenge_events",
@@ -108,7 +109,7 @@ def test_current_database_extends_exact_m12_metadata_at_m14_head(
     }
     with m2_test_database.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-            M14_REVISION
+            M15_REVISION
         )
 
     shop_columns = {column["name"]: column for column in inspector.get_columns("shops")}

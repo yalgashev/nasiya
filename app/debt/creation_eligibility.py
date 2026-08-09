@@ -4,24 +4,30 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from uuid import UUID
+from datetime import date
 
 from sqlalchemy.orm import Session
 
 from app.auth.error_codes import ErrorCode
+from app.debt.overdue_ports import LockedCustomerGlobalHardBlockReadPort
 from app.debt.policy import (
     DebtCreationEligibilityDecision,
     DebtCreationEligibilityInput,
-    GlobalHardBlockProjection,
-    GlobalHardBlockReadPort,
     decide_debt_creation_eligibility,
 )
 from app.debt.repository import (
+    LockedCustomerHardBlockScope,
     LockedDebtPredecessor,
     SqlAlchemyDebtOpenSetReader,
+    locked_customer_global_hard_block_reader_factory,
     mark_debt_predecessor_locked,
+    mark_locked_customer_hard_block_scope,
 )
-from app.debt.targeting import LockedDebtTarget, _validate_locked_debt_target
+from app.debt.targeting import (
+    LockedDebtTarget,
+    _validate_locked_debt_target,
+    locked_debt_target_customer,
+)
 from app.debt.values import CustomerId, OriginalAmountUZS, ShopCustomerId
 from app.shop_customer.contracts import (
     DebtlessShopCustomerPolicyProjection,
@@ -48,6 +54,9 @@ DebtOpenSetReaderFactory = Callable[
     [Session, LockedDebtPredecessor],
     SqlAlchemyDebtOpenSetReader,
 ]
+HardBlockReaderFactory = Callable[
+    [Session, LockedCustomerHardBlockScope], LockedCustomerGlobalHardBlockReadPort
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,24 +68,6 @@ class DebtCreationGateResult:
         expected = _DECISION_ERRORS.get(self.decision)
         if self.error is not expected:
             raise ValueError("Debt creation gate result is inconsistent")
-
-
-class _LockedCustomerNoHardBlockReader:
-    """M13's authoritative read seam: no reachable row can assert a block."""
-
-    def __init__(self, session: Session, *, locked_target: LockedDebtTarget) -> None:
-        self._session = session
-        self._locked_target = _validate_locked_debt_target(session, locked_target)
-
-    def read_global_hard_block(
-        self, *, customer_id: CustomerId
-    ) -> GlobalHardBlockProjection:
-        if not isinstance(customer_id, UUID):
-            raise TypeError("customer_id must be a CustomerId")
-        target = _validate_locked_debt_target(self._session, self._locked_target)
-        if customer_id != target._locked_shop_customer.row.customer_id:
-            raise ValueError("Hard-block customer is not the locked target")
-        return GlobalHardBlockProjection(is_blocked=False)
 
 
 def read_locked_debtless_policy(
@@ -101,8 +92,12 @@ def evaluate_locked_debt_creation(
     *,
     locked_target: LockedDebtTarget,
     original_amount: OriginalAmountUZS,
-    global_hard_block_reader: GlobalHardBlockReadPort | None = None,
+    as_of_business_date: date,
+    global_hard_block_reader: LockedCustomerGlobalHardBlockReadPort | None = None,
     open_set_reader_factory: DebtOpenSetReaderFactory | None = None,
+    hard_block_reader_factory: HardBlockReaderFactory = (
+        locked_customer_global_hard_block_reader_factory
+    ),
 ) -> DebtCreationGateResult:
     """Apply blacklist, inclusive credit, and strict count limits."""
 
@@ -110,15 +105,17 @@ def evaluate_locked_debt_creation(
         raise TypeError("original_amount must be an OriginalAmountUZS")
     target = _validate_locked_debt_target(session, locked_target)
     if global_hard_block_reader is None:
-        hard_block_reader: GlobalHardBlockReadPort = _LockedCustomerNoHardBlockReader(
-            session, locked_target=target
+        if not callable(hard_block_reader_factory):
+            raise TypeError("hard_block_reader_factory must be callable")
+        scope = mark_locked_customer_hard_block_scope(
+            session,
+            locked_customer=locked_debt_target_customer(session, locked_target=target),
         )
-    elif isinstance(global_hard_block_reader, GlobalHardBlockReadPort):
+        hard_block_reader = hard_block_reader_factory(session, scope)
+    elif isinstance(global_hard_block_reader, LockedCustomerGlobalHardBlockReadPort):
         hard_block_reader = global_hard_block_reader
     else:
-        raise TypeError(
-            "global_hard_block_reader must implement GlobalHardBlockReadPort"
-        )
+        raise TypeError("global_hard_block_reader must implement locked Customer port")
     row = target._locked_shop_customer.row
     predecessor = mark_debt_predecessor_locked(
         session, locked_shop_customer=target._locked_shop_customer
@@ -138,7 +135,8 @@ def evaluate_locked_debt_creation(
         open_exposure=reader.read_open_debt_exposure(shop_customer_id=shop_customer_id),
         open_count=reader.read_open_debt_count(shop_customer_id=shop_customer_id),
         global_hard_block=hard_block_reader.read_global_hard_block(
-            customer_id=CustomerId(row.customer_id)
+            customer_id=CustomerId(row.customer_id),
+            as_of_business_date=as_of_business_date,
         ),
         original_amount=original_amount,
     )

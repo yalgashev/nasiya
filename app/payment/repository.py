@@ -33,6 +33,7 @@ from app.payment.values import (
     RemainingDueUZS,
     calculate_payment_exposure,
     calculate_remaining_due,
+    calculate_remaining_due_for_basis,
     open_debt_count_contribution,
 )
 from app.shop.repository import list_shops_by_ids
@@ -193,8 +194,17 @@ def posted_payment_total(
     return PostedPaymentTotalUZS(Decimal(session.scalar(statement)))
 
 
-def remaining_due(session: Session, *, debt: Debt) -> RemainingDueUZS:
+def remaining_due(
+    session: Session, *, debt: Debt, balance_basis=None
+) -> RemainingDueUZS:
     _require_attached_debt(session, debt)
+    if balance_basis is not None:
+        return calculate_remaining_due_for_basis(
+            basis=balance_basis,
+            original_amount=OriginalAmountUZS(debt.original_amount_uzs),
+            discounted_amount=DiscountedAmountUZS(debt.discounted_amount_uzs),
+            posted_total=posted_payment_total(session, debt_id=DebtId(debt.id)),
+        )
     return calculate_remaining_due(
         discounted_amount=DiscountedAmountUZS(debt.discounted_amount_uzs),
         posted_total=posted_payment_total(session, debt_id=DebtId(debt.id)),
@@ -202,7 +212,7 @@ def remaining_due(session: Session, *, debt: Debt) -> RemainingDueUZS:
 
 
 def historical_balance_after(
-    session: Session, *, debt: Debt, payment: Payment
+    session: Session, *, debt: Debt, payment: Payment, balance_basis=None
 ) -> RemainingDueUZS:
     _require_attached_debt(session, debt)
     if (
@@ -212,13 +222,21 @@ def historical_balance_after(
         raise RuntimeError("payment must be attached to this session")
     if payment.debt_id != debt.id:
         raise ValueError("Payment does not belong to Debt")
+    posted = posted_payment_total(
+        session,
+        debt_id=DebtId(debt.id),
+        through_revision=payment.debt_revision_after,
+    )
+    if balance_basis is not None:
+        return calculate_remaining_due_for_basis(
+            basis=balance_basis,
+            original_amount=OriginalAmountUZS(debt.original_amount_uzs),
+            discounted_amount=DiscountedAmountUZS(debt.discounted_amount_uzs),
+            posted_total=posted,
+        )
     return calculate_remaining_due(
         discounted_amount=DiscountedAmountUZS(debt.discounted_amount_uzs),
-        posted_total=posted_payment_total(
-            session,
-            debt_id=DebtId(debt.id),
-            through_revision=payment.debt_revision_after,
-        ),
+        posted_total=posted,
     )
 
 

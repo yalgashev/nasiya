@@ -15,7 +15,6 @@ from app.auth.error_codes import ErrorCode
 from app.auth.models import User
 from app.customer.models import Customer
 from app.debt.business_time import (
-    is_payment_due_date_payable,
     normalize_payment_created_at,
 )
 from app.debt.customer_authority import CustomerDebtAuthority
@@ -52,6 +51,7 @@ from app.payment.contracts import (
     PaymentHistoryItem,
     PaymentReceiptProjection,
     resolve_current_balance_basis,
+    resolve_historical_balance_basis,
 )
 from app.payment.dependencies import DetachedPaymentReadActorContext
 from app.payment.models import Payment
@@ -344,7 +344,11 @@ def get_tenant_payment_history_view(
 
 
 def get_tenant_payment_receipt(
-    session: Session, *, actor: DetachedPaymentReadActorContext, payment_id: PaymentId
+    session: Session,
+    *,
+    actor: DetachedPaymentReadActorContext,
+    payment_id: PaymentId,
+    server_now: datetime | None = None,
 ) -> TenantPaymentReadResult:
     if not isinstance(payment_id, PaymentId):
         raise TypeError("payment_id must be a PaymentId")
@@ -355,7 +359,8 @@ def get_tenant_payment_receipt(
     if row is None:
         return TenantPaymentReadResult(error=ErrorCode.PAYMENT_UNAVAILABLE)
     return TenantPaymentReadResult(
-        error=None, receipt=compose_payment_receipt(session, row=row)
+        error=None,
+        receipt=compose_payment_receipt(session, row=row, server_now=server_now),
     )
 
 
@@ -364,6 +369,7 @@ def get_tenant_payment_receipt_view(
     *,
     actor: DetachedPaymentReadActorContext,
     payment_id: PaymentId,
+    server_now: datetime | None = None,
 ) -> TenantPaymentReceiptView:
     """Scoped receipt plus a non-rendered route locator for the history link."""
 
@@ -377,7 +383,7 @@ def get_tenant_payment_receipt_view(
         return TenantPaymentReceiptView(error=ErrorCode.PAYMENT_UNAVAILABLE)
     return TenantPaymentReceiptView(
         error=None,
-        receipt=compose_payment_receipt(session, row=row),
+        receipt=compose_payment_receipt(session, row=row, server_now=server_now),
         debt_id=DebtId(row.debt.id),
     )
 
@@ -387,6 +393,7 @@ def get_tenant_payment_receipt_for_result(
     *,
     actor: DetachedPaymentReadActorContext,
     result: RecordDebtPaymentResult,
+    server_now: datetime | None = None,
 ) -> TenantPaymentReadResult:
     """Carry the coordinator's typed locator into the scoped receipt reader."""
 
@@ -396,6 +403,7 @@ def get_tenant_payment_receipt_for_result(
         session,
         actor=actor,
         payment_id=result.payment_id,
+        server_now=server_now,
     )
 
 
@@ -460,7 +468,11 @@ def get_own_customer_payment_history_view(
 
 
 def get_own_customer_payment_receipt(
-    session: Session, *, authenticated_user: User, payment_id: PaymentId
+    session: Session,
+    *,
+    authenticated_user: User,
+    payment_id: PaymentId,
+    server_now: datetime | None = None,
 ) -> CustomerPaymentReadResult:
     if not isinstance(payment_id, PaymentId):
         raise TypeError("payment_id must be a PaymentId")
@@ -475,7 +487,8 @@ def get_own_customer_payment_receipt(
     if row is None:
         return CustomerPaymentReadResult(error=ErrorCode.PAYMENT_UNAVAILABLE)
     return CustomerPaymentReadResult(
-        error=None, receipt=compose_payment_receipt(session, row=row)
+        error=None,
+        receipt=compose_payment_receipt(session, row=row, server_now=server_now),
     )
 
 
@@ -484,6 +497,7 @@ def get_own_customer_payment_receipt_view(
     *,
     authenticated_user: User,
     payment_id: PaymentId,
+    server_now: datetime | None = None,
 ) -> CustomerPaymentReceiptView:
     """Own-only receipt with an internal debt locator for its history backlink."""
 
@@ -501,7 +515,7 @@ def get_own_customer_payment_receipt_view(
         return CustomerPaymentReceiptView(error=ErrorCode.PAYMENT_UNAVAILABLE)
     return CustomerPaymentReceiptView(
         error=None,
-        receipt=compose_payment_receipt(session, row=row),
+        receipt=compose_payment_receipt(session, row=row, server_now=server_now),
         debt_id=DebtId(row.debt.id),
     )
 
@@ -629,23 +643,41 @@ def get_customer_debt_detail_with_payment_progress(
 
 
 def compose_payment_receipt(
-    session: Session, *, row: ScopedPaymentRow
+    session: Session, *, row: ScopedPaymentRow, server_now: datetime | None = None
 ) -> PaymentReceiptProjection:
     """Immutable receipt fact plus labelled historical/current server balances."""
 
     payment = row.payment
     debt = row.debt
     aggregate = payment_aggregate_from_row(payment)
+    overdue_revision = (
+        None if debt.overdue_revision is None else DebtRevision(debt.overdue_revision)
+    )
+    historical_basis = resolve_historical_balance_basis(
+        payment_revision=aggregate.debt_revision_after,
+        overdue_revision=overdue_revision,
+    )
+    current_basis = resolve_current_balance_basis(
+        status=DebtStatus(debt.status),
+        due_date=debt.due_date,
+        server_now=normalize_payment_created_at(server_now or datetime.now(UTC)),
+        overdue_revision=overdue_revision,
+    )
     return PaymentReceiptProjection(
         amount=aggregate.amount,
         method=aggregate.method,
         created_at=aggregate.created_at,
         historical_balance_after=historical_balance_after(
-            session, debt=debt, payment=payment
+            session,
+            debt=debt,
+            payment=payment,
+            balance_basis=historical_basis,
         ),
-        current_balance=remaining_due(session, debt=debt),
+        current_balance=remaining_due(session, debt=debt, balance_basis=current_basis),
         current_debt_status=DebtStatus(debt.status),
         shop_display_name=row.shop_name,
+        historical_balance_basis=historical_basis,
+        current_balance_basis=current_basis,
     )
 
 
@@ -668,11 +700,7 @@ def _progress(
         discounted_amount=DiscountedAmountUZS(debt.discounted_amount_uzs),
         posted_total=posted,
     )
-    payable = (
-        status is DebtStatus.ACTIVE
-        and remaining.value > 0
-        and is_payment_due_date_payable(payment_created_at=now, due_date=debt.due_date)
-    )
+    payable = status in {DebtStatus.ACTIVE, DebtStatus.OVERDUE} and remaining.value > 0
     return DebtPaymentProgressProjection(
         posted_total_uzs=posted.value,
         remaining_due_uzs=remaining.value,

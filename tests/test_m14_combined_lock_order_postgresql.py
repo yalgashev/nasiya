@@ -399,6 +399,7 @@ def test_pending_accept_completes_before_payment_as_one_forward_ordered_history(
                 session,
                 authority=authority,
                 command=accept_command,
+                hard_block_clock=lambda: accept_command.now,
             )
 
     def pay():

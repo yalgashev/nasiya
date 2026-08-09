@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hmac
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -17,16 +19,22 @@ from app.audit.contracts import (
 )
 from app.audit.repository import append_audit_event
 from app.auth.error_codes import ErrorCode
+from app.debt.business_time import tashkent_business_date
 from app.debt.commands import CreateDebtCommand
 from app.debt.contracts import DebtAggregate
 from app.debt.creation_eligibility import (
     DebtOpenSetReaderFactory,
+    HardBlockReaderFactory,
     evaluate_locked_debt_creation,
 )
 from app.debt.dependencies import DetachedDebtActorAuthority
 from app.debt.offer_gate import lock_current_complete_debt_offer
-from app.debt.policy import GlobalHardBlockReadPort
-from app.debt.repository import insert_debt, mark_debt_predecessor_locked
+from app.debt.overdue_ports import LockedCustomerGlobalHardBlockReadPort
+from app.debt.repository import (
+    insert_debt,
+    locked_customer_global_hard_block_reader_factory,
+    mark_debt_predecessor_locked,
+)
 from app.debt.targeting import (
     discover_tenant_debt_target,
     lock_debt_target_before_offer,
@@ -77,8 +85,12 @@ def create_pending_debt_proposal(
     authority: DetachedDebtActorAuthority,
     shop_customer_id: ShopCustomerId,
     command: CreateDebtCommand,
-    global_hard_block_reader: GlobalHardBlockReadPort | None = None,
+    global_hard_block_reader: LockedCustomerGlobalHardBlockReadPort | None = None,
     open_set_reader_factory: DebtOpenSetReaderFactory | None = None,
+    hard_block_clock: Callable[[], datetime] | None = None,
+    hard_block_reader_factory: HardBlockReaderFactory = (
+        locked_customer_global_hard_block_reader_factory
+    ),
 ) -> CreateDebtProposalResult:
     """Create one key/debt/audit unit without owning the borrowed Session."""
 
@@ -88,6 +100,9 @@ def create_pending_debt_proposal(
         raise TypeError("shop_customer_id must be a ShopCustomerId")
     if not isinstance(command, CreateDebtCommand):
         raise TypeError("command must be a CreateDebtCommand")
+    clock = hard_block_clock or _utc_now
+    if not callable(clock):
+        raise TypeError("hard_block_clock must be callable")
     if not authority.is_authenticated:
         return CreateDebtProposalResult(outcome=None, error=ErrorCode.FORBIDDEN)
     assert authority.actor_user_id is not None
@@ -151,12 +166,15 @@ def create_pending_debt_proposal(
     if completed is not None:
         return _resolve_completed_key(completed, request_hash=request_hash)
 
+    hard_block_now = _normalize_hard_block_now(clock())
     eligibility = evaluate_locked_debt_creation(
         session,
         locked_target=locked_target,
         original_amount=command.original_amount,
+        as_of_business_date=tashkent_business_date(hard_block_now),
         global_hard_block_reader=global_hard_block_reader,
         open_set_reader_factory=open_set_reader_factory,
+        hard_block_reader_factory=hard_block_reader_factory,
     )
     if eligibility.error is not None:
         return CreateDebtProposalResult(outcome=None, error=eligibility.error)
@@ -238,3 +256,17 @@ def _completed_result(row: IdempotencyKey) -> CreateDebtProposalResult:
         outcome=IdempotencyOutcome.REPLAY,
         debt_id=completed.debt_id,
     )
+
+
+def _normalize_hard_block_now(value: datetime) -> datetime:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() is None
+    ):
+        raise ValueError("Hard-block clock must return an aware datetime")
+    return value.astimezone(UTC)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)

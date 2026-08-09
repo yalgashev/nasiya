@@ -90,6 +90,7 @@ def test_parallel_terminal_decisions_have_one_atomic_winner(
                     displayed_offer_text_id=offer_text_id,
                     now=NOW + timedelta(hours=1),
                 ),
+                hard_block_clock=lambda: NOW + timedelta(hours=1),
             )
 
     def reject_once(*, at_expiry: bool = False):

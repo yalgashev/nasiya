@@ -9,6 +9,7 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
     <input type="hidden" name="expected_revision" value="{{ expected_revision }}">
+    <input type="hidden" name="expected_balance_basis" value="{{ expected_balance_basis }}">
     <label for="payment-amount">{{ copy.amount }}</label>
     <input
       id="payment-amount"

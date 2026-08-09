@@ -10,6 +10,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.auth.csrf import get_csrf_token
+from app.auth.deps import get_current_time
 from app.auth.error_codes import ErrorCode
 from app.auth.models import Session as AuthSession
 from app.auth.sessions import create_anonymous_session, create_authenticated_session
@@ -114,6 +115,7 @@ def _payment_probe(
     )
     application.state.authority = None
     application.state.tx_b_opened = False
+    application.dependency_overrides[get_current_time] = lambda: NOW
 
     @application.post("/payment-probe")
     async def payment_probe(

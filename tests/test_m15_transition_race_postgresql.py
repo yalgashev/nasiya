@@ -266,7 +266,7 @@ def test_batch_holds_lock_before_boundary_payment_and_is_the_only_winner(
 
     assert (batch_result.transitioned_count, batch_result.no_op_count) == (1, 0)
     assert isinstance(payment_result, PaymentMutationRejected)
-    assert payment_result.error is ErrorCode.DEBT_NOT_PAYABLE
+    assert payment_result.error is ErrorCode.DEBT_CHANGED
     with factory() as session:
         debt = session.get_one(Debt, seed.debt_id)
         event_types = tuple(

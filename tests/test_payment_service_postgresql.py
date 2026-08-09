@@ -16,7 +16,7 @@ from app.db import create_database_session_factory
 from app.debt.models import Debt
 from app.idempotency.contracts import IdempotencyOutcome
 from app.idempotency.models import IdempotencyKey
-from app.payment.commands import CreatePaymentRawForm, assemble_create_payment_command
+from app.payment.commands import CreatePaymentV2RawForm, assemble_create_payment_request
 from app.payment.models import Payment
 from app.payment.service import PaymentMutationRejected, record_debt_payment
 from app.shop.enums import ShopRole
@@ -34,16 +34,18 @@ def _command(
     amount: str,
     revision: int,
     key: UUID,
+    basis: str = "discounted",
 ):
     actor = _context(actor_id, shop_id)
-    assembled = assemble_create_payment_command(
+    assembled = assemble_create_payment_request(
         actor=actor,
-        form=CreatePaymentRawForm(
+        form=CreatePaymentV2RawForm(
             debt_id=str(debt_id),
             amount_uzs=amount,
             method="cash",
             idempotency_key=str(key),
             expected_revision=str(revision),
+            expected_balance_basis=basis,
         ),
         header_idempotency_key=str(key),
     )

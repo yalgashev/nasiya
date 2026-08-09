@@ -12,7 +12,7 @@ from app.db import create_database_session_factory
 from app.debt.models import Debt
 from app.debt.service import create_pending_debt_proposal
 from app.debt.values import ShopCustomerId
-from app.payment.commands import CreatePaymentRawForm, assemble_create_payment_command
+from app.payment.commands import CreatePaymentV2RawForm, assemble_create_payment_request
 from app.payment.models import Payment
 from app.payment.repository import payment_open_set_reader_factory
 from app.payment.service import record_debt_payment
@@ -57,14 +57,15 @@ def _add_active_debt(
 def _payment_command(actor_id, shop_id, debt_id, *, amount: str):
     key = str(uuid4())
     actor = _context(actor_id, shop_id)
-    assembled = assemble_create_payment_command(
+    assembled = assemble_create_payment_request(
         actor=actor,
-        form=CreatePaymentRawForm(
+        form=CreatePaymentV2RawForm(
             debt_id=str(debt_id),
             amount_uzs=amount,
             method="cash",
             idempotency_key=key,
             expected_revision="2",
+            expected_balance_basis="discounted",
         ),
         header_idempotency_key=key,
     )

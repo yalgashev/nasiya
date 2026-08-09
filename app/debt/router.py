@@ -217,6 +217,9 @@ def create_shop_customer_debt(
             shop_customer_id=ShopCustomerId(shop_customer_id),
             command=command,
             open_set_reader_factory=request.app.state.debt_open_set_reader_factory,
+            hard_block_reader_factory=(
+                request.app.state.debt_hard_block_reader_factory
+            ),
         )
     if result.error is not None:
         return _redirect(new_path, error=result.error)
@@ -410,7 +413,12 @@ def accept_customer_debt(
         return _redirect(path, error=ErrorCode.VALIDATION_ERROR)
     with request.app.state.database_session_factory.begin() as db:
         result = accept_own_customer_debt(
-            db, authority=authority.authority, command=command
+            db,
+            authority=authority.authority,
+            command=command,
+            hard_block_reader_factory=(
+                request.app.state.debt_hard_block_reader_factory
+            ),
         )
     return _redirect(
         path,

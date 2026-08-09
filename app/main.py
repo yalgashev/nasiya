@@ -16,6 +16,7 @@ from app.db import (
     create_database_session_dependency,
     create_database_session_factory,
 )
+from app.debt.repository import locked_customer_global_hard_block_reader_factory
 from app.debt.router import router as debt_router
 from app.offers.router import router as offers_router
 from app.payment.repository import payment_open_set_reader_factory
@@ -64,6 +65,9 @@ def create_app(
         customer_document_storage_service
     )
     application.state.debt_open_set_reader_factory = payment_open_set_reader_factory
+    application.state.debt_hard_block_reader_factory = (
+        locked_customer_global_hard_block_reader_factory
+    )
     application.state.get_database_session = create_database_session_dependency(
         database_session_factory
     )

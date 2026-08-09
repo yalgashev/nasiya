@@ -57,6 +57,8 @@ __all__ = (
     "list_tenant_debts",
     "lock_debts_in_id_order",
     "lock_customer_hard_block_scope",
+    "locked_customer_global_hard_block_reader_factory",
+    "mark_locked_customer_hard_block_scope",
     "mark_debt_predecessor_locked",
     "mark_locked_debt_transition_scope",
     "update_locked_debt",
@@ -184,6 +186,22 @@ def lock_customer_hard_block_scope(
     return LockedCustomerHardBlockScope(_customer=customer, _session=session)
 
 
+def mark_locked_customer_hard_block_scope(
+    session: Session, *, locked_customer: Customer
+) -> LockedCustomerHardBlockScope:
+    """Adapt a Customer already locked by a forward coordinator."""
+
+    if (
+        not isinstance(locked_customer, Customer)
+        or session.get(Customer, locked_customer.id) is not locked_customer
+    ):
+        raise RuntimeError("locked Customer must be attached to this session")
+    return LockedCustomerHardBlockScope(
+        _customer=locked_customer,
+        _session=session,
+    )
+
+
 class SqlAlchemyLockedCustomerGlobalHardBlockReader:
     """Cross-shop boolean reader behind an authoritative Customer lock token."""
 
@@ -226,6 +244,17 @@ class SqlAlchemyLockedCustomerGlobalHardBlockReader:
             )
         )
         return GlobalHardBlockProjection(is_blocked=bool(blocked))
+
+
+def locked_customer_global_hard_block_reader_factory(
+    session: Session, locked_customer: LockedCustomerHardBlockScope
+) -> SqlAlchemyLockedCustomerGlobalHardBlockReader:
+    """Production factory shared by the create and accept coordinators."""
+
+    return SqlAlchemyLockedCustomerGlobalHardBlockReader(
+        session,
+        locked_customer=locked_customer,
+    )
 
 
 def list_tenant_debts(session: Session, *, shop_id: UUID) -> list[Debt]:

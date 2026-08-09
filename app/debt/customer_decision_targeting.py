@@ -39,6 +39,7 @@ __all__ = (
     "lock_customer_debt_after_offer",
     "lock_customer_debt_offer",
     "lock_customer_debt_predecessors",
+    "locked_customer_debt_customer",
     "read_discovered_debt_status",
 )
 
@@ -320,6 +321,14 @@ def _validate_predecessors(
     if token._session is not session:
         raise RuntimeError("locked predecessors belong to another session")
     return token
+
+
+def locked_customer_debt_customer(
+    session: Session, *, locked: _LockedCustomerDebtPredecessors
+) -> Customer:
+    """Expose only the Customer already locked by the acceptance coordinator."""
+
+    return _validate_predecessors(session, locked).customer
 
 
 def _validate_offer(session: Session, token: object) -> LockedCustomerDebtOffer:

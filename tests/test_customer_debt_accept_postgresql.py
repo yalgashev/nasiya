@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import UTC, date, datetime, timedelta
 from threading import Event
 from uuid import UUID, uuid4
 
@@ -15,6 +15,7 @@ import app.debt.customer_accept_service as accept_service
 from app.audit.contracts import AuditEventType
 from app.audit.models import AuditLog
 from app.auth.error_codes import ErrorCode
+from app.customer.models import Customer
 from app.db import create_database_session_factory
 from app.debt.customer_accept_service import (
     AcceptCustomerDebtCommand,
@@ -96,6 +97,7 @@ def test_accept_writes_exact_atomic_snapshot_and_replay_is_a_noop(
         db_session,
         authority=authority,
         command=command,
+        hard_block_clock=lambda: command.now,
     )
     counts = (
         db_session.scalar(select(func.count()).select_from(OfferAcceptance)),
@@ -105,6 +107,7 @@ def test_accept_writes_exact_atomic_snapshot_and_replay_is_a_noop(
         db_session,
         authority=authority,
         command=command,
+        hard_block_clock=lambda: pytest.fail("replay must not capture time"),
     )
 
     assert accepted.outcome is CustomerDebtAcceptOutcome.ACCEPTED
@@ -200,7 +203,7 @@ def test_accept_live_policy_offer_and_time_failures_are_zero_write(
         offer_text_id = uuid4()
 
     class HardBlock:
-        def read_global_hard_block(self, *, customer_id):
+        def read_global_hard_block(self, *, customer_id, as_of_business_date):
             return GlobalHardBlockProjection(is_blocked=failure == "hard_block")
 
     result = accept_own_customer_debt(
@@ -213,6 +216,7 @@ def test_accept_live_policy_offer_and_time_failures_are_zero_write(
             now=now,
         ),
         global_hard_block_reader=HardBlock(),
+        hard_block_clock=lambda: now,
     )
 
     assert result.error is expected
@@ -267,6 +271,7 @@ def test_acceptance_update_and_audit_faults_roll_back_the_whole_unit(
                     debt_id=debt_id,
                     offer_text_id=offer_text_id,
                 ),
+                hard_block_clock=lambda: NOW + timedelta(hours=1),
             )
 
     with factory.begin() as session:
@@ -300,6 +305,7 @@ def test_parallel_exact_accepts_converge_to_accept_and_replay(
                 session,
                 authority=authority,
                 command=command,
+                hard_block_clock=lambda: command.now,
             )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -317,3 +323,81 @@ def test_parallel_exact_accepts_converge_to_accept_and_replay(
         assert debt.revision == 2
         assert session.scalar(select(func.count()).select_from(OfferAcceptance)) == 1
         assert session.scalar(select(func.count()).select_from(AuditLog)) == 1
+
+
+def test_accept_customer_lock_midnight_wait_uses_post_lock_business_date(
+    db_session: Session, m2_test_database: Engine
+) -> None:
+    seed = _seed_owned_debt(db_session)
+    _add_current_complete_debt_offer(db_session, actor=seed.user)
+    relation = db_session.scalar(
+        select(ShopCustomer).where(ShopCustomer.customer_id == seed.customer.id)
+    )
+    assert relation is not None
+    db_session.add(
+        Debt(
+            shop_customer_id=relation.id,
+            created_by_user_id=seed.user.id,
+            original_amount_uzs=100,
+            discount_basis_points=0,
+            discounted_amount_uzs=100,
+            due_date=date(2026, 8, 9),
+            pending_expires_at=datetime(2026, 8, 4, tzinfo=UTC),
+            status=DebtStatus.ACTIVE.value,
+            revision=2,
+            accepted_at=datetime(2026, 8, 4, tzinfo=UTC),
+            created_at=datetime(2026, 8, 1, tzinfo=UTC),
+            updated_at=datetime(2026, 8, 4, tzinfo=UTC),
+        )
+    )
+    authority = resolve_own_customer_debt_authority(
+        db_session, authenticated_user=seed.user
+    )
+    assert authority is not None
+    offer_text_id = _offer_text_id(db_session, OfferLanguage.RU)
+    command = _command(debt_id=seed.debt.id, offer_text_id=offer_text_id)
+    customer_id = seed.customer.id
+    pending_id = seed.debt.id
+    db_session.commit()
+    factory = create_database_session_factory(m2_test_database)
+    lock_held = Event()
+    release = Event()
+    clock_called = Event()
+
+    def hold_customer() -> None:
+        with factory.begin() as session:
+            session.scalar(
+                select(Customer).where(Customer.id == customer_id).with_for_update()
+            )
+            lock_held.set()
+            assert release.wait(timeout=10)
+
+    def accept() -> ErrorCode | None:
+        assert lock_held.wait(timeout=10)
+
+        def clock() -> datetime:
+            clock_called.set()
+            return datetime(2026, 8, 9, 19, tzinfo=UTC)
+
+        with factory.begin() as session:
+            return accept_own_customer_debt(
+                session,
+                authority=authority,
+                command=command,
+                hard_block_clock=clock,
+            ).error
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        holder = pool.submit(hold_customer)
+        accepter = pool.submit(accept)
+        assert lock_held.wait(timeout=10)
+        assert not clock_called.is_set()
+        release.set()
+        holder.result(timeout=10)
+        assert accepter.result(timeout=10) is ErrorCode.CUSTOMER_RATING_BLOCKED
+
+    assert clock_called.is_set()
+    with factory() as session:
+        pending = session.get_one(Debt, pending_id)
+        assert pending.status == DebtStatus.PENDING.value
+        assert session.scalar(select(func.count()).select_from(OfferAcceptance)) == 0

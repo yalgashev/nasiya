@@ -21,7 +21,7 @@ from app.debt.presentation import DebtWebLanguage
 from app.debt.values import DebtId, DiscountedAmountUZS, OriginalAmountUZS
 from app.idempotency.contracts import IdempotencyOutcome
 from app.idempotency.models import IdempotencyKey
-from app.payment.commands import CreatePaymentRawForm, assemble_create_payment_command
+from app.payment.commands import CreatePaymentV2RawForm, assemble_create_payment_request
 from app.payment.dependencies import DetachedPaymentReadActorContext
 from app.payment.models import Payment
 from app.payment.read_service import (
@@ -159,14 +159,15 @@ def _payment_command(
     method: str = "card",
 ):
     actor = _context(seed.actor_id, seed.shop_id)
-    assembled = assemble_create_payment_command(
+    assembled = assemble_create_payment_request(
         actor=actor,
-        form=CreatePaymentRawForm(
+        form=CreatePaymentV2RawForm(
             debt_id=str(seed.debt_id),
             amount_uzs=amount,
             method=method,
             idempotency_key=str(key),
             expected_revision=str(revision),
+            expected_balance_basis="discounted",
         ),
         header_idempotency_key=str(key),
     )
@@ -854,7 +855,7 @@ def test_balance_history_receipt_sequence_and_query_count_matrix(
         past_progress = list_payment_progress_for_debts(
             session, debts=(debt,), server_now=PAYMENT_TIME
         )[debt.id]
-    assert past_progress.is_payable is False
+    assert past_progress.is_payable is True
 
     second_shop = _add_second_shop_for_customer(
         m2_test_database, customer_id=seed.customer_id

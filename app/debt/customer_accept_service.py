@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -22,22 +23,26 @@ from app.debt.acceptance_repository import (
     append_locked_debt_acceptance,
     get_locked_debt_acceptance_replay,
 )
-from app.debt.business_time import validate_acceptance_due_date
+from app.debt.business_time import tashkent_business_date, validate_acceptance_due_date
 from app.debt.customer_authority import CustomerDebtAuthority
 from app.debt.customer_decision_targeting import (
     discover_own_customer_debt,
     lock_customer_debt_after_offer,
     lock_customer_debt_offer,
     lock_customer_debt_predecessors,
+    locked_customer_debt_customer,
     read_discovered_debt_status,
 )
 from app.debt.enums import DebtStatus
 from app.debt.expiry_service import expire_locked_pending_debt_inline
-from app.debt.policy import (
-    GlobalHardBlockProjection,
-    GlobalHardBlockReadPort,
+from app.debt.overdue_ports import LockedCustomerGlobalHardBlockReadPort
+from app.debt.repository import (
+    LockedCustomerHardBlockScope,
+    debt_aggregate_from_row,
+    locked_customer_global_hard_block_reader_factory,
+    mark_locked_customer_hard_block_scope,
+    update_locked_debt,
 )
-from app.debt.repository import debt_aggregate_from_row, update_locked_debt
 from app.debt.values import (
     CustomerId,
     DebtId,
@@ -115,29 +120,25 @@ class AcceptCustomerDebtResult:
             raise ValueError("Accept customer debt error is invalid")
 
 
-class _NoReachableCustomerHardBlock:
-    def __init__(self, *, customer_id: UUID) -> None:
-        self._customer_id = customer_id
-
-    def read_global_hard_block(
-        self, *, customer_id: CustomerId
-    ) -> GlobalHardBlockProjection:
-        if customer_id != self._customer_id:
-            raise ValueError("Hard-block read is not for the locked Customer")
-        return GlobalHardBlockProjection(is_blocked=False)
-
-
 def accept_own_customer_debt(
     session: Session,
     *,
     authority: CustomerDebtAuthority | None,
     command: AcceptCustomerDebtCommand,
-    global_hard_block_reader: GlobalHardBlockReadPort | None = None,
+    global_hard_block_reader: LockedCustomerGlobalHardBlockReadPort | None = None,
+    hard_block_clock: Callable[[], datetime] | None = None,
+    hard_block_reader_factory: Callable[
+        [Session, LockedCustomerHardBlockScope],
+        LockedCustomerGlobalHardBlockReadPort,
+    ] = locked_customer_global_hard_block_reader_factory,
 ) -> AcceptCustomerDebtResult:
     """Append evidence, activate Debt, and audit without owning the Session."""
 
     if not isinstance(command, AcceptCustomerDebtCommand):
         raise TypeError("command must be an AcceptCustomerDebtCommand")
+    clock = hard_block_clock or _utc_now
+    if not callable(clock):
+        raise TypeError("hard_block_clock must be callable")
     if authority is None:
         return _failure(ErrorCode.DEBT_UNAVAILABLE)
     if not isinstance(authority, CustomerDebtAuthority):
@@ -178,13 +179,6 @@ def accept_own_customer_debt(
     assert debt_result.locked is not None
     locked_debt = debt_result.locked
 
-    if expire_locked_pending_debt_inline(
-        session,
-        locked_debt=locked_debt,
-        now=command.now,
-    ):
-        return _failure(ErrorCode.DEBT_EXPIRED)
-
     if locked_debt.row.status == DebtStatus.ACTIVE.value:
         replay = get_locked_debt_acceptance_replay(
             session,
@@ -198,11 +192,18 @@ def accept_own_customer_debt(
         return _failure(ErrorCode.DEBT_NOT_PENDING)
     if locked_debt.row.status != DebtStatus.PENDING.value:
         return _failure(ErrorCode.DEBT_NOT_PENDING)
+    captured_now = _normalize_hard_block_now(clock())
+    if expire_locked_pending_debt_inline(
+        session,
+        locked_debt=locked_debt,
+        now=captured_now,
+    ):
+        return _failure(ErrorCode.DEBT_EXPIRED)
     if locked_debt.row.revision != command.expected_revision.value:
         return _failure(ErrorCode.DEBT_NOT_PENDING)
     try:
         validate_acceptance_due_date(
-            now=command.now,
+            now=captured_now,
             due_date=locked_debt.row.due_date,
         )
     except ValueError:
@@ -212,12 +213,23 @@ def accept_own_customer_debt(
         is ShopCustomerListStatus.BLACKLISTED
     ):
         return _failure(ErrorCode.CUSTOMER_BLACKLISTED)
-    reader = _resolve_hard_block_reader(
-        global_hard_block_reader,
-        customer_id=authority.customer_id,
+    scope = mark_locked_customer_hard_block_scope(
+        session,
+        locked_customer=locked_customer_debt_customer(
+            session, locked=predecessors.locked
+        ),
     )
+    if not callable(hard_block_reader_factory):
+        raise TypeError("hard_block_reader_factory must be callable")
+    reader = global_hard_block_reader or hard_block_reader_factory(
+        session,
+        scope,
+    )
+    if not isinstance(reader, LockedCustomerGlobalHardBlockReadPort):
+        raise TypeError("reader must implement locked Customer hard-block port")
     if reader.read_global_hard_block(
-        customer_id=CustomerId(authority.customer_id)
+        customer_id=CustomerId(authority.customer_id),
+        as_of_business_date=tashkent_business_date(captured_now),
     ).is_blocked:
         return _failure(ErrorCode.CUSTOMER_RATING_BLOCKED)
     if locked_offer is None:
@@ -229,12 +241,12 @@ def accept_own_customer_debt(
             locked_offer=locked_offer,
             language=command.language,
             displayed_offer_text_id=command.displayed_offer_text_id,
-            accepted_at=command.now,
+            accepted_at=captured_now,
             raw_user_agent=command.raw_user_agent,
         )
     except DebtOfferAcceptanceStaleError:
         return _failure(ErrorCode.OFFER_CHANGED)
-    transitioned = debt_aggregate_from_row(locked_debt.row).accept(now=command.now)
+    transitioned = debt_aggregate_from_row(locked_debt.row).accept(now=captured_now)
     update_locked_debt(session, row=locked_debt.row, debt=transitioned)
     acceptance = stored.acceptance
     append_audit_event(
@@ -245,7 +257,7 @@ def accept_own_customer_debt(
             actor_user_id=authority.user_id,
             object_type=AuditObjectType.DEBT,
             object_id=locked_debt.row.id,
-            occurred_at=command.now,
+            occurred_at=captured_now,
             candidate_metadata=DebtAcceptedAuditPayload(
                 offer_version_number=acceptance.version_number,
                 language=acceptance.language,
@@ -256,17 +268,19 @@ def accept_own_customer_debt(
     return AcceptCustomerDebtResult(outcome=CustomerDebtAcceptOutcome.ACCEPTED)
 
 
-def _resolve_hard_block_reader(
-    reader: GlobalHardBlockReadPort | None,
-    *,
-    customer_id: UUID,
-) -> GlobalHardBlockReadPort:
-    if reader is None:
-        return _NoReachableCustomerHardBlock(customer_id=customer_id)
-    if not isinstance(reader, GlobalHardBlockReadPort):
-        raise TypeError("reader must implement GlobalHardBlockReadPort")
-    return reader
-
-
 def _failure(error: ErrorCode) -> AcceptCustomerDebtResult:
     return AcceptCustomerDebtResult(outcome=None, error=error)
+
+
+def _normalize_hard_block_now(value: datetime) -> datetime:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() is None
+    ):
+        raise ValueError("Hard-block clock must return an aware datetime")
+    return value.astimezone(UTC)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)

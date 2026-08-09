@@ -16,6 +16,7 @@ M11_REVISION = "d2e3f4a5b6c7"
 M12_REVISION = "e3f4a5b6c7d8"
 M13_REVISION = "f4a5b6c7d8e"
 M14_REVISION = "a5b6c7d8e9f0"
+M15_REVISION = "b6c7d8e9f0a1"
 NOW = datetime(2026, 8, 7, 10, 0, tzinfo=UTC)
 
 
@@ -41,7 +42,7 @@ def test_m12_revision_is_the_single_linear_child_of_m11() -> None:
     scripts = ScriptDirectory.from_config(_config())
     revision = scripts.get_revision(M12_REVISION)
 
-    assert scripts.get_heads() == [M14_REVISION]
+    assert scripts.get_heads() == [M15_REVISION]
     assert revision is not None
     assert revision.down_revision == M11_REVISION
 
@@ -120,7 +121,7 @@ def test_m12_full_walk_backfills_defaults_and_cleanly_round_trips(
         )
 
         command.upgrade(config, "head")
-        assert _current_revision(m2_test_database) == M14_REVISION
+        assert _current_revision(m2_test_database) == M15_REVISION
     finally:
         command.upgrade(config, "head")
 

@@ -1,4 +1,4 @@
-"""Pure locked-Debt payability policy for M14 payment creation.
+"""Pure locked-Debt payability policy for M15 payment creation.
 
 The eventual transaction coordinator owns replay resolution and row locks.  This
 module intentionally has neither a Session nor a repository dependency so it
@@ -12,12 +12,9 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from app.auth.error_codes import ErrorCode
-from app.debt.business_time import (
-    is_payment_due_date_payable,
-    normalize_payment_created_at,
-)
+from app.debt.business_time import is_effectively_overdue, normalize_payment_created_at
 from app.debt.contracts import DebtAggregate
-from app.debt.enums import DebtStatus
+from app.debt.enums import DebtBalanceBasis, DebtStatus
 
 __all__ = (
     "CapturedPaymentServerNow",
@@ -39,9 +36,11 @@ class CapturedPaymentServerNow:
 
 @dataclass(frozen=True, slots=True)
 class PaymentPayabilityDecision:
-    """A side-effect-free result whose sole denial is intentionally stable."""
+    """Locked policy including the authoritative balance basis and rollover."""
 
     payment_created_at: datetime
+    balance_basis: DebtBalanceBasis | None = None
+    requires_overdue_transition: bool = False
     error: ErrorCode | None = None
 
     def __post_init__(self) -> None:
@@ -52,6 +51,15 @@ class PaymentPayabilityDecision:
         )
         if self.error not in {None, ErrorCode.DEBT_NOT_PAYABLE}:
             raise ValueError("Payment payability error is invalid")
+        if self.error is None:
+            if not isinstance(self.balance_basis, DebtBalanceBasis):
+                raise ValueError("Payable debt requires a balance basis")
+        elif self.balance_basis is not None or self.requires_overdue_transition:
+            raise ValueError("Denied payability cannot expose mutation policy")
+        if self.requires_overdue_transition and (
+            self.balance_basis is not DebtBalanceBasis.ORIGINAL
+        ):
+            raise ValueError("Rollover requires original balance basis")
 
     @property
     def is_payable(self) -> bool:
@@ -79,18 +87,27 @@ def evaluate_locked_debt_payability(
     if not isinstance(captured_now, CapturedPaymentServerNow):
         raise TypeError("captured_now must come from capture_payment_server_now")
 
-    # Status deliberately wins: no due-date predicate runs for any other state.
+    if debt.status is DebtStatus.OVERDUE:
+        return PaymentPayabilityDecision(
+            payment_created_at=captured_now.value,
+            balance_basis=DebtBalanceBasis.ORIGINAL,
+        )
     if debt.status is not DebtStatus.ACTIVE:
         return PaymentPayabilityDecision(
             payment_created_at=captured_now.value,
             error=ErrorCode.DEBT_NOT_PAYABLE,
         )
-    if not is_payment_due_date_payable(
-        payment_created_at=captured_now.value,
+    if is_effectively_overdue(
+        status=debt.status,
         due_date=debt.due_date,
+        server_now=captured_now.value,
     ):
         return PaymentPayabilityDecision(
             payment_created_at=captured_now.value,
-            error=ErrorCode.DEBT_NOT_PAYABLE,
+            balance_basis=DebtBalanceBasis.ORIGINAL,
+            requires_overdue_transition=True,
         )
-    return PaymentPayabilityDecision(payment_created_at=captured_now.value)
+    return PaymentPayabilityDecision(
+        payment_created_at=captured_now.value,
+        balance_basis=DebtBalanceBasis.DISCOUNTED,
+    )
