@@ -1,8 +1,27 @@
 # Nasiya M14 Known Limitations
 
+Status: authoritative accepted M14 limitations. The implementation is locally
+GREEN through the seventh checkpoint; controlled M14.67–68 Chrome/PostgreSQL
+acceptance passed. The eighth checkpoint and remote evidence remain pending.
+
 M14 deliberately provides a narrow active-Debt payment ledger foundation. These
 are known staged boundaries, not defects that an implementation may fill in
 without a new authorised milestone.
+
+## Controlled local manual evidence
+
+Synthetic Google Chrome 150 acceptance exercised the active OWNER/MANAGER/
+CASHIER payment flows at 320–430px, all four methods, partial/full/replay,
+stale/overpayment/paid-new-key denial, tenant suspension/revocation/foreign
+denial, own Customer history/receipt, UZ/RU, and suspended-Shop historical
+read. DevTools observed no duplicate POST, authenticated `no-store`, no
+financial browser storage/cache artifact, and no console error. Only safe
+checklist facts were retained; temporary browser/session/fixture material was
+removed. This is local evidence only and does not claim remote GREEN.
+
+The repeated clean M14.69 PostgreSQL suite passed 3,919 tests in 305.79 seconds
+with zero failed, skipped, xfailed, xpassed, or warning outcomes. This confirms
+the local boundary; it is not remote CI evidence.
 
 ## KL-M14-01 — Paid is not the full debt lifecycle
 
