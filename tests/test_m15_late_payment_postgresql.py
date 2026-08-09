@@ -380,6 +380,75 @@ def test_pre_clawback_receipt_stays_discounted_while_current_uses_original(
 
 
 @pytest.mark.integration
+def test_multiple_receipts_preserve_pre_and_post_clawback_paid_late_history(
+    m2_test_database: Engine,
+) -> None:
+    actor_id, shop_id, debt_id = _seed_discounted_late(m2_test_database)
+    factory = create_database_session_factory(m2_test_database)
+    payment_specs = (
+        ("100", 2, "discounted", ON_TIME_NOW),
+        ("200", 3, "discounted", ON_TIME_NOW),
+        ("300", 4, "original", LATE_NOW),
+        ("400", 6, "original", LATE_NOW.replace(second=1)),
+    )
+    results = []
+    for amount, revision, basis, captured_at in payment_specs:
+        actor, command = _command(
+            actor_id=actor_id,
+            shop_id=shop_id,
+            debt_id=debt_id,
+            amount=amount,
+            revision=revision,
+            key=uuid4(),
+            basis=basis,
+        )
+        with factory.begin() as session:
+            results.append(
+                record_debt_payment(
+                    session,
+                    actor=actor,
+                    command=command,
+                    payment_clock=lambda captured_at=captured_at: captured_at,
+                )
+            )
+
+    with factory() as session:
+        debt = session.get_one(Debt, debt_id)
+        assert debt.status == "paid"
+        assert debt.revision == 7 and debt.overdue_revision == 5
+        receipts = []
+        for result in results:
+            row = get_tenant_payment(
+                session,
+                shop_id=ShopId(shop_id),
+                payment_id=PaymentId(result.payment_id.as_uuid()),
+            )
+            assert row is not None
+            receipts.append(
+                compose_payment_receipt(session, row=row, server_now=LATE_NOW)
+            )
+
+    assert [receipt.historical_balance_basis for receipt in receipts] == [
+        DebtBalanceBasis.DISCOUNTED,
+        DebtBalanceBasis.DISCOUNTED,
+        DebtBalanceBasis.ORIGINAL,
+        DebtBalanceBasis.ORIGINAL,
+    ]
+    assert [receipt.historical_balance_after.value for receipt in receipts] == [
+        Decimal("700"),
+        Decimal("500"),
+        Decimal("400"),
+        Decimal("0"),
+    ]
+    assert all(
+        receipt.current_balance_basis is DebtBalanceBasis.ORIGINAL
+        and receipt.current_balance.value == Decimal("0")
+        and receipt.current_debt_status.value == "paid"
+        for receipt in receipts
+    )
+
+
+@pytest.mark.integration
 def test_full_late_payoff_is_the_authoritative_unblock_source_state(
     m2_test_database: Engine,
 ) -> None:

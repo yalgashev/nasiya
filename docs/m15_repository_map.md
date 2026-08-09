@@ -1,8 +1,8 @@
 # Nasiya M15 Repository Map
 
 This map fixes M15 placement and identifies which seams already exist.
-`EXISTS` means the symbol exists in the implementation through M15.30;
-`EXTEND` means later bounded M15 presentation/closeout work remains;
+`EXISTS` means the symbol exists in the implementation through M15.39;
+`EXTEND` means later bounded M15 closeout work remains;
 `PLANNED` means no symbol is claimed to exist yet.
 
 ## Existing authority and extension seams
@@ -27,9 +27,9 @@ This map fixes M15 placement and identifies which seams already exist.
 | EXISTS | `app/payment/repository.py` | open-set/posted-total/history adapters | Overdue exposure/count, locked posted-total and basis-aware historical/current balance adapters are implemented. |
 | EXISTS | `app/payment/router.py` | `create_shop_debt_payment` | Production mutation uses the service clock, strict v2 basis, and narrow v1 replay resolver. |
 | EXISTS | `app/payment/read_service.py` | payment progress/receipt composition | Effective-overdue progress and marker-derived historical/current receipt bases are side-effect free. |
-| EXTEND | templates / `app/payment/router.py` | payment GET/form/receipt | Hidden basis plumbing is implemented; M15.33 retains only overdue presentation/copy completion. |
+| EXISTS | templates / `app/payment/router.py` | payment GET/form/receipt | M15.32–35 complete the existing-route overdue presentation, localized copy, safe PRG, responsive accessibility and browser-security contract. |
 | EXISTS | `app/audit/models.py` | registry metadata | Safe SYSTEM `debt.overdue` and `debt.clawback_applied` schema shapes are implemented by M15.15. |
-| EXTEND | `app/db.py`, `alembic/env.py`, `tests/postgresql.py` | registration/cleanup | Register existing metadata delta and keep FK-safe cleanup. |
+| EXISTS | `app/db.py`, `alembic/env.py`, `tests/postgresql.py` | registration/cleanup | The M15 metadata delta is registered and PostgreSQL cleanup remains FK-safe. |
 | EXISTS | `alembic/versions/b6c7d8e9f0a1_add_overdue_persistence.py` | one migration | One child of `a5b6c7d8e9f0`; guarded downgrade. |
 
 The planned `app/debt/overdue_*` boundary is debt-owned. Payment repository
@@ -63,13 +63,28 @@ lock, queue, or background transaction is authorised.
 | Due-date, delayed materialization, exactly-once clawback | `tests/test_debt_business_time.py`, `tests/test_m15_overdue_service_postgresql.py` |
 | Batch/payment overlap, stale candidates, edge money, rollback and privacy | `tests/test_m15_transition_race_postgresql.py` plus the overdue-service PostgreSQL matrix |
 | Batch/payment and payment/proposal/acceptance races | `tests/test_m15_transition_race_postgresql.py`, `tests/test_m15_late_payment_postgresql.py`, and retained combined-lock tests |
+| Whole inherited graph, cross-Shop Customer, M12 policy/default and audit-tail barriers | `tests/test_m15_combined_lock_order_postgresql.py` plus retained M12/M14 combined-lock tests |
 | Cross-Shop hard block, post-lock midnight date, and lawful unblock | debt-creation, customer-accept, and late-payment PostgreSQL tests |
 | Basis drift, v1/v2 replay, stale revision | payment boundary/service and `tests/test_m15_late_payment_postgresql.py` |
-| Receipt rebasing and overpayment | payment read/value/service and late-payment receipt tests |
+| Tashkent/money/clawback/marker gaps and multi-receipt rebasing | `tests/test_m15_time_money_receipt_edges.py` and late-payment PostgreSQL receipt tests |
 | Rollback and immutable audit | overdue/payment PostgreSQL service tests |
 | Tenant IDOR, suspension, CSRF/PRG | payment web and hardening tests |
 | Upgrade/head/guarded downgrade | new M15 migration contract and PostgreSQL migration tests |
-| OUT containment and inherited enum allowlist | `tests/test_m15_out_containment.py` plus retained M13 guard |
+| OUT containment and inherited enum allowlist | `tests/test_m15_out_containment.py` plus retained M12–M14 source-scoped guards |
 
-States in this map reflect implementation through M15.30. Any remaining
+States in this map reflect implementation through M15.39. Any remaining
 `EXTEND` or `PLANNED` entry is prospective and is not an implementation claim.
+
+## M15.40 local validation evidence
+
+Validation ran on 2026-08-10 from baseline HEAD
+`c6c4f40bba1b8e3feb3c38e4da3340bf94fad083` plus the reviewed M15.37–39
+worktree diff. `uv sync --dev --frozen` passed. Alembic upgrade/current/heads
+reported the single head `b6c7d8e9f0a1`. Ruff check passed and all 610 files
+passed format-check. The isolated pinned MinIO init was idempotent; its
+backup/restore result was `source=1 backup=1 restored=1 checksum=VERIFIED
+privacy=PRIVATE`, and 173 CI-equivalent containment/MinIO tests passed in
+23.04s. The clean explicit-env real-PostgreSQL full suite reported 4090 passed
+in 318.87s (321.41s wall), with zero failed, skipped, xfailed, xpassed or
+warnings. The seventh checkpoint SHA is recorded after its exact-subject
+commit because a commit cannot contain its own hash.
