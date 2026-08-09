@@ -258,7 +258,13 @@ class SqlAlchemyPaymentOpenSetReader:
             .outerjoin(Payment, Payment.debt_id == Debt.id)
             .where(
                 Debt.shop_customer_id == shop_customer_id,
-                Debt.status.in_((DebtStatus.PENDING.value, DebtStatus.ACTIVE.value)),
+                Debt.status.in_(
+                    (
+                        DebtStatus.PENDING.value,
+                        DebtStatus.ACTIVE.value,
+                        DebtStatus.OVERDUE.value,
+                    )
+                ),
             )
             .group_by(Debt.id)
             .order_by(Debt.id)

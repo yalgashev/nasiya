@@ -338,6 +338,66 @@ _AUDIT_PAYLOAD_EXACT_SHAPE_SQL = (
                     + _whole_number_predicate("debt_revision_after", minimum=1)
                 ),
             ),
+            _exact_payload_clause(
+                AuditEventType.DEBT_OVERDUE,
+                (
+                    "source",
+                    "from_status",
+                    "to_status",
+                    "overdue_revision",
+                    "business_date",
+                ),
+                extra_predicate=(
+                    "payload ->> 'source' IN ('inline_payment', 'batch') "
+                    "AND payload ->> 'from_status' = 'active' "
+                    "AND payload ->> 'to_status' = 'overdue' AND "
+                    + _whole_number_predicate("overdue_revision", minimum=1)
+                    + " AND payload ->> 'business_date' "
+                    "~ '^\\d{4}-\\d{2}-\\d{2}$'"
+                ),
+            ),
+            _exact_payload_clause(
+                AuditEventType.DEBT_CLAWBACK_APPLIED,
+                (
+                    "source",
+                    "from_basis",
+                    "to_basis",
+                    "balance_increase_uzs",
+                    "overdue_revision",
+                ),
+                extra_predicate=(
+                    "payload ->> 'source' IN ('inline_payment', 'batch') "
+                    "AND payload ->> 'from_basis' = 'discounted' "
+                    "AND payload ->> 'to_basis' = 'original' AND "
+                    + _whole_number_predicate(
+                        "balance_increase_uzs",
+                        minimum=0,
+                        maximum=1_000_000_000_000,
+                    )
+                    + " AND "
+                    + _whole_number_predicate("overdue_revision", minimum=1)
+                ),
+            ),
+            _exact_payload_clause(
+                AuditEventType.PAYMENT_RECORDED,
+                (
+                    "amount_uzs",
+                    "method",
+                    "from_status",
+                    "to_status",
+                    "debt_revision_after",
+                ),
+                extra_predicate=(
+                    _whole_number_predicate(
+                        "amount_uzs", minimum=1, maximum=1_000_000_000_000
+                    )
+                    + " AND payload ->> 'method' IN "
+                    "('cash', 'card', 'transfer', 'other') "
+                    "AND payload ->> 'from_status' = 'overdue' "
+                    "AND payload ->> 'to_status' IN ('overdue', 'paid') AND "
+                    + _whole_number_predicate("debt_revision_after", minimum=1)
+                ),
+            ),
         )
     )
     + ")"
@@ -370,6 +430,8 @@ class AuditLog(Base):
                 f", '{AuditEventType.DEBT_REJECTED.value}'"
                 f", '{AuditEventType.DEBT_CANCELLED.value}'"
                 f", '{AuditEventType.DEBT_EXPIRED.value}'"
+                f", '{AuditEventType.DEBT_OVERDUE.value}'"
+                f", '{AuditEventType.DEBT_CLAWBACK_APPLIED.value}'"
                 f", '{AuditEventType.PAYMENT_RECORDED.value}'"
                 f", '{AuditEventType.DEBT_PAID.value}'"
                 ")"
@@ -406,12 +468,16 @@ class AuditLog(Base):
             (
                 "(event_type IN ("
                 f"'{AuditEventType.PLATFORM_ADMIN_BOOTSTRAPPED.value}', "
-                f"'{AuditEventType.DEBT_EXPIRED.value}') "
+                f"'{AuditEventType.DEBT_EXPIRED.value}', "
+                f"'{AuditEventType.DEBT_OVERDUE.value}', "
+                f"'{AuditEventType.DEBT_CLAWBACK_APPLIED.value}') "
                 f"AND actor_kind = '{AuditActorKind.SYSTEM.value}' "
                 "AND actor_user_id IS NULL) "
                 "OR (event_type NOT IN ("
                 f"'{AuditEventType.PLATFORM_ADMIN_BOOTSTRAPPED.value}', "
-                f"'{AuditEventType.DEBT_EXPIRED.value}') "
+                f"'{AuditEventType.DEBT_EXPIRED.value}', "
+                f"'{AuditEventType.DEBT_OVERDUE.value}', "
+                f"'{AuditEventType.DEBT_CLAWBACK_APPLIED.value}') "
                 f"AND actor_kind = '{AuditActorKind.USER.value}' "
                 "AND actor_user_id IS NOT NULL)"
             ),
@@ -455,6 +521,8 @@ class AuditLog(Base):
                 f"'{AuditEventType.DEBT_REJECTED.value}', "
                 f"'{AuditEventType.DEBT_CANCELLED.value}', "
                 f"'{AuditEventType.DEBT_EXPIRED.value}', "
+                f"'{AuditEventType.DEBT_OVERDUE.value}', "
+                f"'{AuditEventType.DEBT_CLAWBACK_APPLIED.value}', "
                 f"'{AuditEventType.DEBT_PAID.value}') "
                 f"AND object_type = '{AuditObjectType.DEBT.value}')"
                 f" OR (event_type = '{AuditEventType.PAYMENT_RECORDED.value}' "

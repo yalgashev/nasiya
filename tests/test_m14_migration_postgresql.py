@@ -26,6 +26,7 @@ from app.shop_customer.models import ShopCustomer
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 M13_REVISION = "f4a5b6c7d8e"
 M14_REVISION = "a5b6c7d8e9f0"
+M15_REVISION = "b6c7d8e9f0a1"
 NOW = datetime(2026, 8, 9, 8, tzinfo=UTC)
 
 
@@ -133,7 +134,7 @@ def test_fresh_database_upgrades_directly_to_m14_head(
         assert _current_revision(m2_test_database) == M14_REVISION
         _assert_m14_schema_is_intact(m2_test_database)
     finally:
-        command.upgrade(config, M14_REVISION)
+        command.upgrade(config, "head")
 
 
 @pytest.mark.integration
@@ -147,7 +148,7 @@ def test_m13_database_upgrades_to_m14_head(m2_test_database: Engine) -> None:
         assert _current_revision(m2_test_database) == M14_REVISION
         _assert_m14_schema_is_intact(m2_test_database)
     finally:
-        command.upgrade(config, M14_REVISION)
+        command.upgrade(config, "head")
 
 
 @pytest.mark.integration
@@ -156,7 +157,7 @@ def test_every_revision_walks_from_base_to_the_single_current_head(
 ) -> None:
     config = _config()
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == [M14_REVISION]
+    assert script.get_heads() == [M15_REVISION]
     revisions = tuple(
         reversed(tuple(script.walk_revisions(base="base", head=M14_REVISION)))
     )
@@ -168,7 +169,7 @@ def test_every_revision_walks_from_base_to_the_single_current_head(
         assert _current_revision(m2_test_database) == M14_REVISION
         _assert_m14_schema_is_intact(m2_test_database)
     finally:
-        command.upgrade(config, M14_REVISION)
+        command.upgrade(config, "head")
 
 
 @pytest.mark.integration
@@ -589,7 +590,7 @@ def test_empty_m14_downgrade_restores_exact_m13_and_reupgrades(
             )
             assert revision == M13_REVISION
     finally:
-        command.upgrade(config, M14_REVISION)
+        command.upgrade(config, "head")
 
 
 @pytest.mark.integration

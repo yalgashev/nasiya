@@ -24,7 +24,7 @@ def test_debt_and_idempotency_models_are_registered_for_runtime_and_alembic() ->
         )
 
 
-def test_debt_is_one_registered_pii_free_m13_table() -> None:
+def test_debt_is_one_registered_pii_free_m15_table() -> None:
     table = Debt.__table__
 
     assert Base.metadata.tables["debts"] is table
@@ -46,6 +46,8 @@ def test_debt_is_one_registered_pii_free_m13_table() -> None:
         "cancelled_at",
         "expired_at",
         "paid_at",
+        "overdue_at",
+        "overdue_revision",
         "created_at",
         "updated_at",
     )
@@ -78,6 +80,10 @@ def test_debt_columns_defaults_and_timestamps_are_exact() -> None:
     assert isinstance(table.c.due_date.type, Date)
     assert isinstance(table.c.status.type, Text)
     assert isinstance(table.c.revision.type, Integer)
+    assert isinstance(table.c.overdue_revision.type, Integer)
+    assert table.c.overdue_revision.nullable is True
+    assert table.c.overdue_revision.default is None
+    assert table.c.overdue_revision.server_default is None
     assert isinstance(table.c.rejection_reason.type, Text)
     assert isinstance(table.c.cancellation_reason.type, Text)
     assert table.c.rejection_reason.nullable is True
@@ -97,6 +103,7 @@ def test_debt_columns_defaults_and_timestamps_are_exact() -> None:
         "cancelled_at",
         "expired_at",
         "paid_at",
+        "overdue_at",
         "created_at",
         "updated_at",
     ):
@@ -126,7 +133,7 @@ def test_debt_constraints_indexes_and_foreign_keys_are_exact() -> None:
         for foreign_key in column.foreign_keys
     }
 
-    assert checks == {
+    expected_m14_checks = {
         "ck_debts_original_amount_uzs_bounds": (
             "original_amount_uzs BETWEEN 1 AND 1000000000000"
         ),
@@ -138,7 +145,7 @@ def test_debt_constraints_indexes_and_foreign_keys_are_exact() -> None:
         ),
         "ck_debts_status_allowed": (
             "status IN ('pending', 'active', 'rejected', 'cancelled', 'expired', "
-            "'paid')"
+            "'paid', 'overdue')"
         ),
         "ck_debts_revision_positive": "revision > 0",
         "ck_debts_rejection_reason_normalized": (
@@ -151,42 +158,48 @@ def test_debt_constraints_indexes_and_foreign_keys_are_exact() -> None:
             "BETWEEN 1 AND 500 AND cancellation_reason = "
             "btrim(cancellation_reason) AND cancellation_reason !~ '[[:cntrl:]]')"
         ),
-        "ck_debts_status_metadata_matches_status": (
-            "(status = 'pending' AND accepted_at IS NULL AND rejected_at IS NULL "
-            "AND cancelled_at IS NULL AND expired_at IS NULL AND "
-            "paid_at IS NULL AND rejection_reason IS NULL AND "
-            "cancellation_reason IS NULL) OR "
-            "(status = 'active' AND accepted_at IS NOT NULL AND rejected_at IS NULL "
-            "AND cancelled_at IS NULL AND expired_at IS NULL AND "
-            "paid_at IS NULL AND rejection_reason IS NULL AND "
-            "cancellation_reason IS NULL) OR "
-            "(status = 'rejected' AND accepted_at IS NULL AND rejected_at IS NOT NULL "
-            "AND cancelled_at IS NULL AND expired_at IS NULL AND "
-            "paid_at IS NULL AND cancellation_reason IS NULL) OR "
-            "(status = 'cancelled' AND "
-            "accepted_at IS NULL AND rejected_at IS NULL AND cancelled_at IS NOT NULL "
-            "AND expired_at IS NULL AND paid_at IS NULL AND rejection_reason IS NULL "
-            "AND cancellation_reason IS NOT NULL) OR "
-            "(status = 'expired' AND "
-            "accepted_at IS NULL AND rejected_at IS NULL AND cancelled_at IS NULL "
-            "AND expired_at IS NOT NULL AND paid_at IS NULL AND "
-            "rejection_reason IS NULL AND cancellation_reason IS NULL) OR "
-            "(status = 'paid' AND accepted_at IS NOT NULL AND rejected_at IS NULL "
-            "AND cancelled_at IS NULL AND expired_at IS NULL AND paid_at IS NOT NULL "
-            "AND rejection_reason IS NULL AND cancellation_reason IS NULL)"
-        ),
         "ck_debts_pending_expires_at_exact": (
             "pending_expires_at = created_at + INTERVAL '72 hours'"
         ),
-        "ck_debts_timestamp_order": (
-            "updated_at >= created_at AND (accepted_at IS NULL OR accepted_at >= "
-            "created_at) AND (rejected_at IS NULL OR rejected_at >= created_at) AND "
-            "(cancelled_at IS NULL OR cancelled_at >= created_at) AND "
-            "(expired_at IS NULL OR expired_at >= created_at) AND "
-            "(paid_at IS NULL OR (accepted_at IS NOT NULL AND paid_at >= accepted_at "
-            "AND updated_at >= paid_at))"
-        ),
     }
+    assert expected_m14_checks.items() <= checks.items()
+    assert set(checks) == set(expected_m14_checks) | {
+        "ck_debts_status_metadata_matches_status",
+        "ck_debts_timestamp_order",
+        "ck_debts_overdue_metadata_pair",
+        "ck_debts_overdue_revision_positive",
+        "ck_debts_overdue_revision_not_after_revision",
+    }
+    assert checks["ck_debts_overdue_metadata_pair"] == (
+        "(overdue_at IS NULL) = (overdue_revision IS NULL)"
+    )
+    assert checks["ck_debts_overdue_revision_positive"] == (
+        "overdue_revision IS NULL OR overdue_revision > 0"
+    )
+    assert checks["ck_debts_overdue_revision_not_after_revision"] == (
+        "overdue_revision IS NULL OR overdue_revision <= revision"
+    )
+    metadata = checks["ck_debts_status_metadata_matches_status"]
+    for exact_shape in (
+        "status = 'pending'",
+        "status = 'active'",
+        "status = 'rejected'",
+        "status = 'cancelled'",
+        "status = 'expired'",
+        "status = 'overdue'",
+        "status = 'paid'",
+        "overdue_revision < revision",
+    ):
+        assert exact_shape in metadata
+    timestamp_order = checks["ck_debts_timestamp_order"]
+    for exact_order in (
+        "updated_at >= created_at",
+        "paid_at >= accepted_at",
+        "overdue_at >= accepted_at",
+        "updated_at >= overdue_at",
+        "paid_at >= overdue_at",
+    ):
+        assert exact_order in timestamp_order
     assert indexes == {
         "ix_debts_shop_customer_id_created_at_id": (
             "debts.shop_customer_id",
@@ -202,6 +215,11 @@ def test_debt_constraints_indexes_and_foreign_keys_are_exact() -> None:
         "ix_debts_status_pending_expires_at_id": (
             "debts.status",
             "debts.pending_expires_at",
+            "debts.id",
+        ),
+        "ix_debts_status_due_date_id": (
+            "debts.status",
+            "debts.due_date",
             "debts.id",
         ),
     }

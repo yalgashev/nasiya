@@ -9,26 +9,26 @@ needs a bounded M15 change; `PLANNED` means no M15 symbol is claimed to exist.
 | State | Location | Symbol/seam | M15 responsibility |
 | --- | --- | --- | --- |
 | EXTEND | `app/debt/enums.py` | `DebtStatus`, persisted set | Add `overdue`; retain inherited written-off vocabulary without wiring it. |
-| EXTEND | `app/debt/models.py` | `Debt` | Add marker fields and exact constraints. |
+| EXISTS | `app/debt/models.py` | `Debt` M15 metadata | Marker fields and exact constraints are implemented by M15.15. |
 | EXTEND | `app/debt/contracts.py` | `DebtAggregate`, projections | Carry effective/persisted overdue and marker data only. |
 | EXTEND | `app/debt/business_time.py` | `tashkent_business_date` | Reuse the one timezone helper for due-past predicate. |
-| EXTEND | `app/debt/repository.py` | debt mapping/open-set reader | Map markers and expose narrow debt-derived overdue reads. |
+| EXISTS | `app/debt/repository.py` | debt mapping/hard-block reader | Marker mapping and locked-Customer boolean read are implemented by M15.16. |
 | EXTEND | `app/debt/creation_eligibility.py` | hard-block reader seam | Replace `_LockedCustomerNoHardBlockReader` after Customer lock. |
 | EXTEND | `app/debt/customer_accept_service.py` | hard-block reader seam | Replace `_NoReachableCustomerHardBlock` with same authority. |
 | EXISTS | `app/debt/targeting.py` | `lock_debt_target_before_offer` | Preserve proposal predecessor order. |
 | EXISTS | `app/debt/customer_decision_targeting.py` | `lock_customer_debt_predecessors` | Preserve acceptance predecessor order. |
-| PLANNED | `app/debt/overdue_ports.py` | overdue/materialization ports | Narrow protocols; no payment import into debt. |
-| PLANNED | `app/debt/overdue_targeting.py` | candidate discovery and locks | Status-agnostic Customer proof, recheck, ordered locks. |
+| EXISTS | `app/debt/overdue_ports.py` | overdue/materialization ports | Narrow boolean/date protocols; no payment import into debt. |
+| EXISTS | `app/debt/overdue_targeting.py` | candidate discovery and locks | Scalar discovery and `Shop -> Customer -> ShopCustomer -> Debt` locks are implemented by M15.16. |
 | PLANNED | `app/debt/overdue_service.py` | inline/bounded batch transition | Exactly-once rollover/clawback, caller-owned session. |
 | EXTEND | `app/payment/contracts.py` | v1 payment hash contracts | Add v2 domain/hash and typed basis contract. |
 | EXTEND | `app/payment/commands.py` | payment command assembly | Parse mutation-v2 versus legacy-replay-v1 sum type. |
 | EXTEND | `app/payment/service.py` | `record_debt_payment` | Materialize after Debt lock, capture clock there, late amount/status. |
-| EXTEND | `app/payment/repository.py` | open-set adapter/history reads | Supply hard-block adapter and marker receipt basis. |
+| EXTEND | `app/payment/repository.py` | open-set adapter/history reads | Overdue exposure/count is implemented; marker receipt basis remains later work. |
 | EXTEND | `app/payment/router.py` | `create_shop_debt_payment` | Pass post-lock callable clock, never `lambda: request_now`. |
 | EXTEND | `app/payment/read_service.py` / templates | payment GET/form/receipt | Emit hidden basis and overdue copy without client money logic. |
-| EXTEND | `app/audit/*` | registry/model/redaction/repository | Add safe SYSTEM `debt.overdue` and `debt.clawback_applied` shapes. |
+| EXISTS | `app/audit/models.py` | registry metadata | Safe SYSTEM `debt.overdue` and `debt.clawback_applied` schema shapes are implemented by M15.15. |
 | EXTEND | `app/db.py`, `alembic/env.py`, `tests/postgresql.py` | registration/cleanup | Register existing metadata delta and keep FK-safe cleanup. |
-| PLANNED | `alembic/versions/*_m15_*.py` | one migration | One child of `a5b6c7d8e9f0`; guarded downgrade. |
+| EXISTS | `alembic/versions/b6c7d8e9f0a1_add_overdue_persistence.py` | one migration | One child of `a5b6c7d8e9f0`; guarded downgrade. |
 
 The planned `app/debt/overdue_*` boundary is debt-owned. Payment repository
 implements an adapter for its narrow port; `app.debt` must not import

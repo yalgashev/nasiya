@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -15,12 +15,14 @@ from app.customer.models import Customer
 from app.debt.contracts import DebtAggregate, DebtReason
 from app.debt.enums import DebtStatus
 from app.debt.models import Debt
+from app.debt.overdue_ports import require_hard_block_business_date
 from app.debt.policy import (
     GlobalHardBlockProjection,
     OpenDebtCount,
     OpenDebtExposure,
 )
 from app.debt.values import (
+    CustomerId,
     DebtId,
     DebtRevision,
     DiscountBasisPoints,
@@ -39,6 +41,8 @@ from app.shop_customer.repository import (
 
 __all__ = (
     "LockedDebtPredecessor",
+    "LockedCustomerHardBlockScope",
+    "SqlAlchemyLockedCustomerGlobalHardBlockReader",
     "SqlAlchemyDebtOpenSetReader",
     "CustomerOwnedDebtRow",
     "discover_debt_candidates",
@@ -51,9 +55,11 @@ __all__ = (
     "list_customer_owned_debts_with_shops",
     "list_tenant_debts",
     "lock_debts_in_id_order",
+    "lock_customer_hard_block_scope",
     "mark_debt_predecessor_locked",
     "update_locked_debt",
     "validate_locked_debt_predecessor",
+    "validate_locked_customer_hard_block_scope",
 )
 
 
@@ -65,6 +71,17 @@ class LockedDebtPredecessor:
 
     def __repr__(self) -> str:
         return "LockedDebtPredecessor(<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class LockedCustomerHardBlockScope:
+    """Proof that this Session locked the authoritative Customer row."""
+
+    _customer: Customer
+    _session: Session
+
+    def __repr__(self) -> str:
+        return "LockedCustomerHardBlockScope(<redacted>)"
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -99,6 +116,10 @@ def debt_aggregate_from_row(row: Debt) -> DebtAggregate:
         cancelled_at=row.cancelled_at,
         expired_at=row.expired_at,
         paid_at=row.paid_at,
+        overdue_at=row.overdue_at,
+        overdue_revision=(
+            None if row.overdue_revision is None else DebtRevision(row.overdue_revision)
+        ),
         rejection_reason=(
             None if row.rejection_reason is None else DebtReason(row.rejection_reason)
         ),
@@ -119,6 +140,65 @@ def mark_debt_predecessor_locked(
         customer_id=locked.row.customer_id,
         _session=session,
     )
+
+
+def lock_customer_hard_block_scope(
+    session: Session, *, customer_id: CustomerId
+) -> LockedCustomerHardBlockScope | None:
+    """Lock one Customer before any cross-shop hard-block read."""
+
+    if not isinstance(customer_id, UUID):
+        raise TypeError("customer_id must be a CustomerId")
+    customer = session.scalar(
+        select(Customer).where(Customer.id == customer_id).with_for_update()
+    )
+    if customer is None:
+        return None
+    return LockedCustomerHardBlockScope(_customer=customer, _session=session)
+
+
+class SqlAlchemyLockedCustomerGlobalHardBlockReader:
+    """Cross-shop boolean reader behind an authoritative Customer lock token."""
+
+    def __init__(
+        self, session: Session, *, locked_customer: LockedCustomerHardBlockScope
+    ) -> None:
+        self._session = session
+        self._locked_customer = validate_locked_customer_hard_block_scope(
+            session, locked_customer
+        )
+
+    def read_global_hard_block(
+        self,
+        *,
+        customer_id: CustomerId,
+        as_of_business_date: date,
+    ) -> GlobalHardBlockProjection:
+        token = validate_locked_customer_hard_block_scope(
+            self._session, self._locked_customer
+        )
+        if not isinstance(customer_id, UUID):
+            raise TypeError("customer_id must be a CustomerId")
+        if customer_id != token._customer.id:
+            raise ValueError("Hard-block customer is not the locked Customer")
+        business_date = require_hard_block_business_date(as_of_business_date)
+        blocked = self._session.scalar(
+            select(
+                exists()
+                .where(ShopCustomer.customer_id == token._customer.id)
+                .where(Debt.shop_customer_id == ShopCustomer.id)
+                .where(
+                    or_(
+                        Debt.status == DebtStatus.OVERDUE.value,
+                        (
+                            (Debt.status == DebtStatus.ACTIVE.value)
+                            & (Debt.due_date < business_date)
+                        ),
+                    )
+                )
+            )
+        )
+        return GlobalHardBlockProjection(is_blocked=bool(blocked))
 
 
 def list_tenant_debts(session: Session, *, shop_id: UUID) -> list[Debt]:
@@ -270,6 +350,10 @@ def insert_debt(
         cancelled_at=debt.cancelled_at,
         expired_at=debt.expired_at,
         paid_at=debt.paid_at,
+        overdue_at=debt.overdue_at,
+        overdue_revision=(
+            None if debt.overdue_revision is None else debt.overdue_revision.value
+        ),
         created_at=debt.created_at,
         updated_at=debt.updated_at,
     )
@@ -299,6 +383,11 @@ def update_locked_debt(session: Session, *, row: Debt, debt: DebtAggregate) -> D
         ("cancelled_at", debt.cancelled_at),
         ("expired_at", debt.expired_at),
         ("paid_at", debt.paid_at),
+        ("overdue_at", debt.overdue_at),
+        (
+            "overdue_revision",
+            None if debt.overdue_revision is None else debt.overdue_revision.value,
+        ),
         ("updated_at", debt.updated_at),
     ):
         setattr(row, name, value)
@@ -376,6 +465,18 @@ def validate_locked_debt_predecessor(
     """Validate the bounded lock token for cross-package persistence adapters."""
 
     return _validate_predecessor(session, token)
+
+
+def validate_locked_customer_hard_block_scope(
+    session: Session, token: object
+) -> LockedCustomerHardBlockScope:
+    if not isinstance(token, LockedCustomerHardBlockScope):
+        raise TypeError("locked_customer must come from lock_customer_hard_block_scope")
+    if token._session is not session:
+        raise RuntimeError("locked Customer belongs to a different session")
+    if session.get(Customer, token._customer.id) is not token._customer:
+        raise RuntimeError("locked Customer is not attached to this session")
+    return token
 
 
 def _require_aware(value: datetime) -> None:

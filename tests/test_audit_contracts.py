@@ -229,6 +229,33 @@ def test_m14_payment_audit_payloads_are_closed_and_identifier_free() -> None:
         recorded.as_candidate_metadata()["payment_id"] = "forbidden"
 
 
+@pytest.mark.parametrize(
+    ("to_status", "expected_to_status"),
+    (
+        (DebtStatus.OVERDUE, "overdue"),
+        (DebtStatus.PAID, "paid"),
+    ),
+)
+def test_m15_overdue_payment_audit_payload_has_exact_lawful_pairs(
+    to_status: DebtStatus, expected_to_status: str
+) -> None:
+    payload = PaymentRecordedAuditPayload(
+        amount=PaymentAmountUZS(Decimal("1")),
+        method=PaymentMethod.CASH,
+        from_status=DebtStatus.OVERDUE,
+        to_status=to_status,
+        debt_revision_after=DebtRevision(4),
+    )
+
+    assert dict(payload.as_candidate_metadata()) == {
+        "amount_uzs": 1,
+        "method": "cash",
+        "from_status": "overdue",
+        "to_status": expected_to_status,
+        "debt_revision_after": 4,
+    }
+
+
 def test_m14_payment_audit_events_require_user_and_exact_object_type() -> None:
     event = AuditEvent(
         event_type=AuditEventType.PAYMENT_RECORDED,
@@ -337,6 +364,10 @@ def test_m15_system_audits_require_system_actor_and_debt_object() -> None:
     [
         {"from_status": DebtStatus.PENDING},
         {"to_status": DebtStatus.CANCELLED},
+        {
+            "from_status": DebtStatus.OVERDUE,
+            "to_status": DebtStatus.ACTIVE,
+        },
     ],
 )
 def test_m14_payment_audit_payload_rejects_invalid_transition(

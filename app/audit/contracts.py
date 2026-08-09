@@ -329,9 +329,11 @@ class PaymentRecordedAuditPayload:
             raise ValueError("Payment recorded audit amount is invalid")
         if not isinstance(self.method, PaymentMethod):
             raise ValueError("Payment recorded audit method is invalid")
-        if self.from_status is not DebtStatus.ACTIVE:
-            raise ValueError("Payment recorded audit source status must be active")
-        if self.to_status not in {DebtStatus.ACTIVE, DebtStatus.PAID}:
+        allowed_targets = {
+            DebtStatus.ACTIVE: frozenset({DebtStatus.ACTIVE, DebtStatus.PAID}),
+            DebtStatus.OVERDUE: frozenset({DebtStatus.OVERDUE, DebtStatus.PAID}),
+        }
+        if self.to_status not in allowed_targets.get(self.from_status, frozenset()):
             raise ValueError("Payment recorded audit target status is invalid")
         if not isinstance(self.debt_revision_after, DebtRevision):
             raise ValueError("Payment recorded audit debt revision is invalid")
