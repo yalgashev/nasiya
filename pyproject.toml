@@ -36,6 +36,9 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 addopts = ["-ra"]
+filterwarnings = [
+  'ignore:Using `httpx` with `starlette\.testclient` is deprecated; install `httpx2` instead\.:starlette.exceptions.StarletteDeprecationWarning',
+]
 markers = [
   "integration: mark tests that require external PostgreSQL service",
 ]

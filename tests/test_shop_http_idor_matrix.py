@@ -35,6 +35,7 @@ class IdorVector(StrEnum):
     FOREIGN_STAFF_UUID = "foreign_staff_uuid"
     FOREIGN_SHOP_CUSTOMER_UUID = "foreign_shop_customer_uuid"
     FOREIGN_DEBT_UUID = "foreign_debt_uuid"
+    FOREIGN_PAYMENT_UUID = "foreign_payment_uuid"
     NOT_APPLICABLE = "not_applicable"
 
 
@@ -152,6 +153,30 @@ ROUTE_IDOR_CASES = (
         "/shop/debts/{debt_id}/cancel",
         IdorVector.FOREIGN_DEBT_UUID,
         "cancel locks and rechecks debt_id through the current shop chain",
+    ),
+    RouteIdorCase(
+        "GET",
+        "/shop/debts/{debt_id}/payments",
+        IdorVector.FOREIGN_DEBT_UUID,
+        "payment history joins debt_id through the current shop chain",
+    ),
+    RouteIdorCase(
+        "GET",
+        "/shop/debts/{debt_id}/payments/new",
+        IdorVector.FOREIGN_DEBT_UUID,
+        "payment form resolves debt_id only within current-shop authority",
+    ),
+    RouteIdorCase(
+        "POST",
+        "/shop/debts/{debt_id}/payments",
+        IdorVector.FOREIGN_DEBT_UUID,
+        "payment mutation locks and rechecks the full current-shop chain",
+    ),
+    RouteIdorCase(
+        "GET",
+        "/shop/payments/{payment_id}",
+        IdorVector.FOREIGN_PAYMENT_UUID,
+        "receipt joins payment_id through Debt and ShopCustomer authority",
     ),
 )
 

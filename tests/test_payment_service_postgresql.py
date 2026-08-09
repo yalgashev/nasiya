@@ -20,7 +20,7 @@ from app.payment.commands import CreatePaymentRawForm, assemble_create_payment_c
 from app.payment.models import Payment
 from app.payment.service import PaymentMutationRejected, record_debt_payment
 from app.shop.enums import ShopRole
-from app.shop.models import ShopStaff
+from app.shop.models import Shop, ShopStaff
 from tests.test_payment_targeting_postgresql import _context, _seed_one
 
 PAYMENT_TIME = datetime(2026, 8, 10, 12, tzinfo=UTC)
@@ -375,6 +375,65 @@ def test_same_key_changed_payload_conflicts_before_debt_state_and_writes(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize(
+    ("authority_change", "expected_error"),
+    (
+        ("revoked", ErrorCode.FORBIDDEN),
+        ("suspended", ErrorCode.SHOP_SUSPENDED),
+    ),
+)
+def test_completed_replay_rechecks_live_mutation_authority_before_disclosure(
+    m2_test_database: Engine,
+    authority_change: str,
+    expected_error: ErrorCode,
+) -> None:
+    actor_id, shop_id, staff_id, _relation_id, debt_id = _seed_one(m2_test_database)
+    factory = create_database_session_factory(m2_test_database)
+    actor, command = _command(
+        actor_id=actor_id,
+        shop_id=shop_id,
+        debt_id=debt_id,
+        amount="400",
+        revision=2,
+        key=uuid4(),
+    )
+    with factory.begin() as session:
+        record_debt_payment(
+            session,
+            actor=actor,
+            command=command,
+            payment_clock=lambda: PAYMENT_TIME,
+        )
+    baseline = _counts(factory)
+    with factory.begin() as session:
+        if authority_change == "revoked":
+            staff = session.get(ShopStaff, staff_id)
+            assert staff is not None
+            staff.is_active = False
+            staff.revoked_at = PAYMENT_TIME
+            staff.updated_at = PAYMENT_TIME
+        else:
+            shop = session.get(Shop, shop_id)
+            assert shop is not None
+            shop.status = "suspended"
+            shop.updated_at = PAYMENT_TIME
+
+    with pytest.raises(PaymentMutationRejected) as captured:
+        with factory.begin() as session:
+            record_debt_payment(
+                session,
+                actor=actor,
+                command=command,
+                payment_clock=lambda: pytest.fail(
+                    "denied replay must not capture mutation time"
+                ),
+            )
+
+    assert captured.value.error is expected_error
+    assert _counts(factory) == baseline == (1, 1, 1)
+
+
+@pytest.mark.integration
 def test_platform_admin_without_live_staff_has_no_payment_authority(
     m2_test_database: Engine,
 ) -> None:
@@ -472,6 +531,7 @@ def test_different_live_actor_cannot_use_stale_revision_after_first_payment(
 @pytest.mark.parametrize(
     "fault_symbol",
     (
+        "insert_or_resolve_key",
         "insert_payment",
         "update_locked_debt",
         "append_payment_recorded_audit",
@@ -617,3 +677,80 @@ def test_parallel_stale_displayed_balance_has_no_overpayment_and_one_mutation_pa
     with factory() as session:
         posted = session.scalar(select(func.sum(Payment.amount_uzs)))
         assert posted == Decimal("600")
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("first_amount", "second_amount"),
+    (
+        ("1000", "1000"),
+        ("400", "1000"),
+    ),
+)
+def test_parallel_partial_and_exact_full_have_one_paid_or_partial_winner(
+    m2_test_database: Engine,
+    first_amount: str,
+    second_amount: str,
+) -> None:
+    actor_id, shop_id, _staff_id, _relation_id, debt_id = _seed_one(m2_test_database)
+    factory = create_database_session_factory(m2_test_database)
+    actor, first = _command(
+        actor_id=actor_id,
+        shop_id=shop_id,
+        debt_id=debt_id,
+        amount=first_amount,
+        revision=2,
+        key=uuid4(),
+    )
+    _actor, second = _command(
+        actor_id=actor_id,
+        shop_id=shop_id,
+        debt_id=debt_id,
+        amount=second_amount,
+        revision=2,
+        key=uuid4(),
+    )
+    start = Barrier(2)
+
+    def run(command):
+        start.wait()
+        try:
+            with factory.begin() as session:
+                return record_debt_payment(
+                    session,
+                    actor=actor,
+                    command=command,
+                    payment_clock=lambda: PAYMENT_TIME,
+                )
+        except PaymentMutationRejected as exc:
+            return exc
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = tuple(pool.map(run, (first, second)))
+
+    winners = [
+        outcome
+        for outcome in outcomes
+        if not isinstance(outcome, PaymentMutationRejected)
+    ]
+    losers = [
+        outcome for outcome in outcomes if isinstance(outcome, PaymentMutationRejected)
+    ]
+    assert len(winners) == len(losers) == 1
+    assert losers[0].error in {ErrorCode.DEBT_CHANGED, ErrorCode.DEBT_NOT_PAYABLE}
+    with factory() as session:
+        payments = tuple(session.scalars(select(Payment)))
+        debt = session.get(Debt, debt_id)
+        assert len(payments) == 1
+        assert debt is not None and debt.revision == 3
+        assert payments[0].debt_revision_after == debt.revision
+        assert payments[0].amount_uzs <= Decimal("1000")
+        assert session.scalar(select(func.count()).select_from(IdempotencyKey)) == 1
+        expected_audits = 2 if debt.status == "paid" else 1
+        assert session.scalar(select(func.count()).select_from(AuditLog)) == (
+            expected_audits
+        )
+        if debt.status == "paid":
+            assert debt.paid_at == PAYMENT_TIME
+        else:
+            assert debt.status == "active" and debt.paid_at is None

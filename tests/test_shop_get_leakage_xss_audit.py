@@ -36,6 +36,11 @@ M13_SHOP_GET_PATHS = (
     "/shop/customers/{shop_customer_id}/debts/new",
     "/shop/debts/{debt_id}",
 )
+M14_SHOP_GET_PATHS = (
+    "/shop/debts/{debt_id}/payments",
+    "/shop/debts/{debt_id}/payments/new",
+    "/shop/payments/{payment_id}",
+)
 SHOP_TEMPLATE_PATHS = tuple(
     sorted(
         (Path(__file__).resolve().parents[1] / "app" / "templates" / "shop").glob(
@@ -333,7 +338,12 @@ def test_all_shop_get_routes_are_in_the_side_effect_audit() -> None:
         if route.path.startswith("/shop") and "GET" in (route.methods or set())
     }
 
-    assert actual == {*SHOP_GET_PATHS, *M12_SHOP_GET_PATHS, *M13_SHOP_GET_PATHS}
+    assert actual == {
+        *SHOP_GET_PATHS,
+        *M12_SHOP_GET_PATHS,
+        *M13_SHOP_GET_PATHS,
+        *M14_SHOP_GET_PATHS,
+    }
 
 
 @pytest.mark.parametrize(

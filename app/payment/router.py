@@ -11,7 +11,6 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, Form, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
 from sqlalchemy.orm import Session as DatabaseSession
 
 from app.auth.cookies import delete_session_cookie
@@ -59,7 +58,7 @@ from app.settings import Settings
 from app.shop.context import CurrentShopContext
 from app.shop.dependencies import ShopSelectionRequired, require_shop_staff
 from app.shop.enums import ShopStatus
-from app.shop.models import Shop
+from app.shop.repository import get_shop
 from app.shop.values import ShopId
 
 router = APIRouter()
@@ -75,7 +74,7 @@ LOGIN_PATH = "/auth/login"
     response_model=None,
 )
 def shop_debt_payment_list(
-    debt_id: UUID,
+    debt_id: str,
     request: Request,
     now: Annotated[datetime, Depends(get_current_time)],
     actor: Annotated[
@@ -83,12 +82,15 @@ def shop_debt_payment_list(
         Depends(get_detached_current_shop_payment_read_actor_context),
     ],
 ) -> Response:
+    parsed_debt_id = _parse_debt_path_locator(debt_id)
+    if parsed_debt_id is None:
+        return _redirect("/shop/customers", error=ErrorCode.DEBT_UNAVAILABLE)
     with request.app.state.database_session_factory() as db:
         view = get_tenant_payment_history_view(
-            db, actor=actor, debt_id=DebtId(debt_id), server_now=now
+            db, actor=actor, debt_id=parsed_debt_id, server_now=now
         )
     if view.error is not None:
-        return _shop_view_error_response(debt_id, view.error)
+        return _shop_view_error_response(parsed_debt_id.as_uuid(), view.error)
     assert view.debt is not None and view.shop_status is not None
     progress = view.debt.payment_progress
     assert progress is not None
@@ -100,7 +102,7 @@ def shop_debt_payment_list(
         {
             "debt": view.debt,
             "history": view.history,
-            "debt_id": debt_id,
+            "debt_id": parsed_debt_id.as_uuid(),
             "can_create": can_create,
             "status_label": _status_label(actor.language, view.debt.status),
             "read_only_message": _shop_read_only_message(
@@ -121,7 +123,7 @@ def shop_debt_payment_list(
     response_model=None,
 )
 def new_shop_debt_payment_page(
-    debt_id: UUID,
+    debt_id: str,
     request: Request,
     now: Annotated[datetime, Depends(get_current_time)],
     db: Annotated[DatabaseSession, Depends(get_database_session, scope="function")],
@@ -134,6 +136,9 @@ def new_shop_debt_payment_page(
         return resolved
     user, shop = resolved
     assert shop.shop is not None and shop.role is not None
+    parsed_debt_id = _parse_debt_path_locator(debt_id)
+    if parsed_debt_id is None:
+        return _redirect("/shop/customers", error=ErrorCode.DEBT_UNAVAILABLE)
     language = resolve_debt_web_language(request.headers.get("accept-language"))
     actor = DetachedPaymentReadActorContext(
         actor_user_id=user.id,
@@ -142,15 +147,18 @@ def new_shop_debt_payment_page(
         language=language,
     )
     if shop.status is not ShopStatus.ACTIVE:
-        return _redirect(f"/shop/debts/{debt_id}", error=ErrorCode.SHOP_SUSPENDED)
+        return _redirect(
+            f"/shop/debts/{parsed_debt_id.as_uuid()}",
+            error=ErrorCode.SHOP_SUSPENDED,
+        )
     create_error, detail = _shop_payment_form_detail(
         db,
         actor=actor,
-        debt_id=DebtId(debt_id),
+        debt_id=parsed_debt_id,
         server_now=now,
     )
     if create_error is not None:
-        return _redirect(f"/shop/debts/{debt_id}", error=create_error)
+        return _redirect(f"/shop/debts/{parsed_debt_id.as_uuid()}", error=create_error)
     assert detail is not None and detail.payment_progress is not None
     response = templates.TemplateResponse(
         request,
@@ -159,7 +167,7 @@ def new_shop_debt_payment_page(
             {
                 "page_language": language.value,
                 "copy": get_payment_web_copy(language),
-                "debt_id": debt_id,
+                "debt_id": parsed_debt_id.as_uuid(),
                 "idempotency_key": str(uuid4()),
                 "expected_revision": detail.expected_revision,
                 "remaining_due_uzs": detail.payment_progress.remaining_due_uzs,
@@ -178,7 +186,7 @@ def new_shop_debt_payment_page(
     response_model=None,
 )
 def create_shop_debt_payment(
-    debt_id: UUID,
+    debt_id: str,
     request: Request,
     now: Annotated[datetime, Depends(get_current_time)],
     authority: Annotated[
@@ -190,11 +198,14 @@ def create_shop_debt_payment(
     idempotency_key: Annotated[str | None, Form()] = None,
     expected_revision: Annotated[str, Form()] = "",
 ) -> Response:
-    new_path = f"/shop/debts/{debt_id}/payments/new"
+    parsed_debt_id = _parse_debt_path_locator(debt_id)
+    if parsed_debt_id is None:
+        return _redirect("/shop/customers", error=ErrorCode.DEBT_UNAVAILABLE)
+    new_path = f"/shop/debts/{parsed_debt_id.as_uuid()}/payments/new"
     assembled = assemble_create_payment_command(
         actor=authority,
         form=CreatePaymentRawForm(
-            debt_id=str(debt_id),
+            debt_id=str(parsed_debt_id.as_uuid()),
             amount_uzs=amount_uzs,
             method=method,
             idempotency_key=idempotency_key,
@@ -225,16 +236,19 @@ def create_shop_debt_payment(
     response_model=None,
 )
 def shop_payment_receipt(
-    payment_id: UUID,
+    payment_id: str,
     request: Request,
     actor: Annotated[
         DetachedPaymentReadActorContext,
         Depends(get_detached_current_shop_payment_read_actor_context),
     ],
 ) -> Response:
+    parsed_payment_id = _parse_payment_path_locator(payment_id)
+    if parsed_payment_id is None:
+        return _redirect("/shop/customers", error=ErrorCode.PAYMENT_UNAVAILABLE)
     with request.app.state.database_session_factory() as db:
         view = get_tenant_payment_receipt_view(
-            db, actor=actor, payment_id=PaymentId(payment_id)
+            db, actor=actor, payment_id=parsed_payment_id
         )
     if view.error is not None:
         return _redirect("/shop/customers", error=view.error)
@@ -261,7 +275,7 @@ def shop_payment_receipt(
     response_model=None,
 )
 def customer_debt_payment_list(
-    debt_id: UUID,
+    debt_id: str,
     request: Request,
     now: Annotated[datetime, Depends(get_current_time)],
     db: Annotated[DatabaseSession, Depends(get_database_session, scope="function")],
@@ -271,10 +285,13 @@ def customer_debt_payment_list(
     user = _customer_user_or_response(context, settings)
     if isinstance(user, Response):
         return user
+    parsed_debt_id = _parse_debt_path_locator(debt_id)
+    if parsed_debt_id is None:
+        return _redirect("/customer/debts", error=ErrorCode.DEBT_UNAVAILABLE)
     view = get_own_customer_payment_history_view(
         db,
         authenticated_user=user,
-        debt_id=DebtId(debt_id),
+        debt_id=parsed_debt_id,
         server_now=now,
     )
     language = resolve_debt_web_language(request.headers.get("accept-language"))
@@ -288,7 +305,7 @@ def customer_debt_payment_list(
         {
             "debt": view.debt,
             "history": view.history,
-            "debt_id": debt_id,
+            "debt_id": parsed_debt_id.as_uuid(),
             "status_label": _status_label(language, view.debt.status),
             "method_labels": _method_labels(language),
         },
@@ -302,7 +319,7 @@ def customer_debt_payment_list(
     response_model=None,
 )
 def customer_payment_receipt(
-    payment_id: UUID,
+    payment_id: str,
     request: Request,
     db: Annotated[DatabaseSession, Depends(get_database_session, scope="function")],
     settings: Annotated[Settings, Depends(get_settings)],
@@ -311,8 +328,11 @@ def customer_payment_receipt(
     user = _customer_user_or_response(context, settings)
     if isinstance(user, Response):
         return user
+    parsed_payment_id = _parse_payment_path_locator(payment_id)
+    if parsed_payment_id is None:
+        return _redirect("/customer/debts", error=ErrorCode.PAYMENT_UNAVAILABLE)
     view = get_own_customer_payment_receipt_view(
-        db, authenticated_user=user, payment_id=PaymentId(payment_id)
+        db, authenticated_user=user, payment_id=parsed_payment_id
     )
     language = resolve_debt_web_language(request.headers.get("accept-language"))
     if view.error is not None:
@@ -361,6 +381,26 @@ def _shop_view_error_response(
     )
 
 
+def _parse_debt_path_locator(raw_value: str) -> DebtId | None:
+    parsed = _parse_canonical_path_uuid(raw_value)
+    return None if parsed is None else DebtId(parsed)
+
+
+def _parse_payment_path_locator(raw_value: str) -> PaymentId | None:
+    parsed = _parse_canonical_path_uuid(raw_value)
+    return None if parsed is None else PaymentId(parsed)
+
+
+def _parse_canonical_path_uuid(raw_value: str) -> UUID | None:
+    if not isinstance(raw_value, str):
+        return None
+    try:
+        parsed = UUID(raw_value)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return parsed if str(parsed) == raw_value else None
+
+
 def _shop_payment_form_detail(
     db: DatabaseSession,
     *,
@@ -370,8 +410,10 @@ def _shop_payment_form_detail(
 ) -> tuple[ErrorCode | None, TenantDebtDetailProjection | None]:
     """Read current server state before advertising the payment form."""
 
-    shop_status = db.scalar(select(Shop.status).where(Shop.id == actor.current_shop_id))
-    if shop_status != ShopStatus.ACTIVE.value:
+    shop = get_shop(db, shop_id=ShopId(actor.current_shop_id))
+    if shop is None:
+        return ErrorCode.DEBT_UNAVAILABLE, None
+    if shop.status != ShopStatus.ACTIVE.value:
         return ErrorCode.SHOP_SUSPENDED, None
     detail = get_tenant_debt_detail_with_payment_progress(
         db,

@@ -334,7 +334,7 @@ def test_duplicate_files_many_fields_and_filename_header_abuse_are_closed(
         )
         many_fields = client.post(
             UPLOAD_PATH,
-            data=fields,
+            data=dict(fields),
             files={"image": (PRIVATE_FILENAME, b"safe", "image/png")},
         )
         header_abuse = client.post(

@@ -31,6 +31,8 @@ EXPECTED_ALL_CUSTOMER_ROUTES = {
     "/customer/shops": {"GET"},
     "/customer/debts": {"GET"},
     "/customer/debts/{debt_id}": {"GET"},
+    "/customer/debts/{debt_id}/payments": {"GET"},
+    "/customer/payments/{payment_id}": {"GET"},
     "/customer/debts/{debt_id}/accept": {"POST"},
     "/customer/debts/{debt_id}/reject": {"POST"},
 }
@@ -111,6 +113,8 @@ def test_customer_routes_forbid_external_ids_and_scope_drift() -> None:
         path_param_names = {param.name for param in route.dependant.path_params}
         if route.path_format.startswith("/customer/debts/{debt_id}"):
             assert path_param_names == {"debt_id"}
+        elif route.path_format == "/customer/payments/{payment_id}":
+            assert path_param_names == {"payment_id"}
         else:
             assert path_param_names == set()
         assert [
@@ -146,6 +150,8 @@ def test_customer_routes_forbid_external_ids_and_scope_drift() -> None:
         "/customer/activation",
         "/customer/debts",
         "/customer/debts/{debt_id}",
+        "/customer/debts/{debt_id}/payments",
+        "/customer/payments/{payment_id}",
     }
     assert "/customer/onboarding/start" not in get_customer_routes
 

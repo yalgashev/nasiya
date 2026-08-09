@@ -243,6 +243,8 @@ def test_customer_id_urls_are_not_routable() -> None:
         path_params = {param.name for param in route.dependant.path_params}
         if route.path_format.startswith("/customer/debts/{debt_id}"):
             assert path_params == {"debt_id"}
+        elif route.path_format == "/customer/payments/{payment_id}":
+            assert path_params == {"payment_id"}
         else:
             assert path_params == set()
         assert "{customer_id}" not in route.path_format

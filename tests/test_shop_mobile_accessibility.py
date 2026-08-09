@@ -161,7 +161,9 @@ def test_shop_css_has_mobile_first_320_430_and_44px_touch_rules() -> None:
     assert "width: min(100% - 24px, 640px);" in css
     assert "width: min(100% - 16px, 640px);" in css
     assert "100vw" not in css
-    assert "min-width:" not in css
+    assert "min-width: 44px;" in css
+    assert "min-width: 320px" not in css
+    assert "min-width: 430px" not in css
     assert "white-space: nowrap" not in css
     assert "overflow-x: scroll" not in css
     assert "overflow-x: auto" not in css

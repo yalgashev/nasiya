@@ -372,3 +372,58 @@ def test_shop_foreign_receipt_and_customer_history_receipt_are_private_and_read_
     )
     assert foreign_customer.status_code == 303
     assert foreign_customer.headers["location"].endswith("?error=PAYMENT_UNAVAILABLE")
+
+
+def test_all_malformed_payment_locators_are_generic_no_store_and_zero_write(
+    m2_test_database: Engine,
+) -> None:
+    seed = _seed_read_graph(m2_test_database)
+    staff_client, _settings = _client(
+        m2_test_database, actor_id=seed.actor_id, shop_id=seed.shop_id
+    )
+    baseline = _counts(m2_test_database)
+    malformed = "not-a-uuid"
+
+    for path, expected in (
+        (f"/shop/debts/{malformed}/payments", ErrorCode.DEBT_UNAVAILABLE),
+        (f"/shop/debts/{malformed}/payments/new", ErrorCode.DEBT_UNAVAILABLE),
+        (f"/shop/payments/{malformed}", ErrorCode.PAYMENT_UNAVAILABLE),
+    ):
+        response = staff_client.get(path, follow_redirects=False)
+        assert response.status_code == 303
+        assert response.headers["cache-control"] == AUTH_NO_STORE_CACHE_CONTROL
+        assert response.headers["location"].endswith(f"?error={expected.value}")
+        assert malformed not in response.headers["location"]
+
+    valid_form_page = unescape(
+        staff_client.get(f"/shop/debts/{seed.debt_id}/payments/new").text
+    )
+    form = _form(valid_form_page, amount="1")
+    malformed_post = staff_client.post(
+        f"/shop/debts/{malformed}/payments",
+        data=form,
+        headers={"Idempotency-Key": form["idempotency_key"]},
+        follow_redirects=False,
+    )
+    assert malformed_post.status_code == 303
+    assert malformed_post.headers["location"].endswith(
+        f"?error={ErrorCode.DEBT_UNAVAILABLE.value}"
+    )
+    assert malformed not in malformed_post.headers["location"]
+
+    customer_client, _settings = _client(
+        m2_test_database,
+        actor_id=seed.customer_user_id,
+        shop_id=seed.shop_id,
+    )
+    for path, expected in (
+        (f"/customer/debts/{malformed}/payments", ErrorCode.DEBT_UNAVAILABLE),
+        (f"/customer/payments/{malformed}", ErrorCode.PAYMENT_UNAVAILABLE),
+    ):
+        response = customer_client.get(path, follow_redirects=False)
+        assert response.status_code == 303
+        assert response.headers["cache-control"] == AUTH_NO_STORE_CACHE_CONTROL
+        assert response.headers["location"].endswith(f"?error={expected.value}")
+        assert malformed not in response.headers["location"]
+
+    assert _counts(m2_test_database) == baseline

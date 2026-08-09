@@ -30,6 +30,7 @@ __all__ = (
     "get_active_staff_by_id",
     "get_shop",
     "get_shop_for_staff",
+    "get_shop_staff_access",
     "list_active_shop_staff",
     "list_shops_by_ids",
     "list_user_active_staff",
@@ -54,6 +55,25 @@ class _LockedActorShopStaff:
 
     def __repr__(self) -> str:
         return "_LockedActorShopStaff(staff=<redacted>, locked_shop=<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ShopStaffAccessProjection:
+    shop_id: ShopId
+    shop_status: ShopStatus
+    role: ShopRole
+    staff_is_active: bool
+    staff_is_revoked: bool
+    user_is_active: bool
+
+    @property
+    def is_live(self) -> bool:
+        return (
+            self.staff_is_active and not self.staff_is_revoked and self.user_is_active
+        )
+
+    def __repr__(self) -> str:
+        return "ShopStaffAccessProjection(<redacted>)"
 
 
 def get_shop(session: Session, *, shop_id: ShopId) -> Shop | None:
@@ -130,6 +150,48 @@ def get_shop_for_staff(
         )
     )
     return session.scalar(statement)
+
+
+def get_shop_staff_access(
+    session: Session,
+    *,
+    shop_id: ShopId,
+    user_id: UserId,
+) -> ShopStaffAccessProjection | None:
+    """Canonical non-locking live-authority projection for bounded reads/replays."""
+
+    row = session.execute(
+        select(
+            Shop.id,
+            Shop.status,
+            ShopStaff.role,
+            ShopStaff.is_active,
+            ShopStaff.revoked_at,
+            User.is_active,
+        )
+        .join(ShopStaff, ShopStaff.shop_id == Shop.id)
+        .join(User, User.id == ShopStaff.user_id)
+        .where(
+            Shop.id == shop_id,
+            ShopStaff.user_id == user_id,
+            User.id == user_id,
+        )
+    ).one_or_none()
+    if row is None:
+        return None
+    try:
+        status = ShopStatus(row.status)
+        role = ShopRole(row.role)
+    except ValueError:
+        return None
+    return ShopStaffAccessProjection(
+        shop_id=ShopId(row.id),
+        shop_status=status,
+        role=role,
+        staff_is_active=bool(row[3]),
+        staff_is_revoked=row.revoked_at is not None,
+        user_is_active=bool(row[5]),
+    )
 
 
 def list_active_shop_staff(

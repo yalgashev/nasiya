@@ -59,7 +59,7 @@ from app.payment.repository import (
 from app.payment.service import RecordDebtPaymentResult
 from app.payment.values import PaymentId, PostedPaymentTotalUZS, calculate_remaining_due
 from app.shop.enums import ShopRole, ShopStatus
-from app.shop.models import Shop, ShopStaff
+from app.shop.repository import get_shop_staff_access
 from app.shop.values import ShopId
 from app.shop_customer.models import ShopCustomer
 from app.shop_customer.values import ShopCustomerId
@@ -97,6 +97,7 @@ class TenantPaymentReadAuthority:
     shop_id: ShopId = field(repr=False)
     actor_user_id: UserId = field(repr=False)
     role: ShopRole
+    shop_status: ShopStatus
 
     def __repr__(self) -> str:
         return "TenantPaymentReadAuthority(<redacted>)"
@@ -251,24 +252,22 @@ def resolve_tenant_payment_read_authority(
 
     if not isinstance(actor, DetachedPaymentReadActorContext):
         raise TypeError("actor must be detached payment read context")
-    row = session.execute(
-        select(Shop.id, ShopStaff.role)
-        .join(ShopStaff, ShopStaff.shop_id == Shop.id)
-        .join(User, User.id == ShopStaff.user_id)
-        .where(
-            Shop.id == actor.current_shop_id,
-            Shop.status.in_((ShopStatus.ACTIVE.value, ShopStatus.SUSPENDED.value)),
-            ShopStaff.user_id == actor.actor_user_id,
-            ShopStaff.is_active.is_(True),
-            ShopStaff.revoked_at.is_(None),
-            User.is_active.is_(True),
-        )
-    ).one_or_none()
-    if row is None:
+    access = get_shop_staff_access(
+        session,
+        shop_id=ShopId(actor.current_shop_id),
+        user_id=UserId(actor.actor_user_id),
+    )
+    if (
+        access is None
+        or access.shop_status not in {ShopStatus.ACTIVE, ShopStatus.SUSPENDED}
+        or not access.is_live
+    ):
         return None
-    role = ShopRole(row.role)
     return TenantPaymentReadAuthority(
-        shop_id=ShopId(row.id), actor_user_id=actor.actor_user_id, role=role
+        shop_id=access.shop_id,
+        actor_user_id=actor.actor_user_id,
+        role=access.role,
+        shop_status=access.shop_status,
     )
 
 
@@ -311,11 +310,6 @@ def get_tenant_payment_history_view(
     authority = resolve_tenant_payment_read_authority(session, actor=actor)
     if authority is None:
         return TenantPaymentHistoryView(error=ErrorCode.FORBIDDEN)
-    shop_status = session.scalar(
-        select(Shop.status).where(Shop.id == authority.shop_id)
-    )
-    if shop_status not in {ShopStatus.ACTIVE.value, ShopStatus.SUSPENDED.value}:
-        return TenantPaymentHistoryView(error=ErrorCode.FORBIDDEN)
     debt = get_tenant_debt_detail_with_payment_progress(
         session,
         shop_id=authority.shop_id,
@@ -331,7 +325,7 @@ def get_tenant_payment_history_view(
         error=None,
         debt=debt,
         history=_history(rows),
-        shop_status=ShopStatus(shop_status),
+        shop_status=authority.shop_status,
     )
 
 

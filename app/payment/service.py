@@ -44,6 +44,7 @@ from app.payment.targeting import (
     discover_tenant_payment_target,
     lock_tenant_payment_debt,
     lock_tenant_payment_predecessors,
+    recheck_tenant_payment_replay_authority,
     validate_locked_tenant_payment_debt,
 )
 from app.payment.values import (
@@ -308,6 +309,12 @@ def _resolve_completed_payment(
     actor: DetachedPaymentActorContext,
     command: CreatePaymentCommand,
 ) -> RecordDebtPaymentResult:
+    authority_error = recheck_tenant_payment_replay_authority(
+        session,
+        actor=actor,
+    )
+    if authority_error is not None:
+        raise PaymentMutationRejected(authority_error)
     if not hmac.compare_digest(row.request_hash, command.request_hash.value):
         raise PaymentMutationRejected(ErrorCode.IDEMPOTENCY_CONFLICT)
     payment_id = payment_id_from_completed_result(

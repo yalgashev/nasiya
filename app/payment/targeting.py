@@ -19,6 +19,7 @@ from app.shop.enums import ShopRole, ShopStatus
 from app.shop.repository import (
     _LockedActorShopStaff,
     _LockedShop,
+    get_shop_staff_access,
     lock_actor_shop_staff_for_update,
     lock_shop_for_update,
 )
@@ -38,6 +39,7 @@ __all__ = (
     "discover_tenant_payment_target",
     "lock_tenant_payment_predecessors",
     "lock_tenant_payment_debt",
+    "recheck_tenant_payment_replay_authority",
     "validate_locked_tenant_payment_debt",
     "validate_locked_tenant_payment_predecessors",
 )
@@ -168,6 +170,32 @@ def discover_tenant_payment_target(
         customer_id=row[3],
         target_user_id=row[4],
     )
+
+
+def recheck_tenant_payment_replay_authority(
+    session: Session,
+    *,
+    actor: DetachedPaymentActorContext,
+) -> ErrorCode | None:
+    """Live, read-only authority check before disclosing a completed result."""
+
+    _require_actor(actor)
+    access = get_shop_staff_access(
+        session,
+        shop_id=ShopId(actor.current_shop_id),
+        user_id=UserId(actor.actor_user_id),
+    )
+    if access is None:
+        return ErrorCode.FORBIDDEN
+    if access.shop_status is ShopStatus.SUSPENDED:
+        return ErrorCode.SHOP_SUSPENDED
+    if (
+        access.shop_status is not ShopStatus.ACTIVE
+        or not access.is_live
+        or not _payment_staff_role_allowed(access.role)
+    ):
+        return ErrorCode.FORBIDDEN
+    return None
 
 
 def lock_tenant_payment_predecessors(

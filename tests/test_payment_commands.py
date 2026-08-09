@@ -69,6 +69,28 @@ def test_assembler_creates_only_canonical_typed_server_scoped_command() -> None:
 
 
 @pytest.mark.parametrize(
+    ("form_key", "header_key"),
+    (
+        (_KEY, None),
+        (None, _KEY),
+        (_KEY, _KEY),
+    ),
+)
+def test_form_header_key_presence_matrix_converges_to_one_canonical_key(
+    form_key: str | None,
+    header_key: str | None,
+) -> None:
+    result = assemble_create_payment_command(
+        actor=_actor(),
+        form=_form(idempotency_key=form_key),
+        header_idempotency_key=header_key,
+    )
+
+    assert result.error is None and result.command is not None
+    assert result.command.idempotency_key.as_uuid() == UUID(_KEY)
+
+
+@pytest.mark.parametrize(
     "changes,header_key",
     (
         ({"debt_id": "{" + _DEBT_ID + "}"}, _KEY),

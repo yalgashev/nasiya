@@ -108,6 +108,31 @@ def test_discounted_remaining_and_original_exposure_never_share_a_basis() -> Non
     assert exposure == PaymentExposureUZS(Decimal("800"))
 
 
+def test_many_partial_decimal_sums_and_near_full_discount_remain_exact() -> None:
+    discounted = DiscountedAmountUZS(Decimal("1000"))
+    posted = Decimal("0")
+    for amount in (Decimal("1"),) * 998 + (Decimal("2"),):
+        posted += amount
+        remaining = calculate_remaining_due(
+            discounted_amount=discounted,
+            posted_total=PostedPaymentTotalUZS(posted),
+        )
+        assert remaining.value == Decimal("1000") - posted
+
+    near_full_discount_remaining = calculate_remaining_due(
+        discounted_amount=DiscountedAmountUZS(Decimal("1")),
+        posted_total=PostedPaymentTotalUZS(Decimal("0")),
+    )
+    near_full_discount_exposure = calculate_payment_exposure(
+        status=DebtStatus.ACTIVE,
+        original_amount=OriginalAmountUZS(Decimal("10000")),
+        discounted_amount=DiscountedAmountUZS(Decimal("1")),
+        posted_total=PostedPaymentTotalUZS(Decimal("0")),
+    )
+    assert near_full_discount_remaining.value == Decimal("1")
+    assert near_full_discount_exposure.value == Decimal("10000")
+
+
 def test_balance_values_are_zero_inclusive_decimal_only_and_redacted() -> None:
     value_types = (
         PostedPaymentTotalUZS,

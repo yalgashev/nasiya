@@ -27,6 +27,7 @@ from app.auth.sessions import (
 from app.db import create_database_session_factory
 from app.debt.dependencies import get_detached_current_shop_debt_actor_authority
 from app.main import create_app
+from app.payment.dependencies import get_detached_current_shop_payment_actor_context
 from app.security_headers import AUTH_NO_STORE_CACHE_CONTROL, CONTENT_SECURITY_POLICY
 from app.settings import Settings
 from app.shop.enums import ShopRole, ShopStatus
@@ -83,6 +84,26 @@ ROUTE_POLICIES = (
         "POST",
         "/shop/debts/{debt_id}/cancel",
         RouteClass.TENANT_BUSINESS_MUTATION,
+    ),
+    RoutePolicy(
+        "GET",
+        "/shop/debts/{debt_id}/payments",
+        RouteClass.TENANT_LOCATOR_READ,
+    ),
+    RoutePolicy(
+        "GET",
+        "/shop/debts/{debt_id}/payments/new",
+        RouteClass.TENANT_ACTIVE_FORM,
+    ),
+    RoutePolicy(
+        "POST",
+        "/shop/debts/{debt_id}/payments",
+        RouteClass.TENANT_BUSINESS_MUTATION,
+    ),
+    RoutePolicy(
+        "GET",
+        "/shop/payments/{payment_id}",
+        RouteClass.TENANT_LOCATOR_READ,
     ),
     RoutePolicy(
         "POST",
@@ -250,8 +271,10 @@ def actual_path(policy: RoutePolicy, staff_id: UUID | None = None) -> str:
     if "{staff_id}" in path:
         assert staff_id is not None
         path = path.replace("{staff_id}", str(staff_id))
-    return path.replace("{shop_customer_id}", str(uuid4())).replace(
-        "{debt_id}", str(uuid4())
+    return (
+        path.replace("{shop_customer_id}", str(uuid4()))
+        .replace("{debt_id}", str(uuid4()))
+        .replace("{payment_id}", str(uuid4()))
     )
 
 
@@ -330,6 +353,7 @@ def route_has_csrf_dependency(route: APIRoute) -> bool:
             validate_csrf,
             get_detached_shop_customer_authority,
             get_detached_current_shop_debt_actor_authority,
+            get_detached_current_shop_payment_actor_context,
         }
         for dependency_call in iter_dependency_calls(route.dependant)
     )
