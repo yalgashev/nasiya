@@ -4,7 +4,8 @@
 <main class="payment-page">
   <h1>{{ copy.new }}</h1>
   <p id="payment-form-error" role="alert" aria-live="assertive">{{ error_message or "" }}</p>
-  <p id="payment-balance">{{ copy.remaining }}: {{ remaining_due_uzs }}</p>
+  <p id="payment-balance">{{ copy.remaining }}: {{ remaining_due_uzs }} ({{ balance_basis_label }})</p>
+  {% if late_terms_message %}<p role="status">{{ late_terms_message }}</p>{% endif %}
   <form action="/shop/debts/{{ debt_id }}/payments" method="post" autocomplete="off">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
@@ -30,7 +31,8 @@
     </select>
     <button type="submit">{{ copy.submit }}</button>
   </form>
-  <nav aria-label="Shop payment navigation">
+  <nav aria-label="{{ copy.navigation }}">
+    <a href="{{ request.url.path }}">{{ copy.refresh }}</a>
     <a href="/shop/debts/{{ debt_id }}/payments">{{ copy.back_to_history }}</a>
     <a href="/shop/debts/{{ debt_id }}">{{ copy.back_to_debt }}</a>
   </nav>

@@ -7,11 +7,12 @@
   <dl>
     <dt>{{ copy.amount }}</dt><dd>{{ receipt.amount.value }}</dd>
     <dt>{{ copy.method }}</dt><dd>{{ method_label }}</dd>
-    <dt>{{ copy.recorded_at }}</dt><dd>{{ receipt.created_at }}</dd>
-    <dt>{{ copy.historical_balance }}</dt><dd>{{ receipt.historical_balance_after.value }}</dd>
-    <dt>{{ copy.current_balance }}</dt><dd>{{ receipt.current_balance.value }}</dd>
+    <dt>{{ copy.recorded_at }}</dt><dd><time datetime="{{ receipt.created_at.isoformat() }}">{{ receipt.created_at }}</time></dd>
+    <dt>{{ copy.historical_balance }}</dt><dd>{{ receipt.historical_balance_after.value }} ({{ historical_basis_label }})</dd>
+    <dt>{{ copy.current_balance }}</dt><dd>{{ receipt.current_balance.value }} ({{ current_basis_label }})</dd>
     <dt>{{ copy.current_status }}</dt><dd>{{ status_label }}</dd>
   </dl>
-  <nav aria-label="Customer payment navigation"><a href="/customer/debts/{{ debt_id }}/payments">{{ copy.back_to_history }}</a></nav>
+  {% if paid_late %}<p role="status">{{ copy.paid_late }}</p>{% endif %}
+  <nav aria-label="{{ copy.navigation }}"><a href="{{ request.url.path }}">{{ copy.refresh }}</a><a href="/customer/debts/{{ debt_id }}/payments">{{ copy.back_to_history }}</a></nav>
 </main>
 {% endblock %}

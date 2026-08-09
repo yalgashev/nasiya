@@ -24,6 +24,12 @@ from app.debt.customer_read_service import (
     get_own_customer_debt_detail,
     list_own_customer_debts,
 )
+from app.debt.customer_web_read_service import (
+    CustomerDebtWebDetailResult,
+    CustomerDebtWebListItem,
+    get_own_customer_debt_web_detail,
+    list_own_customer_debt_web_items,
+)
 from app.debt.enums import DebtBalanceBasis, DebtStatus
 from app.debt.models import Debt
 from app.debt.payment_progress import DebtPaymentProgressProjection
@@ -89,6 +95,7 @@ __all__ = (
     "TenantPaymentReceiptView",
     "compose_payment_receipt",
     "get_customer_debt_detail_with_payment_progress",
+    "get_customer_debt_web_detail_with_payment_progress",
     "get_own_customer_payment_receipt",
     "get_own_customer_payment_receipt_view",
     "get_own_customer_payment_history_view",
@@ -98,6 +105,7 @@ __all__ = (
     "get_tenant_payment_receipt_view",
     "get_tenant_payment_history_view",
     "list_customer_debts_with_payment_progress",
+    "list_customer_debt_web_items_with_payment_progress",
     "list_own_customer_payment_history",
     "list_payment_progress_for_debts",
     "list_tenant_customer_debts_with_payment_progress",
@@ -639,6 +647,56 @@ def get_customer_debt_detail_with_payment_progress(
         debt_id=debt_id,
         language=language,
         payment_progress_by_debt_id=progress,
+    )
+
+
+def list_customer_debt_web_items_with_payment_progress(
+    session: Session,
+    *,
+    authority: CustomerDebtAuthority,
+    server_now: datetime,
+) -> tuple[CustomerDebtWebListItem, ...]:
+    """Compose own-customer debt cards with current payment facts once."""
+
+    candidates = list_customer_owned_debts_with_shops(
+        session, customer_id=authority.customer_id
+    )
+    return list_own_customer_debt_web_items(
+        session,
+        authority=authority,
+        payment_progress_by_debt_id=list_payment_progress_for_debts(
+            session,
+            debts=(candidate.debt for candidate in candidates),
+            server_now=server_now,
+        ),
+    )
+
+
+def get_customer_debt_web_detail_with_payment_progress(
+    session: Session,
+    *,
+    authority: CustomerDebtAuthority,
+    debt_id: DebtId,
+    language: OfferLanguage,
+    server_now: datetime,
+) -> CustomerDebtWebDetailResult:
+    """Compose an own-customer debt detail without changing its authority path."""
+
+    candidate = get_customer_owned_debt_with_shop(
+        session,
+        customer_id=authority.customer_id,
+        debt_id=debt_id,
+    )
+    return get_own_customer_debt_web_detail(
+        session,
+        authority=authority,
+        debt_id=debt_id,
+        language=language,
+        payment_progress_by_debt_id=list_payment_progress_for_debts(
+            session,
+            debts=() if candidate is None else (candidate.debt,),
+            server_now=server_now,
+        ),
     )
 
 

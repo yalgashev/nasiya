@@ -18,16 +18,19 @@ from app.db import create_database_session_factory
 from app.debt.models import Debt
 from app.idempotency.models import IdempotencyKey
 from app.main import create_app
+from app.payment import service as payment_service
 from app.payment.models import Payment
 from app.security_headers import AUTH_NO_STORE_CACHE_CONTROL
 from app.settings import Settings
 from app.shop.models import Shop
+from app.telegram.models import TelegramLink
 from tests.test_payment_read_postgresql import _record, _seed_read_graph
 from tests.test_payment_targeting_postgresql import _seed_one
 
 pytestmark = pytest.mark.integration
 
 PAYMENT_TIME = datetime(2026, 8, 10, 12, tzinfo=UTC)
+LATE_PAYMENT_TIME = datetime(2026, 8, 10, 19, tzinfo=UTC)
 RATE_KEY = "test-rate-limit-hmac-key-for-m14-payment-web"
 
 
@@ -195,7 +198,7 @@ def test_validation_stale_overpay_and_csrf_fail_through_safe_results(
     assert over.headers["location"].endswith("?error=PAYMENT_AMOUNT_EXCEEDS_BALANCE")
     over_page = client.get(over.headers["location"])
     assert "qolgan qarzdan oshadi" in over_page.text
-    assert "601" not in over.headers["location"]
+    assert "601" not in over.headers["location"].partition("?")[2]
     assert _counts(m2_test_database) == (1, 1, 1)
 
     forged = client.post(
@@ -271,6 +274,159 @@ def test_effective_overdue_form_advertises_original_basis(
     page = client.get(f"{history_path}/new")
     assert page.status_code == 200
     assert _hidden(unescape(page.text), "expected_balance_basis") == "original"
+
+
+def test_overdue_form_prg_rejects_old_discounted_basis_then_records_late_payoff(
+    m2_test_database: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed = _seed_read_graph(
+        m2_test_database,
+        discounted="900",
+        due_date=date(2026, 8, 12),
+    )
+    client, _settings = _client(
+        m2_test_database, actor_id=seed.actor_id, shop_id=seed.shop_id
+    )
+    pre_clawback = _record(
+        m2_test_database,
+        seed,
+        amount="300",
+        revision=2,
+        key=uuid4(),
+    )
+    post_path = f"/shop/debts/{seed.debt_id}/payments"
+    client.app.dependency_overrides[get_current_time] = lambda: datetime(
+        2026, 8, 12, 12, tzinfo=UTC
+    )
+    initial = unescape(client.get(f"{post_path}/new").text)
+    old_form = _form(initial, amount="600")
+    assert old_form["expected_balance_basis"] == "discounted"
+
+    late_now = datetime(2026, 8, 12, 19, tzinfo=UTC)
+    monkeypatch.setattr(payment_service, "_utc_now", lambda: late_now)
+    stale = client.post(post_path, data=old_form, follow_redirects=False)
+    assert stale.status_code == 303
+    assert stale.headers["location"].endswith(f"?error={ErrorCode.DEBT_CHANGED.value}")
+    assert _counts(m2_test_database) == (1, 1, 1)
+
+    client.app.dependency_overrides[get_current_time] = lambda: late_now
+    refreshed = unescape(client.get(f"{post_path}/new").text)
+    late_form = _form(refreshed, amount="700")
+    assert late_form["expected_balance_basis"] == "original"
+    assert "Chegirma bekor qilindi" in refreshed
+    assert "Asl summa bo'yicha hisob" in refreshed
+    assert "Holatni yangilash" in refreshed
+    russian_form = client.get(f"{post_path}/new", headers={"Accept-Language": "ru"})
+    assert "Скидка отменена" in russian_form.text
+    assert "Расчёт по первоначальной сумме" in russian_form.text
+    assert "Обновить данные" in russian_form.text
+
+    created = client.post(post_path, data=late_form, follow_redirects=False)
+    replay = client.post(post_path, data=late_form, follow_redirects=False)
+    assert created.status_code == replay.status_code == 303
+    assert created.headers["location"] == replay.headers["location"]
+    assert _counts(m2_test_database) == (2, 2, 5)
+
+    receipt = client.get(created.headers["location"])
+    receipt_html = unescape(receipt.text)
+    assert receipt.status_code == 200
+    assert "Asl summa bo'yicha hisob" in receipt_html
+    assert "Muddatdan keyin to'langan" in receipt_html
+    russian_receipt = client.get(
+        created.headers["location"], headers={"Accept-Language": "ru"}
+    )
+    assert "Остаток после этого платежа" in russian_receipt.text
+    assert "Текущий остаток" in russian_receipt.text
+    assert "Расчёт по первоначальной сумме" in russian_receipt.text
+    assert "Оплачен после срока" in russian_receipt.text
+    assert "Обновить данные" in russian_receipt.text
+    pre_clawback_receipt = client.get(
+        f"/shop/payments/{pre_clawback.payment_id.as_uuid()}",
+        headers={"Accept-Language": "ru"},
+    )
+    assert "Остаток после этого платежа" in pre_clawback_receipt.text
+    assert "Расчёт со скидкой" in pre_clawback_receipt.text
+
+    customer_client, _settings = _client(
+        m2_test_database,
+        actor_id=seed.customer_user_id,
+        shop_id=seed.shop_id,
+    )
+    customer_receipt = customer_client.get(
+        created.headers["location"].replace("/shop/", "/customer/"),
+        headers={"Accept-Language": "ru"},
+    )
+    assert customer_receipt.status_code == 200
+    assert "Остаток после этого платежа" in customer_receipt.text
+    assert "Расчёт по первоначальной сумме" in customer_receipt.text
+    assert "Обновить данные" in customer_receipt.text
+
+
+def test_debt_and_own_customer_views_render_effective_overdue_without_mutation(
+    m2_test_database: Engine,
+) -> None:
+    seed = _seed_read_graph(
+        m2_test_database,
+        discounted="900",
+        due_date=date(2026, 8, 9),
+    )
+    staff_client, _settings = _client(
+        m2_test_database, actor_id=seed.actor_id, shop_id=seed.shop_id
+    )
+    factory = create_database_session_factory(m2_test_database)
+    with factory.begin() as db:
+        shop = db.get_one(Shop, seed.shop_id)
+        shop.name = "<img src=x onerror=alert(1)>"
+        db.add(
+            TelegramLink(
+                user_id=seed.customer_user_id,
+                telegram_chat_id=seed.customer_user_id.int % 8_000_000_000 + 1,
+                linked_at=PAYMENT_TIME,
+                phone_verified_at=PAYMENT_TIME,
+                updated_at=PAYMENT_TIME,
+            )
+        )
+    baseline = _counts(m2_test_database)
+    for path in (
+        f"/shop/customers/{seed.relation_id}/debts",
+        f"/shop/debts/{seed.debt_id}",
+        f"/shop/debts/{seed.debt_id}/payments",
+    ):
+        page = staff_client.get(path)
+        html = unescape(page.text)
+        assert page.status_code == 200
+        assert page.headers["cache-control"] == AUTH_NO_STORE_CACHE_CONTROL
+        assert "Muddati o'tgan" in html
+        assert "Asl summa bo'yicha hisob" in html
+
+    customer_client, _settings = _client(
+        m2_test_database,
+        actor_id=seed.customer_user_id,
+        shop_id=seed.shop_id,
+    )
+    for path in (
+        "/customer/debts",
+        f"/customer/debts/{seed.debt_id}",
+        f"/customer/debts/{seed.debt_id}/payments",
+    ):
+        page = customer_client.get(path)
+        html = unescape(page.text)
+        assert page.status_code == 200
+        assert page.headers["cache-control"] == AUTH_NO_STORE_CACHE_CONTROL
+        assert "Muddati o'tgan" in html
+        assert "Asl summa bo'yicha hisob" in html
+        assert "<form" not in html.casefold()
+        assert "<img src=x onerror=alert(1)>" not in page.text
+        assert "&lt;img src=x onerror=alert(1)&gt;" in page.text
+    russian_customer = customer_client.get(
+        f"/customer/debts/{seed.debt_id}/payments",
+        headers={"Accept-Language": "ru"},
+    )
+    assert "Срок оплаты истёк" in russian_customer.text
+    assert "Скидка отменена" in russian_customer.text
+    assert "Расчёт по первоначальной сумме" in russian_customer.text
+    assert "Обновить данные" in russian_customer.text
+    assert _counts(m2_test_database) == baseline
 
 
 def test_shop_history_and_receipt_render_authoritative_balances_without_leaks(

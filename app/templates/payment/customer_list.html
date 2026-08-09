@@ -8,13 +8,14 @@
     <dl>
       <dt>{{ copy.discounted_target }}</dt><dd>{{ debt.discounted_amount.value }}</dd>
       <dt>{{ copy.posted_total }}</dt><dd>{{ debt.progress.posted_total_uzs }}</dd>
-      <dt>{{ copy.remaining }}</dt><dd>{{ debt.progress.remaining_due_uzs }}</dd>
+      <dt>{{ copy.remaining }} ({{ balance_basis_label }})</dt><dd>{{ debt.progress.remaining_due_uzs }}</dd>
       <dt>{{ copy.payable }}</dt><dd>{{ copy.yes if debt.progress.is_payable else copy.no }}</dd>
     </dl>
   </article>
+  {% if late_terms_message %}<p role="status">{{ late_terms_message }}</p>{% endif %}
   <p role="status">{{ copy.customer_read_only }}</p>
   {% if history %}
-  <ol>
+  <ol aria-label="{{ copy.history }}">
     {% for payment in history %}
     <li>
       <span>{{ payment.amount.value }}</span>
@@ -25,6 +26,6 @@
     {% endfor %}
   </ol>
   {% else %}<p>{{ copy.empty }}</p>{% endif %}
-  <nav aria-label="Customer payment navigation"><a href="/customer/debts/{{ debt_id }}">{{ copy.back_to_debt }}</a></nav>
+  <nav aria-label="{{ copy.navigation }}"><a href="{{ request.url.path }}">{{ copy.refresh }}</a><a href="/customer/debts/{{ debt_id }}">{{ copy.back_to_debt }}</a></nav>
 </main>
 {% endblock %}

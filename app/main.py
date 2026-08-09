@@ -16,9 +16,16 @@ from app.db import (
     create_database_session_dependency,
     create_database_session_factory,
 )
+from app.debt.payment_progress import DebtWebPaymentProgressReader
 from app.debt.repository import locked_customer_global_hard_block_reader_factory
 from app.debt.router import router as debt_router
 from app.offers.router import router as offers_router
+from app.payment.read_service import (
+    get_customer_debt_web_detail_with_payment_progress,
+    get_tenant_debt_detail_with_payment_progress,
+    list_customer_debt_web_items_with_payment_progress,
+    list_tenant_customer_debts_with_payment_progress,
+)
 from app.payment.repository import payment_open_set_reader_factory
 from app.payment.router import router as payment_router
 from app.security_headers import install_security_headers_middleware
@@ -67,6 +74,12 @@ def create_app(
     application.state.debt_open_set_reader_factory = payment_open_set_reader_factory
     application.state.debt_hard_block_reader_factory = (
         locked_customer_global_hard_block_reader_factory
+    )
+    application.state.debt_web_payment_progress_reader = DebtWebPaymentProgressReader(
+        list_tenant_customer_debts=list_tenant_customer_debts_with_payment_progress,
+        get_tenant_debt_detail=get_tenant_debt_detail_with_payment_progress,
+        list_customer_debt_web_items=list_customer_debt_web_items_with_payment_progress,
+        get_customer_debt_web_detail=get_customer_debt_web_detail_with_payment_progress,
     )
     application.state.get_database_session = create_database_session_dependency(
         database_session_factory

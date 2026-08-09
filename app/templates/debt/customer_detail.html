@@ -6,11 +6,15 @@
   {% if error_message %}<p role="alert">{{ error_message }}</p>{% endif %}
   {% if notice %}<p class="form-notice" role="status">{{ notice }}</p>{% endif %}
   <article class="debt-card">
-    <h2>{{ copy.status }}: {{ detail.projection.status.value }}</h2>
+    <h2>{{ copy.status }}: {{ status_label }}</h2>
     <dl>
       <dt>{{ copy.amount }}</dt><dd>{{ detail.projection.original_amount.value }}</dd>
       <dt>{{ copy.discount }}</dt><dd>{{ detail.projection.discount_basis_points.value }} bp</dd>
       <dt>{{ copy.discounted }}</dt><dd>{{ detail.projection.discounted_amount.value }}</dd>
+      {% if detail.projection.payment_progress %}
+      <dt>{{ copy.current_balance }}</dt><dd>{{ detail.projection.payment_progress.remaining_due_uzs }} ({{ copy.original_basis if detail.projection.payment_progress.balance_basis.value == "original" else copy.discounted_basis }})</dd>
+      {% if detail.projection.payment_progress.is_effectively_overdue %}<dt>{{ copy.status_overdue }}</dt><dd>{{ copy.clawback }}</dd>{% endif %}
+      {% endif %}
       <dt>{{ copy.due }}</dt><dd>{{ detail.projection.due_date }}</dd>
       <dt>{{ copy.expiry }}</dt><dd>{{ detail.projection.pending_expires_at }}</dd>
       {% if detail.projection.decision_reason %}<dt>{{ copy.reason_required }}</dt><dd>{{ detail.projection.decision_reason }}</dd>{% endif %}
@@ -38,7 +42,8 @@
     </form>
   </div>
   {% endif %}
-  <nav aria-label="Mijoz navigatsiyasi">
+  <nav aria-label="{{ copy.navigation }}">
+    <a href="{{ request.url.path }}">{{ copy.refresh }}</a>
     <a href="/customer/debts/{{ detail.debt_id.as_uuid() }}/payments">{{ copy.payment_history }}</a>
     <a href="/customer/debts">{{ copy.back }}</a>
   </nav>

@@ -258,6 +258,7 @@ dd {
 
 .debt-page {
     max-width: 720px;
+    min-inline-size: 0;
     overflow-wrap: anywhere;
 }
 
@@ -294,10 +295,19 @@ dd {
 }
 
 .primary-link,
-.debt-page nav a {
+.debt-page nav a,
+.debt-card h2 a {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
+    min-width: 44px;
     min-height: 44px;
+}
+
+.debt-page nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
 }
 
 .payment-page {
@@ -460,7 +470,8 @@ dd {
     }
 
     .payment-page nav a,
-    .payment-page form button {
+    .payment-page form button,
+    .debt-page nav a {
         width: 100%;
     }
 

@@ -4,19 +4,23 @@
 <main class="debt-page">
   <h1>{{ copy.debts }}</h1>
   {% if has_rows %}
-  <ul class="debt-list">
+  <ul class="debt-list" aria-label="{{ copy.debts }}">
     {% for row in rows %}
     <li class="debt-card">
       <h2><a href="/customer/debts/{{ row.debt_id.as_uuid() }}">{{ row.projection.shop_name }}</a></h2>
       <dl>
-        <dt>{{ copy.status }}</dt><dd>{{ row.projection.status.value }}</dd>
+        <dt>{{ copy.status }}</dt><dd>{{ copy.status_overdue if row.projection.payment_progress and row.projection.payment_progress.is_effectively_overdue else status_labels[row.projection.status.value] }}</dd>
         <dt>{{ copy.discounted }}</dt><dd>{{ row.projection.discounted_amount.value }}</dd>
+        {% if row.projection.payment_progress %}
+        <dt>{{ copy.current_balance }}</dt><dd>{{ row.projection.payment_progress.remaining_due_uzs }} ({{ copy.original_basis if row.projection.payment_progress.balance_basis.value == "original" else copy.discounted_basis }})</dd>
+        {% if row.projection.payment_progress.is_effectively_overdue %}<dt>{{ copy.status_overdue }}</dt><dd>{{ copy.clawback }}</dd>{% endif %}
+        {% endif %}
         <dt>{{ copy.due }}</dt><dd>{{ row.projection.due_date }}</dd>
       </dl>
     </li>
     {% endfor %}
   </ul>
   {% else %}<p>{{ copy.empty }}</p>{% endif %}
-  <nav aria-label="Mijoz navigatsiyasi"><a href="/customer/profile">{{ copy.back }}</a></nav>
+  <nav aria-label="{{ copy.navigation }}"><a href="{{ request.url.path }}">{{ copy.refresh }}</a><a href="/customer/profile">{{ copy.back }}</a></nav>
 </main>
 {% endblock %}

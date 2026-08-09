@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
-from app.auth.deps import get_current_session_context
+from app.auth.deps import get_current_session_context, get_current_time
 from app.main import create_app
 from app.payment.dependencies import (
     get_detached_current_shop_payment_actor_context,
@@ -86,6 +86,14 @@ def test_payment_routes_use_read_or_csrf_detached_boundaries() -> None:
         assert get_detached_current_shop_payment_read_actor_context in calls(
             payment_routes[name]
         )
+    for name in (
+        "shop_debt_payment_list",
+        "shop_debt_payment_new",
+        "shop_payment_receipt",
+        "customer_debt_payment_list",
+        "customer_payment_receipt",
+    ):
+        assert get_current_time in calls(payment_routes[name])
     assert get_current_session_context in calls(payment_routes["shop_debt_payment_new"])
     assert get_detached_current_shop_payment_actor_context in calls(
         payment_routes["shop_debt_payment_create"]
@@ -108,3 +116,12 @@ def test_debt_detail_navigation_stays_mode_specific_and_localized() -> None:
     assert "/shop/" not in customer_detail
     assert '"payment_history"' in copy_source
     assert '"record_payment"' in copy_source
+
+
+def test_debt_ssr_uses_the_application_composed_progress_reader() -> None:
+    source = Path("app/debt/router.py").read_text(encoding="utf-8")
+    adapter = Path("app/debt/payment_progress.py").read_text(encoding="utf-8")
+
+    assert "app.payment" not in source
+    assert "debt_web_payment_progress_reader" in source
+    assert "DebtWebPaymentProgressReader" in adapter

@@ -108,7 +108,17 @@ def shop_debt_payment_list(
             "history": view.history,
             "debt_id": parsed_debt_id.as_uuid(),
             "can_create": can_create,
-            "status_label": _status_label(actor.language, view.debt.status),
+            "status_label": _status_label(
+                actor.language,
+                view.debt.status,
+                is_effectively_overdue=progress.is_effectively_overdue,
+            ),
+            "balance_basis_label": _basis_label(
+                actor.language, progress.balance_basis.value
+            ),
+            "late_terms_message": _late_terms_message(
+                actor.language, progress.is_effectively_overdue
+            ),
             "read_only_message": _shop_read_only_message(
                 actor.language,
                 shop_status=view.shop_status,
@@ -176,6 +186,12 @@ def new_shop_debt_payment_page(
                 "expected_revision": detail.expected_revision,
                 "expected_balance_basis": (detail.payment_progress.balance_basis.value),
                 "remaining_due_uzs": detail.payment_progress.remaining_due_uzs,
+                "balance_basis_label": _basis_label(
+                    language, detail.payment_progress.balance_basis.value
+                ),
+                "late_terms_message": _late_terms_message(
+                    language, detail.payment_progress.is_effectively_overdue
+                ),
                 "methods": tuple(PaymentMethod),
                 "error_message": _payment_error_message(language, error),
             },
@@ -275,7 +291,21 @@ def shop_payment_receipt(
             "debt_id": view.debt_id.as_uuid(),
             "method_label": _method_labels(actor.language)[view.receipt.method.value],
             "status_label": _status_label(
-                actor.language, view.receipt.current_debt_status
+                actor.language,
+                view.receipt.current_debt_status,
+                is_effectively_overdue=(
+                    view.receipt.current_debt_status is DebtStatus.OVERDUE
+                ),
+            ),
+            "historical_basis_label": _basis_label(
+                actor.language, view.receipt.historical_balance_basis.value
+            ),
+            "current_basis_label": _basis_label(
+                actor.language, view.receipt.current_balance_basis.value
+            ),
+            "paid_late": (
+                view.receipt.current_debt_status is DebtStatus.PAID
+                and view.receipt.current_balance_basis.value == "original"
             ),
         },
     )
@@ -319,7 +349,17 @@ def customer_debt_payment_list(
             "debt": view.debt,
             "history": view.history,
             "debt_id": parsed_debt_id.as_uuid(),
-            "status_label": _status_label(language, view.debt.status),
+            "status_label": _status_label(
+                language,
+                view.debt.status,
+                is_effectively_overdue=view.debt.progress.is_effectively_overdue,
+            ),
+            "balance_basis_label": _basis_label(
+                language, view.debt.progress.balance_basis.value
+            ),
+            "late_terms_message": _late_terms_message(
+                language, view.debt.progress.is_effectively_overdue
+            ),
             "method_labels": _method_labels(language),
         },
     )
@@ -363,7 +403,23 @@ def customer_payment_receipt(
             "receipt": view.receipt,
             "debt_id": view.debt_id.as_uuid(),
             "method_label": _method_labels(language)[view.receipt.method.value],
-            "status_label": _status_label(language, view.receipt.current_debt_status),
+            "status_label": _status_label(
+                language,
+                view.receipt.current_debt_status,
+                is_effectively_overdue=(
+                    view.receipt.current_debt_status is DebtStatus.OVERDUE
+                ),
+            ),
+            "historical_basis_label": _basis_label(
+                language, view.receipt.historical_balance_basis.value
+            ),
+            "current_basis_label": _basis_label(
+                language, view.receipt.current_balance_basis.value
+            ),
+            "paid_late": (
+                view.receipt.current_debt_status is DebtStatus.PAID
+                and view.receipt.current_balance_basis.value == "original"
+            ),
         },
     )
 
@@ -486,10 +542,33 @@ def _method_labels(language: DebtWebLanguage) -> Mapping[str, str]:
     return {method.value: copy[method.value] for method in PaymentMethod}
 
 
-def _status_label(language: DebtWebLanguage, status_value: DebtStatus) -> str:
+def _status_label(
+    language: DebtWebLanguage,
+    status_value: DebtStatus,
+    *,
+    is_effectively_overdue: bool = False,
+) -> str:
     if not isinstance(status_value, DebtStatus):
         raise ValueError("Payment status is invalid")
+    if is_effectively_overdue:
+        return get_payment_web_copy(language)["status_overdue"]
     return get_payment_web_copy(language)[f"status_{status_value.value}"]
+
+
+def _basis_label(language: DebtWebLanguage, basis_value: str) -> str:
+    if basis_value not in {"discounted", "original"}:
+        raise ValueError("Payment balance basis is invalid")
+    return get_payment_web_copy(language)[f"{basis_value}_basis"]
+
+
+def _late_terms_message(
+    language: DebtWebLanguage, is_effectively_overdue: bool
+) -> str | None:
+    if not isinstance(is_effectively_overdue, bool):
+        raise ValueError("Payment effective overdue state is invalid")
+    return (
+        get_payment_web_copy(language)["late_terms"] if is_effectively_overdue else None
+    )
 
 
 def _shop_read_only_message(
@@ -503,7 +582,7 @@ def _shop_read_only_message(
         return get_payment_web_copy(language)["read_only_suspended"]
     if debt_status is DebtStatus.ACTIVE and not payable:
         return get_payment_web_copy(language)["read_only_past_due"]
-    if debt_status is not DebtStatus.ACTIVE:
+    if debt_status not in {DebtStatus.ACTIVE, DebtStatus.OVERDUE}:
         return get_payment_web_copy(language)["read_only_closed"]
     return None
 

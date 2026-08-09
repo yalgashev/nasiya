@@ -25,7 +25,6 @@ from app.auth.deps import (
 )
 from app.auth.error_codes import ErrorCode
 from app.auth.template_context import with_csrf_context
-from app.debt.business_time import is_payment_due_date_payable, parse_due_date
 from app.debt.commands import CreateDebtRawForm, assemble_create_debt_command
 from app.debt.customer_accept_service import (
     AcceptCustomerDebtCommand,
@@ -39,10 +38,6 @@ from app.debt.customer_reject_service import (
     RejectCustomerDebtCommand,
     reject_own_customer_debt,
 )
-from app.debt.customer_web_read_service import (
-    get_own_customer_debt_web_detail,
-    list_own_customer_debt_web_items,
-)
 from app.debt.dependencies import (
     DetachedCustomerDebtAuthority,
     DetachedDebtActorAuthority,
@@ -50,12 +45,10 @@ from app.debt.dependencies import (
     get_detached_customer_debt_authority,
 )
 from app.debt.enums import DebtStatus
+from app.debt.payment_progress import DebtWebPaymentProgressReader
+from app.debt.presentation import DebtWebLanguage
 from app.debt.service import create_pending_debt_proposal
 from app.debt.tenant_cancel_service import CancelTenantDebtCommand, cancel_tenant_debt
-from app.debt.tenant_read_service import (
-    get_tenant_debt_detail,
-    list_tenant_customer_debts,
-)
 from app.debt.values import DebtId, DebtRevision
 from app.debt.web_presentation import (
     COPY,
@@ -88,6 +81,7 @@ SHOP_SELECT_PATH = "/shop/select"
 def shop_customer_debts_page(
     shop_customer_id: UUID,
     request: Request,
+    now: Annotated[datetime, Depends(get_current_time)],
     db: Annotated[DatabaseSession, Depends(get_database_session, scope="function")],
     settings: Annotated[Settings, Depends(get_settings)],
     context: Annotated[CurrentSessionContext, Depends(get_current_session_context)],
@@ -106,10 +100,11 @@ def shop_customer_debts_page(
     )
     if linked is None:
         return _redirect("/shop/customers", error=ErrorCode.DEBT_UNAVAILABLE)
-    rows = list_tenant_customer_debts(
+    rows = _payment_progress_reader(request).list_tenant_customer_debts(
         db,
         shop_id=ShopId(shop.shop.id),
         shop_customer_id=ShopCustomerId(shop_customer_id),
+        server_now=now,
     )
     language = resolve_debt_web_language(request.headers.get("accept-language"))
     response = templates.TemplateResponse(
@@ -122,6 +117,7 @@ def shop_customer_debts_page(
             "has_rows": bool(rows),
             "shop_customer_id": shop_customer_id,
             "can_create": shop.status is ShopStatus.ACTIVE,
+            "status_labels": _debt_status_labels(language),
             "error_message": debt_error_message(language, error),
             "notice": debt_notice(language, notice),
         },
@@ -243,10 +239,11 @@ def shop_debt_detail_page(
         return resolved
     _user, shop = resolved
     assert shop.shop is not None
-    detail = get_tenant_debt_detail(
+    detail = _payment_progress_reader(request).get_tenant_debt_detail(
         db,
         shop_id=ShopId(shop.shop.id),
         debt_id=DebtId(debt_id),
+        server_now=now,
     )
     if detail is None:
         return _redirect("/shop/customers", error=ErrorCode.DEBT_UNAVAILABLE)
@@ -264,13 +261,12 @@ def shop_debt_detail_page(
                     and shop.status is ShopStatus.ACTIVE
                 ),
                 "can_record_payment": (
-                    detail.status is DebtStatus.ACTIVE
+                    detail.status in {DebtStatus.ACTIVE, DebtStatus.OVERDUE}
                     and shop.status is ShopStatus.ACTIVE
-                    and is_payment_due_date_payable(
-                        payment_created_at=now,
-                        due_date=parse_due_date(detail.due_date),
-                    )
+                    and detail.payment_progress is not None
+                    and detail.payment_progress.is_payable
                 ),
+                "status_label": _debt_status_label(language, detail.status, detail),
                 "error_message": debt_error_message(language, error),
                 "notice": debt_notice(language, notice),
             },
@@ -318,6 +314,7 @@ def cancel_shop_debt(
 @router.get("/customer/debts", response_class=HTMLResponse, response_model=None)
 def customer_debts_page(
     request: Request,
+    now: Annotated[datetime, Depends(get_current_time)],
     db: Annotated[DatabaseSession, Depends(get_database_session, scope="function")],
     settings: Annotated[Settings, Depends(get_settings)],
     context: Annotated[CurrentSessionContext, Depends(get_current_session_context)],
@@ -325,7 +322,11 @@ def customer_debts_page(
     resolved = _customer_authority_or_response(db, settings, context)
     if isinstance(resolved, Response):
         return resolved
-    rows = list_own_customer_debt_web_items(db, authority=resolved)
+    rows = _payment_progress_reader(request).list_customer_debt_web_items(
+        db,
+        authority=resolved,
+        server_now=now,
+    )
     language = resolve_debt_web_language(request.headers.get("accept-language"))
     response = templates.TemplateResponse(
         request,
@@ -335,6 +336,7 @@ def customer_debts_page(
             "copy": COPY[language],
             "rows": rows,
             "has_rows": bool(rows),
+            "status_labels": _debt_status_labels(language),
         },
     )
     return mark_auth_response_no_store(response)
@@ -346,6 +348,7 @@ def customer_debts_page(
 def customer_debt_detail_page(
     debt_id: UUID,
     request: Request,
+    now: Annotated[datetime, Depends(get_current_time)],
     db: Annotated[DatabaseSession, Depends(get_database_session, scope="function")],
     settings: Annotated[Settings, Depends(get_settings)],
     context: Annotated[CurrentSessionContext, Depends(get_current_session_context)],
@@ -357,11 +360,12 @@ def customer_debt_detail_page(
         return resolved
     language = resolve_debt_web_language(request.headers.get("accept-language"))
     offer_language = _offer_language(language.value)
-    result = get_own_customer_debt_web_detail(
+    result = _payment_progress_reader(request).get_customer_debt_web_detail(
         db,
         authority=resolved,
         debt_id=DebtId(debt_id),
         language=offer_language,
+        server_now=now,
     )
     if result.error is not None:
         return _redirect("/customer/debts", error=ErrorCode.DEBT_UNAVAILABLE)
@@ -374,6 +378,9 @@ def customer_debt_detail_page(
                 "page_language": language.value,
                 "copy": COPY[language],
                 "detail": result.detail,
+                "status_label": _debt_status_label(
+                    language, result.detail.projection.status, result.detail.projection
+                ),
                 "error_message": debt_error_message(language, error),
                 "notice": debt_notice(language, notice),
             },
@@ -574,3 +581,29 @@ def _redirect_detached_customer_authority(
 
 def _offer_language(value: str) -> OfferLanguage:
     return OfferLanguage.RU if value == "ru" else OfferLanguage.UZ_LATN
+
+
+def _payment_progress_reader(request: Request) -> DebtWebPaymentProgressReader:
+    reader = request.app.state.debt_web_payment_progress_reader
+    if not isinstance(reader, DebtWebPaymentProgressReader):
+        raise RuntimeError("Debt web payment progress reader is unavailable")
+    return reader
+
+
+def _debt_status_labels(language: DebtWebLanguage) -> dict[str, str]:
+    return {
+        status.value: COPY[language][f"status_{status.value}"]
+        for status in DebtStatus
+        if f"status_{status.value}" in COPY[language]
+    }
+
+
+def _debt_status_label(
+    language: DebtWebLanguage,
+    status: DebtStatus,
+    projection: object,
+) -> str:
+    progress = getattr(projection, "payment_progress", None)
+    if progress is not None and progress.is_effectively_overdue:
+        return COPY[language]["status_overdue"]
+    return COPY[language][f"status_{status.value}"]

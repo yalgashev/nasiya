@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from uuid import UUID
 
@@ -16,6 +17,7 @@ from app.debt.customer_read_service import (
     get_own_customer_debt_detail,
     list_own_customer_debts,
 )
+from app.debt.payment_progress import DebtPaymentProgressProjection
 from app.debt.repository import (
     get_customer_owned_debt_with_shop,
     list_customer_owned_debts_with_shops,
@@ -60,12 +62,20 @@ class CustomerDebtWebDetailResult:
 
 
 def list_own_customer_debt_web_items(
-    session: Session, *, authority: CustomerDebtAuthority
+    session: Session,
+    *,
+    authority: CustomerDebtAuthority,
+    payment_progress_by_debt_id: Mapping[UUID, DebtPaymentProgressProjection]
+    | None = None,
 ) -> tuple[CustomerDebtWebListItem, ...]:
     rows = list_customer_owned_debts_with_shops(
         session, customer_id=authority.customer_id
     )
-    projections = list_own_customer_debts(session, authority=authority)
+    projections = list_own_customer_debts(
+        session,
+        authority=authority,
+        payment_progress_by_debt_id=payment_progress_by_debt_id,
+    )
     if len(rows) != len(projections):
         raise RuntimeError("Customer debt web projection changed during one read")
     return tuple(
@@ -80,12 +90,15 @@ def get_own_customer_debt_web_detail(
     authority: CustomerDebtAuthority,
     debt_id: DebtId,
     language: OfferLanguage,
+    payment_progress_by_debt_id: Mapping[UUID, DebtPaymentProgressProjection]
+    | None = None,
 ) -> CustomerDebtWebDetailResult:
     core: CustomerDebtDetailResult = get_own_customer_debt_detail(
         session,
         authority=authority,
         debt_id=debt_id,
         language=language,
+        payment_progress_by_debt_id=payment_progress_by_debt_id,
     )
     if core.error is not None:
         return CustomerDebtWebDetailResult(error=core.error)

@@ -39,6 +39,12 @@ PAYMENT_WEB_COPY: Final[Mapping[DebtWebLanguage, Mapping[str, str]]] = MappingPr
                 "discounted_basis": "Chegirmali hisob",
                 "original_basis": "Asl summa bo'yicha hisob",
                 "overdue": "To'lov muddati o'tgan",
+                "late_terms": (
+                    "Chegirma bekor qilindi; qoldiq asl summa bo'yicha hisoblanadi."
+                ),
+                "paid_late": "Muddatdan keyin to'langan",
+                "refresh": "Holatni yangilash",
+                "navigation": "Sahifa navigatsiyasi",
                 "posted_total": "To'langan jami",
                 "remaining": "Qolgan qarz",
                 "status": "Holat",
@@ -85,6 +91,12 @@ PAYMENT_WEB_COPY: Final[Mapping[DebtWebLanguage, Mapping[str, str]]] = MappingPr
                 "discounted_basis": "Расчёт со скидкой",
                 "original_basis": "Расчёт по первоначальной сумме",
                 "overdue": "Срок оплаты истёк",
+                "late_terms": (
+                    "Скидка отменена; остаток рассчитан от первоначальной суммы."
+                ),
+                "paid_late": "Оплачен после срока",
+                "refresh": "Обновить данные",
+                "navigation": "Навигация по странице",
                 "posted_total": "Всего оплачено",
                 "remaining": "Остаток долга",
                 "status": "Статус",
@@ -118,7 +130,7 @@ PAYMENT_WEB_COPY: Final[Mapping[DebtWebLanguage, Mapping[str, str]]] = MappingPr
                 "status_rejected": "Отклонён",
                 "status_cancelled": "Отменён",
                 "status_expired": "Срок истёк",
-                "status_overdue": "Просрочен",
+                "status_overdue": "Срок оплаты истёк",
                 "back_to_debt": "Вернуться к долгу",
                 "back_to_history": "Вернуться к истории платежей",
             }

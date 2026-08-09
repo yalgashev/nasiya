@@ -6,12 +6,13 @@ these values through a read-only adapter after the debt rows have been scoped.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 
 from app.debt.enums import DebtBalanceBasis, DebtStatus
 
-__all__ = ("DebtPaymentProgressProjection",)
+__all__ = ("DebtPaymentProgressProjection", "DebtWebPaymentProgressReader")
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -55,3 +56,30 @@ class DebtPaymentProgressProjection:
 
     def __repr__(self) -> str:
         return "DebtPaymentProgressProjection(<safe>)"
+
+
+@dataclass(frozen=True, slots=True)
+class DebtWebPaymentProgressReader:
+    """Application-composed read adapter for existing Debt SSR routes.
+
+    The Debt package owns only this narrow callable surface.  The concrete
+    Payment read implementation is wired in ``app.main`` so the Debt router
+    never imports the Payment package directly.
+    """
+
+    list_tenant_customer_debts: Callable[..., tuple[object, ...]]
+    get_tenant_debt_detail: Callable[..., object | None]
+    list_customer_debt_web_items: Callable[..., tuple[object, ...]]
+    get_customer_debt_web_detail: Callable[..., object]
+
+    def __post_init__(self) -> None:
+        if not all(
+            callable(value)
+            for value in (
+                self.list_tenant_customer_debts,
+                self.get_tenant_debt_detail,
+                self.list_customer_debt_web_items,
+                self.get_customer_debt_web_detail,
+            )
+        ):
+            raise ValueError("Debt web payment progress reader is invalid")
