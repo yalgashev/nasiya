@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}{{ copy.history }} - Nasiya{% endblock %}
+{% block content %}
+<main class="payment-page">
+  <h1>{{ copy.history }}</h1>
+  <article class="payment-summary">
+    <h2>{{ status_label }}</h2>
+    <dl>
+      <dt>{{ copy.discounted_target }}</dt><dd>{{ debt.discounted_amount_uzs }}</dd>
+      <dt>{{ copy.posted_total }}</dt><dd>{{ debt.payment_progress.posted_total_uzs }}</dd>
+      <dt>{{ copy.remaining }}</dt><dd>{{ debt.payment_progress.remaining_due_uzs }}</dd>
+      <dt>{{ copy.payable }}</dt><dd>{{ copy.yes if debt.payment_progress.is_payable else copy.no }}</dd>
+    </dl>
+  </article>
+  {% if read_only_message %}<p role="status">{{ read_only_message }}</p>{% endif %}
+  {% if history %}
+  <ol>
+    {% for payment in history %}
+    <li>
+      <span>{{ payment.amount.value }}</span>
+      <span>{{ method_labels[payment.method.value] }}</span>
+      <time datetime="{{ payment.created_at.isoformat() }}">{{ payment.created_at }}</time>
+      <a href="/shop/payments/{{ payment.payment_id.as_uuid() }}">{{ copy.receipt }}</a>
+    </li>
+    {% endfor %}
+  </ol>
+  {% else %}<p>{{ copy.empty }}</p>{% endif %}
+  <nav aria-label="Shop payment navigation">
+    {% if can_create %}<a href="/shop/debts/{{ debt_id }}/payments/new">{{ copy.new }}</a>{% endif %}
+    <a href="/shop/debts/{{ debt_id }}">{{ copy.back_to_debt }}</a>
+  </nav>
+</main>
+{% endblock %}

@@ -13,6 +13,7 @@ from app.debt.presentation import DebtWebLanguage
 from app.shop.enums import ShopRole, ShopStatus
 
 __all__ = (
+    "PAYMENT_WEB_COPY",
     "PAYMENT_ROUTE_CONTRACTS",
     "PaymentCustomerCapability",
     "PaymentCustomerCapabilityContext",
@@ -21,8 +22,105 @@ __all__ = (
     "PaymentShopCapabilityContext",
     "customer_payment_capabilities",
     "get_payment_web_error_message",
+    "get_payment_web_copy",
     "shop_payment_capabilities",
 )
+
+
+PAYMENT_WEB_COPY: Final[Mapping[DebtWebLanguage, Mapping[str, str]]] = MappingProxyType(
+    {
+        DebtWebLanguage.UZ_LATN: MappingProxyType(
+            {
+                "history": "To'lovlar tarixi",
+                "new": "To'lov kiritish",
+                "amount": "To'lov summasi (so'm)",
+                "discounted_target": "Chegirmali qarz",
+                "posted_total": "To'langan jami",
+                "remaining": "Qolgan qarz",
+                "status": "Holat",
+                "shop": "Do'kon",
+                "payable": "To'lov qabul qilinadi",
+                "yes": "Ha",
+                "no": "Yo'q",
+                "submit": "To'lovni qabul qilish",
+                "receipt": "Kvitansiya",
+                "method": "Usul",
+                "cash": "Naqd",
+                "card": "Karta",
+                "transfer": "O'tkazma",
+                "other": "Boshqa",
+                "recorded_at": "Qabul qilingan vaqt",
+                "historical_balance": "Ushbu to'lovdan keyingi qoldiq",
+                "current_balance": "Hozirgi qoldiq",
+                "current_status": "Hozirgi holat",
+                "empty": "To'lovlar hali yo'q.",
+                "read_only_suspended": "Do'kon faqat ko'rish rejimida.",
+                "read_only_past_due": (
+                    "To'lov muddati o'tgan; tarix faqat ko'rish uchun."
+                ),
+                "read_only_closed": ("Bu qarz uchun to'lov qabul qilinmaydi."),
+                "customer_read_only": ("To'lovlar tarixi faqat ko'rish uchun."),
+                "status_pending": "Kutilmoqda",
+                "status_active": "Faol",
+                "status_paid": "To'langan",
+                "status_rejected": "Rad etilgan",
+                "status_cancelled": "Bekor qilingan",
+                "status_expired": "Muddati tugagan",
+                "back_to_debt": "Qarzga qaytish",
+                "back_to_history": "To'lovlar tarixiga qaytish",
+            }
+        ),
+        DebtWebLanguage.RU: MappingProxyType(
+            {
+                "history": "История платежей",
+                "new": "Внести платёж",
+                "amount": "Сумма платежа (сум)",
+                "discounted_target": "Сумма долга со скидкой",
+                "posted_total": "Всего оплачено",
+                "remaining": "Остаток долга",
+                "status": "Статус",
+                "shop": "Магазин",
+                "payable": "Платёж принимается",
+                "yes": "Да",
+                "no": "Нет",
+                "submit": "Принять платёж",
+                "receipt": "Квитанция",
+                "method": "Способ",
+                "cash": "Наличные",
+                "card": "Карта",
+                "transfer": "Перевод",
+                "other": "Другое",
+                "recorded_at": "Время принятия",
+                "historical_balance": "Остаток после этого платежа",
+                "current_balance": "Текущий остаток",
+                "current_status": "Текущий статус",
+                "empty": "Платежей пока нет.",
+                "read_only_suspended": ("Магазин доступен только для просмотра."),
+                "read_only_past_due": (
+                    "Срок платежа истёк; история доступна только для просмотра."
+                ),
+                "read_only_closed": "Платёж по этому долгу не принимается.",
+                "customer_read_only": (
+                    "История платежей доступна только для просмотра."
+                ),
+                "status_pending": "Ожидается",
+                "status_active": "Активен",
+                "status_paid": "Оплачен",
+                "status_rejected": "Отклонён",
+                "status_cancelled": "Отменён",
+                "status_expired": "Срок истёк",
+                "back_to_debt": "Вернуться к долгу",
+                "back_to_history": "Вернуться к истории платежей",
+            }
+        ),
+    }
+)
+
+
+def get_payment_web_copy(language: DebtWebLanguage) -> Mapping[str, str]:
+    if not isinstance(language, DebtWebLanguage):
+        raise ValueError("Payment web language is invalid")
+    return PAYMENT_WEB_COPY[language]
 
 
 _UZ_LATN_ERRORS: Final[Mapping[ErrorCode, str]] = MappingProxyType(

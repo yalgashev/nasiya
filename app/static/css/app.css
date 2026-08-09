@@ -300,6 +300,65 @@ dd {
     min-height: 44px;
 }
 
+.payment-page {
+    width: min(100% - 32px, 42rem);
+    max-width: 42rem;
+    margin: 0 auto;
+    padding: 1rem;
+}
+
+.payment-page dl {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: .5rem 1rem;
+}
+
+.payment-page dt {
+    font-weight: 600;
+}
+
+.payment-page dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.payment-page ol {
+    padding-left: 1.25rem;
+}
+
+.payment-page li {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem;
+    margin: .75rem 0;
+}
+
+.payment-page nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .75rem;
+    margin-top: 1rem;
+}
+
+.payment-page nav a,
+.payment-page li a {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+}
+
+.payment-page h1,
+.payment-page h2,
+.payment-page p,
+.payment-page span,
+.payment-page time,
+.payment-page a {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
 @media (max-width: 375px) {
     main {
         width: min(100% - 24px, 640px);
@@ -389,6 +448,20 @@ dd {
 
     h1 {
         font-size: 1.75rem;
+    }
+
+    .payment-page {
+        width: min(100% - 24px, 42rem);
+        padding: 20px 0;
+    }
+
+    .payment-page dl {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .payment-page nav a,
+    .payment-page form button {
+        width: 100%;
     }
 
     .shop-customer-roster > li,
@@ -802,6 +875,10 @@ dd {
 }
 
 @media (max-width: 320px) {
+    .payment-page {
+        width: min(100% - 16px, 42rem);
+    }
+
     .otp-page,
     .telegram-page,
     .shop-workspace,

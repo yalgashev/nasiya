@@ -53,6 +53,7 @@ from app.payment.repository import (
     list_customer_owned_debt_payments,
     list_tenant_debt_payments,
     payment_aggregate_from_row,
+    posted_payment_total,
     remaining_due,
 )
 from app.payment.service import RecordDebtPaymentResult
@@ -64,15 +65,24 @@ from app.shop_customer.models import ShopCustomer
 from app.shop_customer.values import ShopCustomerId
 
 __all__ = (
+    "CustomerPaymentDebtProjection",
+    "CustomerPaymentHistoryView",
+    "CustomerPaymentReceiptView",
     "CustomerPaymentReadResult",
+    "TenantPaymentHistoryView",
     "TenantPaymentReadAuthority",
     "TenantPaymentReadResult",
+    "TenantPaymentReceiptView",
     "compose_payment_receipt",
     "get_customer_debt_detail_with_payment_progress",
     "get_own_customer_payment_receipt",
+    "get_own_customer_payment_receipt_view",
+    "get_own_customer_payment_history_view",
     "get_tenant_debt_detail_with_payment_progress",
     "get_tenant_payment_receipt",
     "get_tenant_payment_receipt_for_result",
+    "get_tenant_payment_receipt_view",
+    "get_tenant_payment_history_view",
     "list_customer_debts_with_payment_progress",
     "list_own_customer_payment_history",
     "list_payment_progress_for_debts",
@@ -90,6 +100,49 @@ class TenantPaymentReadAuthority:
 
     def __repr__(self) -> str:
         return "TenantPaymentReadAuthority(<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class TenantPaymentHistoryView:
+    """Scoped debt facts and revision-ordered facts for the shop read page."""
+
+    error: ErrorCode | None
+    debt: TenantDebtDetailProjection | None = field(default=None, repr=False)
+    history: tuple[PaymentHistoryItem, ...] = field(default=(), repr=False)
+    shop_status: ShopStatus | None = None
+
+    def __post_init__(self) -> None:
+        if self.error is None:
+            if not isinstance(self.debt, TenantDebtDetailProjection) or not isinstance(
+                self.shop_status, ShopStatus
+            ):
+                raise ValueError("Tenant payment history view is invalid")
+        elif self.debt is not None or self.history or self.shop_status is not None:
+            raise ValueError("Failed tenant payment history view must carry no data")
+
+    def __repr__(self) -> str:
+        return f"TenantPaymentHistoryView(error={self.error!r}, data=<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class TenantPaymentReceiptView:
+    """Safe receipt plus an internal-only debt locator for a history backlink."""
+
+    error: ErrorCode | None
+    receipt: PaymentReceiptProjection | None = field(default=None, repr=False)
+    debt_id: DebtId | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.error is None:
+            if not isinstance(self.receipt, PaymentReceiptProjection) or not isinstance(
+                self.debt_id, DebtId
+            ):
+                raise ValueError("Tenant payment receipt view is invalid")
+        elif self.receipt is not None or self.debt_id is not None:
+            raise ValueError("Failed tenant payment receipt view must carry no data")
+
+    def __repr__(self) -> str:
+        return f"TenantPaymentReceiptView(error={self.error!r}, data=<redacted>)"
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -130,6 +183,65 @@ class CustomerPaymentReadResult:
 
     def __repr__(self) -> str:
         return f"CustomerPaymentReadResult(error={self.error!r}, data=<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class CustomerPaymentDebtProjection:
+    """Identifier-safe own-customer debt facts for a payment-history page."""
+
+    shop_name: str = field(repr=False)
+    status: DebtStatus
+    discounted_amount: DiscountedAmountUZS
+    progress: DebtPaymentProgressProjection
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.shop_name, str) or not self.shop_name.strip():
+            raise ValueError("Payment history shop name is invalid")
+        if not isinstance(self.status, DebtStatus):
+            raise ValueError("Payment history debt status is invalid")
+        if not isinstance(self.discounted_amount, DiscountedAmountUZS):
+            raise ValueError("Payment history discounted target is invalid")
+        if not isinstance(self.progress, DebtPaymentProgressProjection):
+            raise ValueError("Payment history progress is invalid")
+
+    def __repr__(self) -> str:
+        return "CustomerPaymentDebtProjection(<safe>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class CustomerPaymentHistoryView:
+    error: ErrorCode | None
+    debt: CustomerPaymentDebtProjection | None = field(default=None, repr=False)
+    history: tuple[PaymentHistoryItem, ...] = field(default=(), repr=False)
+
+    def __post_init__(self) -> None:
+        if self.error is None:
+            if not isinstance(self.debt, CustomerPaymentDebtProjection):
+                raise ValueError("Customer payment history view is invalid")
+        elif self.debt is not None or self.history:
+            raise ValueError("Failed customer payment history view must carry no data")
+
+    def __repr__(self) -> str:
+        return f"CustomerPaymentHistoryView(error={self.error!r}, data=<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class CustomerPaymentReceiptView:
+    error: ErrorCode | None
+    receipt: PaymentReceiptProjection | None = field(default=None, repr=False)
+    debt_id: DebtId | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.error is None:
+            if not isinstance(self.receipt, PaymentReceiptProjection) or not isinstance(
+                self.debt_id, DebtId
+            ):
+                raise ValueError("Customer payment receipt view is invalid")
+        elif self.receipt is not None or self.debt_id is not None:
+            raise ValueError("Failed customer payment receipt view must carry no data")
+
+    def __repr__(self) -> str:
+        return f"CustomerPaymentReceiptView(error={self.error!r}, data=<redacted>)"
 
 
 def resolve_tenant_payment_read_authority(
@@ -185,6 +297,44 @@ def list_tenant_payment_history(
     return TenantPaymentReadResult(error=None, history=_history(rows))
 
 
+def get_tenant_payment_history_view(
+    session: Session,
+    *,
+    actor: DetachedPaymentReadActorContext,
+    debt_id: DebtId,
+    server_now: datetime,
+) -> TenantPaymentHistoryView:
+    """One tenant-authorized source for shop debt balance and ledger display."""
+
+    if not isinstance(debt_id, DebtId):
+        raise TypeError("debt_id must be a DebtId")
+    authority = resolve_tenant_payment_read_authority(session, actor=actor)
+    if authority is None:
+        return TenantPaymentHistoryView(error=ErrorCode.FORBIDDEN)
+    shop_status = session.scalar(
+        select(Shop.status).where(Shop.id == authority.shop_id)
+    )
+    if shop_status not in {ShopStatus.ACTIVE.value, ShopStatus.SUSPENDED.value}:
+        return TenantPaymentHistoryView(error=ErrorCode.FORBIDDEN)
+    debt = get_tenant_debt_detail_with_payment_progress(
+        session,
+        shop_id=authority.shop_id,
+        debt_id=debt_id,
+        server_now=server_now,
+    )
+    if debt is None:
+        return TenantPaymentHistoryView(error=ErrorCode.DEBT_UNAVAILABLE)
+    rows = list_tenant_debt_payments(
+        session, shop_id=authority.shop_id, debt_id=debt_id
+    )
+    return TenantPaymentHistoryView(
+        error=None,
+        debt=debt,
+        history=_history(rows),
+        shop_status=ShopStatus(shop_status),
+    )
+
+
 def get_tenant_payment_receipt(
     session: Session, *, actor: DetachedPaymentReadActorContext, payment_id: PaymentId
 ) -> TenantPaymentReadResult:
@@ -198,6 +348,29 @@ def get_tenant_payment_receipt(
         return TenantPaymentReadResult(error=ErrorCode.PAYMENT_UNAVAILABLE)
     return TenantPaymentReadResult(
         error=None, receipt=compose_payment_receipt(session, row=row)
+    )
+
+
+def get_tenant_payment_receipt_view(
+    session: Session,
+    *,
+    actor: DetachedPaymentReadActorContext,
+    payment_id: PaymentId,
+) -> TenantPaymentReceiptView:
+    """Scoped receipt plus a non-rendered route locator for the history link."""
+
+    if not isinstance(payment_id, PaymentId):
+        raise TypeError("payment_id must be a PaymentId")
+    authority = resolve_tenant_payment_read_authority(session, actor=actor)
+    if authority is None:
+        return TenantPaymentReceiptView(error=ErrorCode.FORBIDDEN)
+    row = get_tenant_payment(session, shop_id=authority.shop_id, payment_id=payment_id)
+    if row is None:
+        return TenantPaymentReceiptView(error=ErrorCode.PAYMENT_UNAVAILABLE)
+    return TenantPaymentReceiptView(
+        error=None,
+        receipt=compose_payment_receipt(session, row=row),
+        debt_id=DebtId(row.debt.id),
     )
 
 
@@ -235,6 +408,49 @@ def list_own_customer_payment_history(
     return CustomerPaymentReadResult(error=None, history=_history(rows))
 
 
+def get_own_customer_payment_history_view(
+    session: Session,
+    *,
+    authenticated_user: User,
+    debt_id: DebtId,
+    server_now: datetime,
+) -> CustomerPaymentHistoryView:
+    """Own-only payment view with no customer eligibility or Shop-active gate."""
+
+    if not isinstance(debt_id, DebtId):
+        raise TypeError("debt_id must be a DebtId")
+    customer_id = _resolve_own_customer_id(
+        session, authenticated_user=authenticated_user
+    )
+    if customer_id is None:
+        return CustomerPaymentHistoryView(error=ErrorCode.PAYMENT_UNAVAILABLE)
+    row = get_customer_owned_debt_with_shop(
+        session, customer_id=customer_id, debt_id=debt_id
+    )
+    if row is None:
+        return CustomerPaymentHistoryView(error=ErrorCode.PAYMENT_UNAVAILABLE)
+    progress = _progress(
+        row.debt,
+        posted_payment_total(session, debt_id=debt_id),
+        normalize_payment_created_at(server_now),
+    )
+    history = _history(
+        list_customer_owned_debt_payments(
+            session, customer_id=customer_id, debt_id=debt_id
+        )
+    )
+    return CustomerPaymentHistoryView(
+        error=None,
+        debt=CustomerPaymentDebtProjection(
+            shop_name=row.shop_name,
+            status=DebtStatus(row.debt.status),
+            discounted_amount=DiscountedAmountUZS(row.debt.discounted_amount_uzs),
+            progress=progress,
+        ),
+        history=history,
+    )
+
+
 def get_own_customer_payment_receipt(
     session: Session, *, authenticated_user: User, payment_id: PaymentId
 ) -> CustomerPaymentReadResult:
@@ -252,6 +468,33 @@ def get_own_customer_payment_receipt(
         return CustomerPaymentReadResult(error=ErrorCode.PAYMENT_UNAVAILABLE)
     return CustomerPaymentReadResult(
         error=None, receipt=compose_payment_receipt(session, row=row)
+    )
+
+
+def get_own_customer_payment_receipt_view(
+    session: Session,
+    *,
+    authenticated_user: User,
+    payment_id: PaymentId,
+) -> CustomerPaymentReceiptView:
+    """Own-only receipt with an internal debt locator for its history backlink."""
+
+    if not isinstance(payment_id, PaymentId):
+        raise TypeError("payment_id must be a PaymentId")
+    customer_id = _resolve_own_customer_id(
+        session, authenticated_user=authenticated_user
+    )
+    if customer_id is None:
+        return CustomerPaymentReceiptView(error=ErrorCode.PAYMENT_UNAVAILABLE)
+    row = get_customer_owned_payment(
+        session, customer_id=customer_id, payment_id=payment_id
+    )
+    if row is None:
+        return CustomerPaymentReceiptView(error=ErrorCode.PAYMENT_UNAVAILABLE)
+    return CustomerPaymentReceiptView(
+        error=None,
+        receipt=compose_payment_receipt(session, row=row),
+        debt_id=DebtId(row.debt.id),
     )
 
 

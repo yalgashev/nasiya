@@ -25,6 +25,10 @@
     <button class="button-danger" type="submit">{{ copy.cancel }}</button>
   </form>
   {% endif %}
-  <nav aria-label="Do‘kon navigatsiyasi"><a href="/shop/customers/{{ detail.shop_customer_id.as_uuid() }}/debts">{{ copy.back }}</a></nav>
+  <nav aria-label="Do‘kon navigatsiyasi">
+    <a href="/shop/debts/{{ detail.debt_id.as_uuid() }}/payments">{{ copy.payment_history }}</a>
+    {% if can_record_payment %}<a href="/shop/debts/{{ detail.debt_id.as_uuid() }}/payments/new">{{ copy.record_payment }}</a>{% endif %}
+    <a href="/shop/customers/{{ detail.shop_customer_id.as_uuid() }}/debts">{{ copy.back }}</a>
+  </nav>
 </main>
 {% endblock %}

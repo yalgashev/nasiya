@@ -19,6 +19,7 @@ from app.db import (
 from app.debt.router import router as debt_router
 from app.offers.router import router as offers_router
 from app.payment.repository import payment_open_set_reader_factory
+from app.payment.router import router as payment_router
 from app.security_headers import install_security_headers_middleware
 from app.settings import Settings
 from app.shop.router import router as shop_router
@@ -74,6 +75,7 @@ def create_app(
     application.include_router(shop_router)
     application.include_router(shop_customer_router)
     application.include_router(debt_router)
+    application.include_router(payment_router)
     application.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @application.get("/", response_class=HTMLResponse)

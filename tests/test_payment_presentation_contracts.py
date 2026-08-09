@@ -1,14 +1,18 @@
 import pytest
 
 from app.auth.error_codes import ErrorCode
+from app.debt.enums import M14_PERSISTED_STATUSES
 from app.debt.presentation import DebtWebLanguage
+from app.payment.enums import PaymentMethod
 from app.payment.presentation import (
     PAYMENT_ROUTE_CONTRACTS,
+    PAYMENT_WEB_COPY,
     PaymentCustomerCapability,
     PaymentCustomerCapabilityContext,
     PaymentShopCapability,
     PaymentShopCapabilityContext,
     customer_payment_capabilities,
+    get_payment_web_copy,
     get_payment_web_error_message,
     shop_payment_capabilities,
 )
@@ -150,3 +154,72 @@ def test_payment_error_messages_are_localized_and_safe(
     assert get_payment_web_error_message(language, ErrorCode.DEBT_CHANGED)
     assert get_payment_web_error_message(language, ErrorCode.DEBT_NOT_PAYABLE)
     assert get_payment_web_error_message(language, ErrorCode.OFFER_CHANGED) is None
+
+
+def test_payment_copy_catalog_is_exact_complete_and_immutable_in_both_locales() -> None:
+    expected_keys = {
+        "history",
+        "new",
+        "amount",
+        "discounted_target",
+        "posted_total",
+        "remaining",
+        "status",
+        "shop",
+        "payable",
+        "yes",
+        "no",
+        "submit",
+        "receipt",
+        "method",
+        "recorded_at",
+        "historical_balance",
+        "current_balance",
+        "current_status",
+        "empty",
+        "read_only_suspended",
+        "read_only_past_due",
+        "read_only_closed",
+        "customer_read_only",
+        "back_to_debt",
+        "back_to_history",
+        *(method.value for method in PaymentMethod),
+        *(f"status_{status.value}" for status in M14_PERSISTED_STATUSES),
+    }
+
+    assert set(PAYMENT_WEB_COPY) == set(DebtWebLanguage)
+    for language in DebtWebLanguage:
+        copy = get_payment_web_copy(language)
+        assert set(copy) == expected_keys
+        assert all(value.strip() for value in copy.values())
+        with pytest.raises(TypeError):
+            copy["amount"] = "tampered"  # type: ignore[index]
+    assert PAYMENT_WEB_COPY[DebtWebLanguage.UZ_LATN]["remaining"] == "Qolgan qarz"
+    assert PAYMENT_WEB_COPY[DebtWebLanguage.RU]["remaining"] == "Остаток долга"
+
+
+@pytest.mark.parametrize("language", list(DebtWebLanguage))
+def test_every_payment_form_error_has_safe_localized_copy(
+    language: DebtWebLanguage,
+) -> None:
+    payment_web_errors = {
+        ErrorCode.PAYMENT_UNAVAILABLE,
+        ErrorCode.PAYMENT_AMOUNT_EXCEEDS_BALANCE,
+        ErrorCode.DEBT_CHANGED,
+        ErrorCode.DEBT_UNAVAILABLE,
+        ErrorCode.DEBT_NOT_PAYABLE,
+        ErrorCode.IDEMPOTENCY_CONFLICT,
+        ErrorCode.UNAUTHORIZED,
+        ErrorCode.FORBIDDEN,
+        ErrorCode.SHOP_SUSPENDED,
+        ErrorCode.VALIDATION_ERROR,
+        ErrorCode.CSRF_FAILED,
+    }
+
+    for error in payment_web_errors:
+        message = get_payment_web_error_message(language, error)
+        assert message is not None and message.strip()
+        assert not any(
+            secret in message.casefold()
+            for secret in ("uuid", "idempotency", "hash", "recorded_by")
+        )

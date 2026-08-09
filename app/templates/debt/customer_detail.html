@@ -38,6 +38,9 @@
     </form>
   </div>
   {% endif %}
-  <nav aria-label="Mijoz navigatsiyasi"><a href="/customer/debts">{{ copy.back }}</a></nav>
+  <nav aria-label="Mijoz navigatsiyasi">
+    <a href="/customer/debts/{{ detail.debt_id.as_uuid() }}/payments">{{ copy.payment_history }}</a>
+    <a href="/customer/debts">{{ copy.back }}</a>
+  </nav>
 </main>
 {% endblock %}

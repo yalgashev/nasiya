@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}{{ copy.new }} - Nasiya{% endblock %}
+{% block content %}
+<main class="payment-page">
+  <h1>{{ copy.new }}</h1>
+  <p id="payment-form-error" role="alert" aria-live="assertive">{{ error_message or "" }}</p>
+  <p id="payment-balance">{{ copy.remaining }}: {{ remaining_due_uzs }}</p>
+  <form action="/shop/debts/{{ debt_id }}/payments" method="post" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
+    <input type="hidden" name="expected_revision" value="{{ expected_revision }}">
+    <label for="payment-amount">{{ copy.amount }}</label>
+    <input
+      id="payment-amount"
+      name="amount_uzs"
+      inputmode="numeric"
+      pattern="[0-9]+"
+      min="1"
+      max="{{ remaining_due_uzs }}"
+      aria-describedby="payment-balance payment-form-error"
+      aria-invalid="{{ 'true' if error_message else 'false' }}"
+      required
+    >
+    <label for="payment-method">{{ copy.method }}</label>
+    <select id="payment-method" name="method" required>
+      {% for payment_method in methods %}
+      <option value="{{ payment_method.value }}">{{ copy[payment_method.value] }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">{{ copy.submit }}</button>
+  </form>
+  <nav aria-label="Shop payment navigation">
+    <a href="/shop/debts/{{ debt_id }}/payments">{{ copy.back_to_history }}</a>
+    <a href="/shop/debts/{{ debt_id }}">{{ copy.back_to_debt }}</a>
+  </nav>
+</main>
+{% endblock %}

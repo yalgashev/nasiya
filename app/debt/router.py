@@ -25,6 +25,7 @@ from app.auth.deps import (
 )
 from app.auth.error_codes import ErrorCode
 from app.auth.template_context import with_csrf_context
+from app.debt.business_time import is_payment_due_date_payable, parse_due_date
 from app.debt.commands import CreateDebtRawForm, assemble_create_debt_command
 from app.debt.customer_accept_service import (
     AcceptCustomerDebtCommand,
@@ -227,6 +228,7 @@ def create_shop_customer_debt(
 def shop_debt_detail_page(
     debt_id: UUID,
     request: Request,
+    now: Annotated[datetime, Depends(get_current_time)],
     db: Annotated[DatabaseSession, Depends(get_database_session, scope="function")],
     settings: Annotated[Settings, Depends(get_settings)],
     context: Annotated[CurrentSessionContext, Depends(get_current_session_context)],
@@ -257,6 +259,14 @@ def shop_debt_detail_page(
                 "can_cancel": (
                     detail.status is DebtStatus.PENDING
                     and shop.status is ShopStatus.ACTIVE
+                ),
+                "can_record_payment": (
+                    detail.status is DebtStatus.ACTIVE
+                    and shop.status is ShopStatus.ACTIVE
+                    and is_payment_due_date_payable(
+                        payment_created_at=now,
+                        due_date=parse_due_date(detail.due_date),
+                    )
                 ),
                 "error_message": debt_error_message(language, error),
                 "notice": debt_notice(language, notice),

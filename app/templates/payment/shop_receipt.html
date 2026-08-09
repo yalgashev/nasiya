@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}{{ copy.receipt }} - Nasiya{% endblock %}
+{% block content %}
+<main class="payment-page">
+  <h1>{{ receipt.shop_display_name }}</h1>
+  <h2>{{ copy.receipt }}</h2>
+  <dl>
+    <dt>{{ copy.amount }}</dt><dd>{{ receipt.amount.value }}</dd>
+    <dt>{{ copy.method }}</dt><dd>{{ method_label }}</dd>
+    <dt>{{ copy.recorded_at }}</dt><dd>{{ receipt.created_at }}</dd>
+    <dt>{{ copy.historical_balance }}</dt><dd>{{ receipt.historical_balance_after.value }}</dd>
+    <dt>{{ copy.current_balance }}</dt><dd>{{ receipt.current_balance.value }}</dd>
+    <dt>{{ copy.current_status }}</dt><dd>{{ status_label }}</dd>
+  </dl>
+  <nav aria-label="Shop payment navigation"><a href="/shop/debts/{{ debt_id }}/payments">{{ copy.back_to_history }}</a></nav>
+</main>
+{% endblock %}
