@@ -1,12 +1,12 @@
-# M14 Final Technical Report (Local Draft)
+# M14 Final Technical Report
 
-Status: `M14 LOCAL GREEN — EIGHTH CHECKPOINT PENDING`
+Status: `M14 REMOTE GREEN — CLOSED`
 
 Date: 2026-08-09
 
-This is a truthful local technical draft. It records the implemented M14
-foundation, controlled manual Chrome/PostgreSQL evidence, and repeated local
-validation. It does **not** claim remote CI, a push, or final remote closure.
+This report records the implemented M14 foundation, controlled manual
+Chrome/PostgreSQL evidence, repeated local validation, and exact remote CI
+closure evidence.
 
 ## Baseline and authority
 
@@ -116,6 +116,7 @@ UUID, phone, PII, or screenshot is retained in this report.
 | Ruff check / format check | GREEN / GREEN; 590 files formatted |
 | Static/containment and real PostgreSQL guards | GREEN in the repeated full suite |
 | Full pytest | 3,919 passed in 305.79s; zero failed/skipped/xfailed/xpassed/warnings |
+| Exact implementation remote CI | 3,919 passed in 184.32s; zero failed/skipped/xfailed/xpassed |
 
 The seventh checkpoint before this docs draft was `11d4575` and passed 3,919
 tests in 348.65 seconds. The table records the clean post-draft repeated M14.69
@@ -130,7 +131,25 @@ run, with zero failed, skipped, xfailed, xpassed, or warning outcomes.
 5. `577bdb9` — `M14: add payment balances and receipts`
 6. `f044eb3` — `M14: expose payment web flows`
 7. `11d4575` — `M14: harden payment security and concurrency`
-8. Pending — final M14 implementation/closure checkpoint has not been created.
+8. `2293b97` — `M14: complete active payment foundation`
+
+## Remote implementation evidence
+
+- Implementation SHA: `2293b97459218b61ab796863b4c0a0522edbdb6a`.
+- Implementation tree: `db67e403b215e768a2d618e6b5dce695e7abcbb0`.
+- CI run: [31295227718](https://github.com/yalgashev/nasiya/actions/runs/31295227718).
+- CI job: [93199127585](https://github.com/yalgashev/nasiya/actions/runs/31295227718/job/93199127585).
+- Checkout SHA: `2293b97459218b61ab796863b4c0a0522edbdb6a`.
+- Alembic current/head: `a5b6c7d8e9f0` / `a5b6c7d8e9f0`.
+- Remote full PostgreSQL pytest: 3,919 passed in 184.32 seconds, with zero
+  failed, skipped, xfailed, or xpassed outcomes.
+- Dependency sync, Ruff check/format-check, inherited containment gates, and
+  the bounded MinIO gates all completed successfully. The complete job took
+  4m16s.
+
+The docs-only closeout commit is intentionally not self-referenced here. Its CI
+must run on that later exact docs SHA and is part of the final read-only closure
+audit, not evidence for the implementation SHA above.
 
 ## Accepted staged boundary
 
@@ -141,4 +160,5 @@ reports, exports, scheduler/worker, gateway/bank integration, multi-currency,
 fees, instalments, public/self-payment, and cached financial projections remain
 OUT. See [m14_known_limitations.md](m14_known_limitations.md).
 
-Remote evidence is pending. This document must not be read as remote GREEN.
+The exact implementation checkpoint is remotely GREEN. M14 remains bounded by
+the accepted limitations above and is closed without adding M15 or OUT code.

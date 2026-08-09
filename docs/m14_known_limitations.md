@@ -1,8 +1,8 @@
 # Nasiya M14 Known Limitations
 
-Status: authoritative accepted M14 limitations. The implementation is locally
-GREEN through the seventh checkpoint; controlled M14.67–68 Chrome/PostgreSQL
-acceptance passed. The eighth checkpoint and remote evidence remain pending.
+Status: authoritative accepted M14 limitations; `M14 REMOTE GREEN — CLOSED`.
+Controlled M14.67–68 Chrome/PostgreSQL acceptance passed, and the exact eighth
+implementation checkpoint is remotely GREEN.
 
 M14 deliberately provides a narrow active-Debt payment ledger foundation. These
 are known staged boundaries, not defects that an implementation may fill in
@@ -21,7 +21,12 @@ removed. This is local evidence only and does not claim remote GREEN.
 
 The repeated clean M14.69 PostgreSQL suite passed 3,919 tests in 305.79 seconds
 with zero failed, skipped, xfailed, xpassed, or warning outcomes. This confirms
-the local boundary; it is not remote CI evidence.
+the local boundary. Exact implementation SHA
+`2293b97459218b61ab796863b4c0a0522edbdb6a` then passed remote run
+[31295227718](https://github.com/yalgashev/nasiya/actions/runs/31295227718), job
+[93199127585](https://github.com/yalgashev/nasiya/actions/runs/31295227718/job/93199127585):
+3,919 passed in 184.32 seconds with zero failed, skipped, xfailed, or xpassed
+outcomes, at Alembic head `a5b6c7d8e9f0`.
 
 ## KL-M14-01 — Paid is not the full debt lifecycle
 
