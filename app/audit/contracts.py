@@ -9,7 +9,12 @@ from types import MappingProxyType
 from typing import Final, Protocol, runtime_checkable
 from uuid import UUID
 
-from app.debt.enums import DebtExpirySource, DebtStatus
+from app.debt.enums import (
+    DebtBalanceBasis,
+    DebtExpirySource,
+    DebtOverdueSource,
+    DebtStatus,
+)
 from app.debt.values import (
     DebtRevision,
     DiscountBasisPoints,
@@ -18,7 +23,7 @@ from app.debt.values import (
 )
 from app.offers.enums import OfferLanguage
 from app.payment.enums import PaymentMethod
-from app.payment.values import PaymentAmountUZS
+from app.payment.values import ClawbackIncreaseUZS, PaymentAmountUZS
 from app.shop_customer.contracts import (
     ShopCustomerPolicy,
     ShopCustomerRevision,
@@ -47,6 +52,8 @@ class AuditEventType(StrEnum):
     DEBT_REJECTED = "debt.rejected"
     DEBT_CANCELLED = "debt.cancelled"
     DEBT_EXPIRED = "debt.expired"
+    DEBT_OVERDUE = "debt.overdue"
+    DEBT_CLAWBACK_APPLIED = "debt.clawback_applied"
     PAYMENT_RECORDED = "payment.recorded"
     DEBT_PAID = "debt.paid"
 
@@ -96,6 +103,8 @@ _EVENT_OBJECT_TYPES: Final[Mapping[AuditEventType, AuditObjectType]] = MappingPr
         AuditEventType.DEBT_REJECTED: AuditObjectType.DEBT,
         AuditEventType.DEBT_CANCELLED: AuditObjectType.DEBT,
         AuditEventType.DEBT_EXPIRED: AuditObjectType.DEBT,
+        AuditEventType.DEBT_OVERDUE: AuditObjectType.DEBT,
+        AuditEventType.DEBT_CLAWBACK_APPLIED: AuditObjectType.DEBT,
         AuditEventType.PAYMENT_RECORDED: AuditObjectType.PAYMENT,
         AuditEventType.DEBT_PAID: AuditObjectType.DEBT,
     }
@@ -360,6 +369,76 @@ class DebtPaidAuditPayload:
 
 
 @dataclass(frozen=True, slots=True, repr=False)
+class DebtOverdueAuditPayload:
+    """Closed, identifier-free SYSTEM payload for one overdue transition."""
+
+    source: DebtOverdueSource
+    overdue_revision: DebtRevision
+    business_date: date
+    from_status: DebtStatus = field(default=DebtStatus.ACTIVE, init=False)
+    to_status: DebtStatus = field(default=DebtStatus.OVERDUE, init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source, DebtOverdueSource):
+            raise ValueError("Debt overdue audit source is invalid")
+        if not isinstance(self.overdue_revision, DebtRevision):
+            raise ValueError("Debt overdue audit revision is invalid")
+        if isinstance(self.business_date, datetime) or not isinstance(
+            self.business_date, date
+        ):
+            raise ValueError("Debt overdue audit business date is invalid")
+
+    def as_candidate_metadata(self) -> Mapping[str, object]:
+        return MappingProxyType(
+            {
+                "source": self.source.value,
+                "from_status": self.from_status.value,
+                "to_status": self.to_status.value,
+                "overdue_revision": self.overdue_revision.value,
+                "business_date": self.business_date.isoformat(),
+            }
+        )
+
+    def __repr__(self) -> str:
+        return "DebtOverdueAuditPayload(<safe>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class DebtClawbackAppliedAuditPayload:
+    """Closed, identifier-free SYSTEM payload for overdue clawback."""
+
+    source: DebtOverdueSource
+    balance_increase_uzs: ClawbackIncreaseUZS
+    overdue_revision: DebtRevision
+    from_basis: DebtBalanceBasis = field(
+        default=DebtBalanceBasis.DISCOUNTED, init=False
+    )
+    to_basis: DebtBalanceBasis = field(default=DebtBalanceBasis.ORIGINAL, init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source, DebtOverdueSource):
+            raise ValueError("Debt clawback audit source is invalid")
+        if not isinstance(self.balance_increase_uzs, ClawbackIncreaseUZS):
+            raise ValueError("Debt clawback audit increase is invalid")
+        if not isinstance(self.overdue_revision, DebtRevision):
+            raise ValueError("Debt clawback audit revision is invalid")
+
+    def as_candidate_metadata(self) -> Mapping[str, object]:
+        return MappingProxyType(
+            {
+                "source": self.source.value,
+                "from_basis": self.from_basis.value,
+                "to_basis": self.to_basis.value,
+                "balance_increase_uzs": int(self.balance_increase_uzs.value),
+                "overdue_revision": self.overdue_revision.value,
+            }
+        )
+
+    def __repr__(self) -> str:
+        return "DebtClawbackAppliedAuditPayload(<safe>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
 class AuditEvent:
     event_type: AuditEventType
     actor_kind: AuditActorKind
@@ -390,6 +469,8 @@ class AuditEvent:
         is_system_event = self.event_type in {
             AuditEventType.PLATFORM_ADMIN_BOOTSTRAPPED,
             AuditEventType.DEBT_EXPIRED,
+            AuditEventType.DEBT_OVERDUE,
+            AuditEventType.DEBT_CLAWBACK_APPLIED,
         }
         if is_system_event:
             if (
@@ -398,7 +479,9 @@ class AuditEvent:
             ):
                 if self.event_type is AuditEventType.PLATFORM_ADMIN_BOOTSTRAPPED:
                     raise ValueError("Bootstrap audit actor must be SYSTEM")
-                raise ValueError("Debt expiry audit actor must be SYSTEM")
+                if self.event_type is AuditEventType.DEBT_EXPIRED:
+                    raise ValueError("Debt expiry audit actor must be SYSTEM")
+                raise ValueError("Debt overdue audit actor must be SYSTEM")
         elif self.actor_kind is not AuditActorKind.USER or not isinstance(
             self.actor_user_id, UUID
         ):

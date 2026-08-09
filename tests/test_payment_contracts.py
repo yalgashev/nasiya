@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.debt.enums import DebtStatus
+from app.debt.enums import DebtBalanceBasis, DebtStatus
 from app.debt.values import DebtId, DebtRevision, UserId
 from app.payment.contracts import (
     PaymentAggregate,
@@ -114,13 +114,15 @@ def test_payment_receipt_projection_has_only_safe_fact_and_balance_fields() -> N
         "current_balance",
         "current_debt_status",
         "shop_display_name",
+        "historical_balance_basis",
+        "current_balance_basis",
     )
     assert receipt.shop_display_name == "Nasiya Shop"
     assert "250" not in repr(receipt)
     assert "Nasiya Shop" not in repr(receipt)
 
 
-def test_payment_receipt_rejects_future_statuses_and_unsafe_fields() -> None:
+def test_payment_receipt_accepts_overdue_basis_and_rejects_future_statuses() -> None:
     kwargs = {
         "amount": PaymentAmountUZS(Decimal("250")),
         "method": PaymentMethod.CARD,
@@ -130,15 +132,33 @@ def test_payment_receipt_rejects_future_statuses_and_unsafe_fields() -> None:
         "current_debt_status": DebtStatus.ACTIVE,
         "shop_display_name": "Nasiya Shop",
     }
-    for future_status in (
-        DebtStatus.OVERDUE,
-        DebtStatus.WRITTEN_OFF,
-        DebtStatus.WRITTEN_OFF_SETTLED,
-    ):
-        with pytest.raises(ValueError, match="outside the M14 persisted subset"):
+    overdue = PaymentReceiptProjection(
+        **(
+            kwargs
+            | {
+                "current_debt_status": DebtStatus.OVERDUE,
+                "current_balance_basis": DebtBalanceBasis.ORIGINAL,
+            }
+        )
+    )
+    assert overdue.current_balance_basis is DebtBalanceBasis.ORIGINAL
+    for future_status in (DebtStatus.WRITTEN_OFF, DebtStatus.WRITTEN_OFF_SETTLED):
+        with pytest.raises(ValueError, match="outside the M15 persisted subset"):
             PaymentReceiptProjection(
                 **(kwargs | {"current_debt_status": future_status})
             )
+
+
+def test_payment_receipt_rejects_unsafe_shop_name() -> None:
+    kwargs = {
+        "amount": PaymentAmountUZS(Decimal("250")),
+        "method": PaymentMethod.CARD,
+        "created_at": datetime(2026, 5, 1, tzinfo=UTC),
+        "historical_balance_after": RemainingDueUZS(Decimal("750")),
+        "current_balance": RemainingDueUZS(Decimal("500")),
+        "current_debt_status": DebtStatus.ACTIVE,
+        "shop_display_name": "Nasiya Shop",
+    }
     for unsafe_name in ("", "A", "x" * 121, "Nasiya\x00Shop"):
         with pytest.raises(ValueError, match="shop display name"):
             PaymentReceiptProjection(**(kwargs | {"shop_display_name": unsafe_name}))

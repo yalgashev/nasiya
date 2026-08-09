@@ -7,10 +7,13 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Final
 from zoneinfo import ZoneInfo
 
+from app.debt.enums import M15_PERSISTED_STATUSES, DebtStatus
+
 __all__ = (
     "PENDING_DEBT_TTL",
     "TASHKENT_TIMEZONE",
     "is_pending_expired",
+    "is_effectively_overdue",
     "is_payment_due_date_payable",
     "normalize_payment_created_at",
     "parse_due_date",
@@ -50,6 +53,20 @@ def is_payment_due_date_payable(
 ) -> bool:
     _require_due_date(due_date)
     return payment_business_date(payment_created_at) <= due_date
+
+
+def is_effectively_overdue(
+    *, status: DebtStatus, due_date: date, server_now: datetime
+) -> bool:
+    """Derive risk-sensitive overdue state without mutating persisted Debt."""
+
+    if not isinstance(status, DebtStatus) or status not in M15_PERSISTED_STATUSES:
+        raise ValueError("Debt status is outside the M15 persisted subset")
+    _require_due_date(due_date)
+    business_date = tashkent_business_date(server_now)
+    return status is DebtStatus.OVERDUE or (
+        status is DebtStatus.ACTIVE and due_date < business_date
+    )
 
 
 def validate_payment_due_date(*, payment_created_at: datetime, due_date: date) -> date:

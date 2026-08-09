@@ -3,15 +3,20 @@ from decimal import Decimal
 
 import pytest
 
-from app.debt.enums import DebtStatus
+from app.debt.enums import DebtBalanceBasis, DebtStatus
 from app.debt.values import DiscountedAmountUZS, OriginalAmountUZS
 from app.payment.values import (
+    ClawbackIncreaseUZS,
     IncoherentPaymentLedgerError,
     PaymentExposureUZS,
     PostedPaymentTotalUZS,
     RemainingDueUZS,
+    calculate_clawback_increase,
+    calculate_discounted_remaining_due,
+    calculate_overdue_remaining_due,
     calculate_payment_exposure,
     calculate_remaining_due,
+    calculate_remaining_due_for_basis,
     open_debt_count_contribution,
 )
 
@@ -64,7 +69,8 @@ def test_remaining_due_fails_closed_when_persisted_total_is_incoherent() -> None
         (DebtStatus.ACTIVE, "1000", "1000", "0", "1000", 1),
         (DebtStatus.ACTIVE, "1000", "1000", "1", "999", 1),
         (DebtStatus.ACTIVE, "1000", "1000", "400", "600", 1),
-        (DebtStatus.ACTIVE, "1000", "1000", "1000", "0", 1),
+        (DebtStatus.OVERDUE, "1000", "600", "600", "400", 1),
+        (DebtStatus.OVERDUE, "1000", "600", "999", "1", 1),
         (DebtStatus.PAID, "1000", "1000", "1000", "0", 0),
         (DebtStatus.REJECTED, "1000", "1000", "0", "0", 0),
         (DebtStatus.CANCELLED, "1000", "1000", "0", "0", 0),
@@ -108,6 +114,65 @@ def test_discounted_remaining_and_original_exposure_never_share_a_basis() -> Non
     assert exposure == PaymentExposureUZS(Decimal("800"))
 
 
+def test_status_aware_remaining_and_clawback_matrix_has_no_max_clamp() -> None:
+    original = OriginalAmountUZS(Decimal("1000"))
+    discounted = DiscountedAmountUZS(Decimal("600"))
+
+    assert calculate_discounted_remaining_due(
+        discounted_amount=discounted,
+        posted_total=PostedPaymentTotalUZS(Decimal("200")),
+    ) == RemainingDueUZS(Decimal("400"))
+    assert calculate_overdue_remaining_due(
+        original_amount=original,
+        posted_total=PostedPaymentTotalUZS(Decimal("700")),
+    ) == RemainingDueUZS(Decimal("300"))
+    assert calculate_remaining_due_for_basis(
+        basis=DebtBalanceBasis.ORIGINAL,
+        original_amount=original,
+        discounted_amount=discounted,
+        posted_total=PostedPaymentTotalUZS(Decimal("700")),
+    ) == RemainingDueUZS(Decimal("300"))
+    assert calculate_clawback_increase(
+        original_amount=original,
+        discounted_amount=discounted,
+        posted_total=PostedPaymentTotalUZS(Decimal("200")),
+    ) == ClawbackIncreaseUZS(Decimal("400"))
+
+    with pytest.raises(IncoherentPaymentLedgerError):
+        calculate_discounted_remaining_due(
+            discounted_amount=discounted,
+            posted_total=PostedPaymentTotalUZS(Decimal("601")),
+        )
+    with pytest.raises(IncoherentPaymentLedgerError):
+        calculate_overdue_remaining_due(
+            original_amount=original,
+            posted_total=PostedPaymentTotalUZS(Decimal("1001")),
+        )
+
+
+def test_zero_discount_has_zero_clawback_and_identical_bases() -> None:
+    original = OriginalAmountUZS(Decimal("1000"))
+    discounted = DiscountedAmountUZS(Decimal("1000"))
+    posted = PostedPaymentTotalUZS(Decimal("250"))
+
+    assert calculate_clawback_increase(
+        original_amount=original,
+        discounted_amount=discounted,
+        posted_total=posted,
+    ) == ClawbackIncreaseUZS(Decimal("0"))
+    assert calculate_remaining_due_for_basis(
+        basis=DebtBalanceBasis.DISCOUNTED,
+        original_amount=original,
+        discounted_amount=discounted,
+        posted_total=posted,
+    ) == calculate_remaining_due_for_basis(
+        basis=DebtBalanceBasis.ORIGINAL,
+        original_amount=original,
+        discounted_amount=discounted,
+        posted_total=posted,
+    )
+
+
 def test_many_partial_decimal_sums_and_near_full_discount_remain_exact() -> None:
     discounted = DiscountedAmountUZS(Decimal("1000"))
     posted = Decimal("0")
@@ -135,6 +200,7 @@ def test_many_partial_decimal_sums_and_near_full_discount_remain_exact() -> None
 
 def test_balance_values_are_zero_inclusive_decimal_only_and_redacted() -> None:
     value_types = (
+        ClawbackIncreaseUZS,
         PostedPaymentTotalUZS,
         RemainingDueUZS,
         PaymentExposureUZS,
@@ -162,19 +228,19 @@ def test_balance_values_are_zero_inclusive_decimal_only_and_redacted() -> None:
 
 @pytest.mark.parametrize(
     "future_status",
-    (DebtStatus.OVERDUE, DebtStatus.WRITTEN_OFF, DebtStatus.WRITTEN_OFF_SETTLED),
+    (DebtStatus.WRITTEN_OFF, DebtStatus.WRITTEN_OFF_SETTLED),
 )
-def test_future_statuses_cannot_reach_m14_exposure_or_open_count(
+def test_future_statuses_cannot_reach_m15_exposure_or_open_count(
     future_status: DebtStatus,
 ) -> None:
-    with pytest.raises(ValueError, match="outside the M14 persisted subset"):
+    with pytest.raises(ValueError, match="outside the M15 persisted subset"):
         calculate_payment_exposure(
             status=future_status,
             original_amount=OriginalAmountUZS(Decimal("1000")),
             discounted_amount=DiscountedAmountUZS(Decimal("1000")),
             posted_total=PostedPaymentTotalUZS(Decimal("0")),
         )
-    with pytest.raises(ValueError, match="outside the M14 persisted subset"):
+    with pytest.raises(ValueError, match="outside the M15 persisted subset"):
         open_debt_count_contribution(future_status)
 
 
@@ -185,4 +251,31 @@ def test_exposure_also_fails_closed_for_an_incoherent_posted_total() -> None:
             original_amount=OriginalAmountUZS(Decimal("1000")),
             discounted_amount=DiscountedAmountUZS(Decimal("600")),
             posted_total=PostedPaymentTotalUZS(Decimal("601")),
+        )
+
+
+@pytest.mark.parametrize(
+    ("status", "discounted", "posted"),
+    (
+        (DebtStatus.PENDING, "600", "1"),
+        (DebtStatus.REJECTED, "600", "1"),
+        (DebtStatus.CANCELLED, "600", "1"),
+        (DebtStatus.EXPIRED, "600", "1"),
+        (DebtStatus.ACTIVE, "600", "601"),
+        (DebtStatus.ACTIVE, "600", "600"),
+        (DebtStatus.OVERDUE, "600", "1000"),
+        (DebtStatus.PAID, "600", "999"),
+    ),
+)
+def test_status_specific_posted_total_limits_fail_closed_without_clamp(
+    status: DebtStatus,
+    discounted: str,
+    posted: str,
+) -> None:
+    with pytest.raises(IncoherentPaymentLedgerError):
+        calculate_payment_exposure(
+            status=status,
+            original_amount=OriginalAmountUZS(Decimal("1000")),
+            discounted_amount=DiscountedAmountUZS(Decimal(discounted)),
+            posted_total=PostedPaymentTotalUZS(Decimal(posted)),
         )

@@ -9,6 +9,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from app.debt.business_time import (
+    is_effectively_overdue,
     is_payment_due_date_payable,
     is_pending_expired,
     normalize_payment_created_at,
@@ -16,8 +17,9 @@ from app.debt.business_time import (
     validate_due_date_not_before_expiry_business_date,
 )
 from app.debt.enums import (
-    M14_PERSISTED_STATUSES,
+    M15_PERSISTED_STATUSES,
     DebtExpirySource,
+    DebtOverdueSource,
     DebtPaymentFailure,
     DebtStatus,
 )
@@ -96,6 +98,8 @@ class DebtProjection:
     cancelled_at: datetime | None
     expired_at: datetime | None
     paid_at: datetime | None
+    overdue_at: datetime | None = None
+    overdue_revision: DebtRevision | None = None
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -119,6 +123,8 @@ class DebtAggregate:
     cancelled_at: datetime | None = None
     expired_at: datetime | None = None
     paid_at: datetime | None = None
+    overdue_at: datetime | None = None
+    overdue_revision: DebtRevision | None = None
     rejection_reason: DebtReason | None = field(default=None, repr=False)
     cancellation_reason: DebtReason | None = field(default=None, repr=False)
 
@@ -140,7 +146,7 @@ class DebtAggregate:
             raise ValueError("Debt due date is invalid")
         if (
             not isinstance(self.status, DebtStatus)
-            or self.status not in M14_PERSISTED_STATUSES
+            or self.status not in M15_PERSISTED_STATUSES
         ):
             raise ValueError("Debt status is invalid")
         if not isinstance(self.revision, DebtRevision):
@@ -165,6 +171,7 @@ class DebtAggregate:
             "cancelled_at",
             "expired_at",
             "paid_at",
+            "overdue_at",
         ):
             value = getattr(self, field_name)
             if value is not None:
@@ -172,6 +179,13 @@ class DebtAggregate:
                 if normalized < created_at or normalized > updated_at:
                     raise ValueError("Debt lifecycle timestamp is invalid")
                 object.__setattr__(self, field_name, normalized)
+        if (self.overdue_at is None) != (self.overdue_revision is None):
+            raise ValueError("Debt overdue metadata must be present together")
+        if self.overdue_revision is not None:
+            if not isinstance(self.overdue_revision, DebtRevision):
+                raise ValueError("Debt overdue revision is invalid")
+            if self.overdue_revision.value > self.revision.value:
+                raise ValueError("Debt overdue revision cannot exceed current revision")
         self._validate_lifecycle_timestamps()
 
     @classmethod
@@ -267,19 +281,22 @@ class DebtAggregate:
         expected_revision: DebtRevision,
         payment_created_at: datetime,
     ) -> DebtAggregate:
-        if self.status is not DebtStatus.ACTIVE:
+        if self.status not in {DebtStatus.ACTIVE, DebtStatus.OVERDUE}:
             raise DebtPaymentTransitionError(DebtPaymentFailure.NOT_PAYABLE)
 
         transition_at = normalize_payment_created_at(payment_created_at)
-        if not is_payment_due_date_payable(
+        if self.status is DebtStatus.ACTIVE and not is_payment_due_date_payable(
             payment_created_at=transition_at,
             due_date=self.due_date,
         ):
             raise DebtPaymentTransitionError(DebtPaymentFailure.NOT_PAYABLE)
 
-        if (
-            not _is_positive_whole_uzs(current_remaining_due_uzs)
-            or current_remaining_due_uzs > self.discounted_amount.value
+        if not _is_positive_whole_uzs(
+            current_remaining_due_uzs
+        ) or current_remaining_due_uzs > (
+            self.discounted_amount.value
+            if self.status is DebtStatus.ACTIVE
+            else self.original_amount.value
         ):
             raise DebtPaymentTransitionError(DebtPaymentFailure.NOT_PAYABLE)
 
@@ -296,10 +313,43 @@ class DebtAggregate:
         is_full_payment = payment_amount_uzs == current_remaining_due_uzs
         return replace(
             self,
-            status=DebtStatus.PAID if is_full_payment else DebtStatus.ACTIVE,
+            status=DebtStatus.PAID if is_full_payment else self.status,
             revision=DebtRevision(self.revision.value + 1),
             updated_at=transition_at,
             paid_at=transition_at if is_full_payment else None,
+        )
+
+    def mark_overdue(
+        self,
+        *,
+        now: datetime,
+        source: DebtOverdueSource,
+        posted_total_uzs: Decimal,
+    ) -> DebtAggregate:
+        if self.status is not DebtStatus.ACTIVE:
+            raise DebtLifecycleError("Only active debt may become overdue")
+        transition_at = _transition_time(now)
+        if not is_effectively_overdue(
+            status=self.status,
+            due_date=self.due_date,
+            server_now=transition_at,
+        ):
+            raise DebtLifecycleError("Active debt has not passed its due date")
+        if not isinstance(source, DebtOverdueSource):
+            raise ValueError("Debt overdue source is invalid")
+        if (
+            not _is_nonnegative_whole_uzs(posted_total_uzs)
+            or posted_total_uzs > self.discounted_amount.value
+        ):
+            raise DebtLifecycleError("Active debt payment ledger is incoherent")
+        overdue_revision = DebtRevision(self.revision.value + 1)
+        return replace(
+            self,
+            status=DebtStatus.OVERDUE,
+            revision=overdue_revision,
+            updated_at=transition_at,
+            overdue_at=transition_at,
+            overdue_revision=overdue_revision,
         )
 
     def to_projection(self) -> DebtProjection:
@@ -318,6 +368,8 @@ class DebtAggregate:
             cancelled_at=self.cancelled_at,
             expired_at=self.expired_at,
             paid_at=self.paid_at,
+            overdue_at=self.overdue_at,
+            overdue_revision=self.overdue_revision,
         )
 
     def _require_unexpired_pending(self, now: datetime) -> None:
@@ -338,6 +390,7 @@ class DebtAggregate:
         if self.status is not DebtStatus.PAID and self.paid_at is not None:
             raise ValueError("Only paid debt may have payment timestamp")
         if self.status is DebtStatus.PENDING:
+            self._require_no_overdue_metadata()
             if self.accepted_at is not None or any(
                 value is not None for value in terminal_times
             ):
@@ -349,6 +402,7 @@ class DebtAggregate:
                 raise ValueError("Pending debt cannot have terminal reasons")
             return
         if self.status is DebtStatus.ACTIVE:
+            self._require_no_overdue_metadata()
             if self.accepted_at is None or any(
                 value is not None for value in terminal_times
             ):
@@ -360,6 +414,7 @@ class DebtAggregate:
                 raise ValueError("Active debt cannot have terminal reasons")
             return
         if self.status is DebtStatus.REJECTED:
+            self._require_no_overdue_metadata()
             if (
                 self.rejected_at is None
                 or self.accepted_at is not None
@@ -372,6 +427,7 @@ class DebtAggregate:
                 raise ValueError("Rejected debt has incompatible terminal metadata")
             return
         if self.status is DebtStatus.CANCELLED:
+            self._require_no_overdue_metadata()
             if self.cancelled_at is None or self.cancellation_reason is None:
                 raise ValueError(
                     "Cancelled debt requires cancellation reason and timestamp"
@@ -386,6 +442,7 @@ class DebtAggregate:
                 raise ValueError("Cancelled debt has incompatible terminal metadata")
             return
         if self.status is DebtStatus.EXPIRED:
+            self._require_no_overdue_metadata()
             if self.expired_at is None:
                 raise ValueError("Expired debt requires expiry timestamp")
             if (
@@ -399,6 +456,24 @@ class DebtAggregate:
                 or self.cancellation_reason is not None
             ):
                 raise ValueError("Expired debt cannot have terminal reasons")
+            return
+        if self.status is DebtStatus.OVERDUE:
+            if (
+                self.accepted_at is None
+                or self.overdue_at is None
+                or self.overdue_revision is None
+                or any(value is not None for value in terminal_times)
+            ):
+                raise ValueError(
+                    "Overdue debt requires acceptance and overdue metadata only"
+                )
+            if (
+                self.rejection_reason is not None
+                or self.cancellation_reason is not None
+            ):
+                raise ValueError("Overdue debt cannot have terminal reasons")
+            if self.overdue_at < self.accepted_at:
+                raise ValueError("Debt overdue timestamp cannot precede acceptance")
             return
         if self.status is DebtStatus.PAID:
             if (
@@ -416,8 +491,25 @@ class DebtAggregate:
                 raise ValueError("Paid debt cannot have terminal reasons")
             if self.paid_at < self.accepted_at:
                 raise ValueError("Debt payment timestamp cannot precede acceptance")
+            if self.overdue_at is None:
+                if self.overdue_revision is not None:
+                    raise ValueError("Debt overdue metadata must be present together")
+            else:
+                if (
+                    self.overdue_revision is None
+                    or self.overdue_revision.value >= self.revision.value
+                ):
+                    raise ValueError(
+                        "Late-paid debt requires an earlier overdue revision"
+                    )
+                if self.overdue_at < self.accepted_at or self.paid_at < self.overdue_at:
+                    raise ValueError("Late-paid debt timestamps are out of order")
             return
-        raise ValueError("Debt cannot use a status outside M14")
+        raise ValueError("Debt cannot use a status outside M15")
+
+    def _require_no_overdue_metadata(self) -> None:
+        if self.overdue_at is not None or self.overdue_revision is not None:
+            raise ValueError("Debt status cannot carry overdue metadata")
 
     def __repr__(self) -> str:
         return (
@@ -461,4 +553,13 @@ def _is_positive_whole_uzs(value: object) -> bool:
         and value.is_finite()
         and value.as_tuple().exponent == 0
         and value > Decimal("0")
+    )
+
+
+def _is_nonnegative_whole_uzs(value: object) -> bool:
+    return (
+        isinstance(value, Decimal)
+        and value.is_finite()
+        and value.as_tuple().exponent == 0
+        and value >= Decimal("0")
     )

@@ -10,13 +10,15 @@ from app.audit.contracts import (
     AuditEvent,
     AuditEventType,
     AuditObjectType,
+    DebtClawbackAppliedAuditPayload,
+    DebtOverdueAuditPayload,
     DebtPaidAuditPayload,
     PaymentRecordedAuditPayload,
 )
-from app.debt.enums import DebtStatus
+from app.debt.enums import DebtOverdueSource, DebtStatus
 from app.debt.values import DebtRevision
 from app.payment.enums import PaymentMethod
-from app.payment.values import PaymentAmountUZS
+from app.payment.values import ClawbackIncreaseUZS, PaymentAmountUZS
 
 ACTOR_ID = UUID("11111111-1111-4111-8111-111111111111")
 OBJECT_ID = UUID("22222222-2222-4222-8222-222222222222")
@@ -45,6 +47,8 @@ def test_audit_contract_registries_include_exact_m12_extensions() -> None:
         "debt.rejected",
         "debt.cancelled",
         "debt.expired",
+        "debt.overdue",
+        "debt.clawback_applied",
         "payment.recorded",
         "debt.paid",
     }
@@ -108,6 +112,16 @@ def test_offer_events_require_user_actor_and_exact_object_type() -> None:
             actor_kind=AuditActorKind.USER,
             actor_user_id=ACTOR_ID,
             object_type=AuditObjectType.OFFER_VERSION,
+            object_id=OBJECT_ID,
+            occurred_at=NOW,
+            candidate_metadata={},
+        )
+    with pytest.raises(ValueError, match="Offer audit actor must be a user"):
+        AuditEvent(
+            event_type=AuditEventType.PAYMENT_RECORDED,
+            actor_kind=AuditActorKind.SYSTEM,
+            actor_user_id=None,
+            object_type=AuditObjectType.PAYMENT,
             object_id=OBJECT_ID,
             occurred_at=NOW,
             candidate_metadata={},
@@ -243,16 +257,79 @@ def test_m14_payment_audit_events_require_user_and_exact_object_type() -> None:
             occurred_at=NOW,
             candidate_metadata={},
         )
-    with pytest.raises(ValueError, match="Offer audit actor must be a user"):
-        AuditEvent(
-            event_type=AuditEventType.PAYMENT_RECORDED,
+
+
+def test_m15_overdue_audit_payloads_are_closed_identifier_free_and_redacted() -> None:
+    overdue = DebtOverdueAuditPayload(
+        source=DebtOverdueSource.INLINE_PAYMENT,
+        overdue_revision=DebtRevision(7),
+        business_date=NOW.date(),
+    )
+    clawback = DebtClawbackAppliedAuditPayload(
+        source=DebtOverdueSource.BATCH,
+        balance_increase_uzs=ClawbackIncreaseUZS(Decimal("25000")),
+        overdue_revision=DebtRevision(7),
+    )
+
+    assert dict(overdue.as_candidate_metadata()) == {
+        "source": "inline_payment",
+        "from_status": "active",
+        "to_status": "overdue",
+        "overdue_revision": 7,
+        "business_date": NOW.date().isoformat(),
+    }
+    assert dict(clawback.as_candidate_metadata()) == {
+        "source": "batch",
+        "from_basis": "discounted",
+        "to_basis": "original",
+        "balance_increase_uzs": 25_000,
+        "overdue_revision": 7,
+    }
+    assert "25000" not in repr(clawback)
+    assert "inline_payment" not in repr(overdue)
+    with pytest.raises(TypeError):
+        overdue.as_candidate_metadata()["debt_id"] = "forbidden"
+
+
+def test_m15_system_audits_require_system_actor_and_debt_object() -> None:
+    for event_type, payload in (
+        (
+            AuditEventType.DEBT_OVERDUE,
+            DebtOverdueAuditPayload(
+                source=DebtOverdueSource.BATCH,
+                overdue_revision=DebtRevision(4),
+                business_date=NOW.date(),
+            ).as_candidate_metadata(),
+        ),
+        (
+            AuditEventType.DEBT_CLAWBACK_APPLIED,
+            DebtClawbackAppliedAuditPayload(
+                source=DebtOverdueSource.BATCH,
+                balance_increase_uzs=ClawbackIncreaseUZS(Decimal("0")),
+                overdue_revision=DebtRevision(4),
+            ).as_candidate_metadata(),
+        ),
+    ):
+        event = AuditEvent(
+            event_type=event_type,
             actor_kind=AuditActorKind.SYSTEM,
             actor_user_id=None,
-            object_type=AuditObjectType.PAYMENT,
+            object_type=AuditObjectType.DEBT,
             object_id=OBJECT_ID,
             occurred_at=NOW,
-            candidate_metadata={},
+            candidate_metadata=payload,
         )
+        assert event.actor_user_id is None
+        with pytest.raises(ValueError, match="Debt overdue audit actor must be SYSTEM"):
+            AuditEvent(
+                event_type=event_type,
+                actor_kind=AuditActorKind.USER,
+                actor_user_id=ACTOR_ID,
+                object_type=AuditObjectType.DEBT,
+                object_id=OBJECT_ID,
+                occurred_at=NOW,
+                candidate_metadata=payload,
+            )
 
 
 @pytest.mark.parametrize(

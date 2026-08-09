@@ -3,6 +3,9 @@ import pytest
 from app.debt.enums import (
     M13_PERSISTED_STATUSES,
     M14_PERSISTED_STATUSES,
+    M15_PERSISTED_STATUSES,
+    DebtBalanceBasis,
+    DebtOverdueSource,
     DebtStatus,
     DebtTransitionEvent,
     parse_debt_status,
@@ -61,6 +64,30 @@ def test_m14_persisted_status_subset_adds_paid_only() -> None:
     assert not (
         {DebtStatus.OVERDUE, DebtStatus.WRITTEN_OFF, DebtStatus.WRITTEN_OFF_SETTLED}
         & M14_PERSISTED_STATUSES
+    )
+
+
+def test_m15_persisted_status_subset_adds_overdue_only() -> None:
+    assert M15_PERSISTED_STATUSES == frozenset(
+        {
+            *M14_PERSISTED_STATUSES,
+            DebtStatus.OVERDUE,
+        }
+    )
+    assert not (
+        {DebtStatus.WRITTEN_OFF, DebtStatus.WRITTEN_OFF_SETTLED}
+        & M15_PERSISTED_STATUSES
+    )
+
+
+def test_m15_overdue_source_and_balance_basis_are_closed() -> None:
+    assert tuple(DebtOverdueSource) == (
+        DebtOverdueSource.INLINE_PAYMENT,
+        DebtOverdueSource.BATCH,
+    )
+    assert tuple(DebtBalanceBasis) == (
+        DebtBalanceBasis.DISCOUNTED,
+        DebtBalanceBasis.ORIGINAL,
     )
 
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from app.debt.enums import DebtStatus
+from app.debt.enums import DebtBalanceBasis, DebtStatus
 
 __all__ = ("DebtPaymentProgressProjection",)
 
@@ -23,6 +23,8 @@ class DebtPaymentProgressProjection:
     status: DebtStatus
     paid_at: str | None
     is_payable: bool
+    balance_basis: DebtBalanceBasis = DebtBalanceBasis.DISCOUNTED
+    is_effectively_overdue: bool = False
 
     def __post_init__(self) -> None:
         for value in (self.posted_total_uzs, self.remaining_due_uzs):
@@ -36,6 +38,20 @@ class DebtPaymentProgressProjection:
             raise ValueError("Payment progress paid timestamp is invalid")
         if not isinstance(self.is_payable, bool):
             raise ValueError("Payment progress payability is invalid")
+        if not isinstance(self.balance_basis, DebtBalanceBasis):
+            raise ValueError("Payment progress balance basis is invalid")
+        if not isinstance(self.is_effectively_overdue, bool):
+            raise ValueError("Payment progress effective overdue state is invalid")
+        if self.is_effectively_overdue and (
+            self.status not in {DebtStatus.ACTIVE, DebtStatus.OVERDUE}
+            or self.balance_basis is not DebtBalanceBasis.ORIGINAL
+        ):
+            raise ValueError("Payment progress effective overdue state is incoherent")
+        if self.status is DebtStatus.OVERDUE and (
+            not self.is_effectively_overdue
+            or self.balance_basis is not DebtBalanceBasis.ORIGINAL
+        ):
+            raise ValueError("Persisted overdue payment progress is incoherent")
 
     def __repr__(self) -> str:
         return "DebtPaymentProgressProjection(<safe>)"

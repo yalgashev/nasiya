@@ -86,6 +86,8 @@ def test_progress_and_receipt_projections_are_identifier_and_privacy_safe() -> N
         "status",
         "paid_at",
         "is_payable",
+        "balance_basis",
+        "is_effectively_overdue",
     )
     receipt_fields = {field.name for field in fields(PaymentReceiptProjection)}
     assert receipt_fields == {
@@ -96,6 +98,8 @@ def test_progress_and_receipt_projections_are_identifier_and_privacy_safe() -> N
         "current_balance",
         "current_debt_status",
         "shop_display_name",
+        "historical_balance_basis",
+        "current_balance_basis",
     }
     assert "recorded_by_user_id" not in receipt_fields
     assert "payment_id" not in receipt_fields

@@ -6,10 +6,13 @@ from typing import Final
 __all__ = (
     "DebtStatus",
     "DebtExpirySource",
+    "DebtBalanceBasis",
+    "DebtOverdueSource",
     "DebtPaymentFailure",
     "DebtTransitionEvent",
     "M13_PERSISTED_STATUSES",
     "M14_PERSISTED_STATUSES",
+    "M15_PERSISTED_STATUSES",
     "parse_debt_status",
 )
 
@@ -43,6 +46,24 @@ M14_PERSISTED_STATUSES: Final[frozenset[DebtStatus]] = frozenset(
         DebtStatus.PAID,
     }
 )
+
+
+M15_PERSISTED_STATUSES: Final[frozenset[DebtStatus]] = frozenset(
+    {
+        *M14_PERSISTED_STATUSES,
+        DebtStatus.OVERDUE,
+    }
+)
+
+
+class DebtBalanceBasis(StrEnum):
+    DISCOUNTED = "discounted"
+    ORIGINAL = "original"
+
+
+class DebtOverdueSource(StrEnum):
+    INLINE_PAYMENT = "inline_payment"
+    BATCH = "batch"
 
 
 class DebtTransitionEvent(StrEnum):
