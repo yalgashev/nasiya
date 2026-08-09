@@ -18,6 +18,7 @@ from app.db import (
 )
 from app.debt.router import router as debt_router
 from app.offers.router import router as offers_router
+from app.payment.repository import payment_open_set_reader_factory
 from app.security_headers import install_security_headers_middleware
 from app.settings import Settings
 from app.shop.router import router as shop_router
@@ -61,6 +62,7 @@ def create_app(
     application.state.customer_document_storage_service = (
         customer_document_storage_service
     )
+    application.state.debt_open_set_reader_factory = payment_open_set_reader_factory
     application.state.get_database_session = create_database_session_dependency(
         database_session_factory
     )

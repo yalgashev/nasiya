@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -16,6 +17,7 @@ from app.debt.policy import (
     decide_debt_creation_eligibility,
 )
 from app.debt.repository import (
+    LockedDebtPredecessor,
     SqlAlchemyDebtOpenSetReader,
     mark_debt_predecessor_locked,
 )
@@ -41,6 +43,11 @@ _DECISION_ERRORS = {
     ),
     DebtCreationEligibilityDecision.MAX_OPEN_DEBTS: ErrorCode.MAX_OPEN_DEBTS,
 }
+
+DebtOpenSetReaderFactory = Callable[
+    [Session, LockedDebtPredecessor],
+    SqlAlchemyDebtOpenSetReader,
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +102,7 @@ def evaluate_locked_debt_creation(
     locked_target: LockedDebtTarget,
     original_amount: OriginalAmountUZS,
     global_hard_block_reader: GlobalHardBlockReadPort | None = None,
+    open_set_reader_factory: DebtOpenSetReaderFactory | None = None,
 ) -> DebtCreationGateResult:
     """Apply blacklist, inclusive credit, and strict count limits."""
 
@@ -115,7 +123,15 @@ def evaluate_locked_debt_creation(
     predecessor = mark_debt_predecessor_locked(
         session, locked_shop_customer=target._locked_shop_customer
     )
-    reader = SqlAlchemyDebtOpenSetReader(session, locked_predecessor=predecessor)
+    if open_set_reader_factory is None:
+        reader = SqlAlchemyDebtOpenSetReader(
+            session,
+            locked_predecessor=predecessor,
+        )
+    elif callable(open_set_reader_factory):
+        reader = open_set_reader_factory(session, predecessor)
+    else:
+        raise TypeError("open_set_reader_factory must be callable")
     shop_customer_id = ShopCustomerId(row.id)
     eligibility = DebtCreationEligibilityInput(
         policy=read_locked_debtless_policy(session, locked_target=target),

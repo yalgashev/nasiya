@@ -9,6 +9,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.customer.models import Customer
 from app.debt.contracts import DebtAggregate, DebtReason
@@ -301,6 +302,10 @@ def update_locked_debt(session: Session, *, row: Debt, debt: DebtAggregate) -> D
         ("updated_at", debt.updated_at),
     ):
         setattr(row, name, value)
+    # A second mutation may legitimately receive the same injected microsecond.
+    # Force the domain timestamp into SQL instead of letting the model's generic
+    # ``onupdate`` clock replace an equal value with a different instant.
+    flag_modified(row, "updated_at")
     session.flush()
     return row
 

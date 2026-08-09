@@ -49,6 +49,7 @@ __all__ = (
     "list_customer_owned_debt_payments",
     "list_tenant_debt_payments",
     "payment_aggregate_from_row",
+    "payment_open_set_reader_factory",
     "posted_payment_total",
     "remaining_due",
 )
@@ -272,6 +273,17 @@ class SqlAlchemyPaymentOpenSetReader:
         if shop_customer_id.as_uuid() != self._predecessor.shop_customer_id:
             raise ValueError("Open-set ShopCustomer is not locked predecessor")
         return self._predecessor.shop_customer_id
+
+
+def payment_open_set_reader_factory(
+    session: Session, locked_predecessor: LockedDebtPredecessor
+) -> SqlAlchemyPaymentOpenSetReader:
+    """Composition seam consumed by M13 without importing the payment package."""
+
+    return SqlAlchemyPaymentOpenSetReader(
+        session,
+        locked_predecessor=locked_predecessor,
+    )
 
 
 def _scoped_payment_statement():

@@ -19,7 +19,10 @@ from app.audit.repository import append_audit_event
 from app.auth.error_codes import ErrorCode
 from app.debt.commands import CreateDebtCommand
 from app.debt.contracts import DebtAggregate
-from app.debt.creation_eligibility import evaluate_locked_debt_creation
+from app.debt.creation_eligibility import (
+    DebtOpenSetReaderFactory,
+    evaluate_locked_debt_creation,
+)
 from app.debt.dependencies import DetachedDebtActorAuthority
 from app.debt.offer_gate import lock_current_complete_debt_offer
 from app.debt.policy import GlobalHardBlockReadPort
@@ -75,6 +78,7 @@ def create_pending_debt_proposal(
     shop_customer_id: ShopCustomerId,
     command: CreateDebtCommand,
     global_hard_block_reader: GlobalHardBlockReadPort | None = None,
+    open_set_reader_factory: DebtOpenSetReaderFactory | None = None,
 ) -> CreateDebtProposalResult:
     """Create one key/debt/audit unit without owning the borrowed Session."""
 
@@ -152,6 +156,7 @@ def create_pending_debt_proposal(
         locked_target=locked_target,
         original_amount=command.original_amount,
         global_hard_block_reader=global_hard_block_reader,
+        open_set_reader_factory=open_set_reader_factory,
     )
     if eligibility.error is not None:
         return CreateDebtProposalResult(outcome=None, error=eligibility.error)

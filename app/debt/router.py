@@ -215,6 +215,7 @@ def create_shop_customer_debt(
             authority=authority,
             shop_customer_id=ShopCustomerId(shop_customer_id),
             command=command,
+            open_set_reader_factory=request.app.state.debt_open_set_reader_factory,
         )
     if result.error is not None:
         return _redirect(new_path, error=result.error)

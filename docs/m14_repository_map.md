@@ -24,11 +24,43 @@ properties are feasible in the current repository.
 
 `app/payment/` is the only new feature root. Its required modules are
 `contracts.py`, `values.py`, `enums.py`, `models.py`, `repository.py`,
-`targeting.py`, `policy.py`, `commands.py`, `service.py`, `read_service.py`,
-`presentation.py`, and `router.py` (with feature-local templates/static assets
-only if required by the SSR pages). It owns the `Payment` model, payment request
+`dependencies.py`, `targeting.py`, `policy.py`, `commands.py`, `service.py`,
+`read_service.py`, `presentation.py`, and `router.py` (with feature-local
+templates/static assets only if required by the SSR pages). It owns the `Payment`
+model, payment request
 hash and typed idempotency projection, locked ledger aggregation, append logic,
 tenant/customer read projections, receipt rendering data, and the six routes.
+
+`app/payment/dependencies.py:get_detached_current_shop_payment_actor_context`
+is the M14 mutation-only TX-A adapter. It authenticates, touches, resolves the
+server-selected Shop and validates CSRF in a short transaction, then returns
+only `DetachedPaymentActorContext(actor_user_id, current_shop_id, role_hint,
+language)` after that transaction commits and closes. It never transfers an ORM
+object, AuthSession secret, platform-admin flag, or client-supplied Shop
+locator into TX-B; the role is a display/control-flow hint and must be live
+rechecked by the later mutation coordinator.
+
+`app/payment/targeting.py:discover_tenant_payment_target` performs the bounded
+non-locking Debt/ShopCustomer/Customer join under that server-selected Shop.
+`lock_tenant_payment_predecessors` then locks only Shop, active Staff, actor
+User, the state-agnostic existing target Customer, and ShopCustomer, in that
+order, before rechecking the candidate parent join. It returns
+`LockedTenantPaymentPredecessors` with the Debt still deliberately unlocked so
+the idempotency row can precede it. Customer lifecycle, target User activity,
+Telegram, list status, and rating are not repayment gates.
+
+`app/payment/policy.py:capture_payment_server_now` yields one normalized aware UTC
+instant only after the coordinator has locked its Debt. Its
+`evaluate_locked_debt_payability` applies no writes and evaluates `active` before
+the inclusive Asia/Tashkent due-date predicate. It deliberately does not inspect
+payment totals, revision, or amount. `app/payment/commands.py` converts the
+opaque route Debt locator and four client fields into one redacted
+`CreatePaymentCommand`; actor and current Shop are injected exclusively from
+`DetachedPaymentActorContext`. Its form/header idempotency keys must be matching
+canonical UUIDs, its amount and method use the M14 parsers, and revision is a
+positive canonical ASCII integer. Any malformed or tampered boundary field maps
+to the existing localized `VALIDATION_ERROR` contract and never reaches the
+coordinator as raw input.
 
 The service’s mutation sequence is fixed: live actor/current-Shop authority and
 target visibility; completed-key replay or same-key conflict; locked active
@@ -37,6 +69,29 @@ amount-at-most-remaining; then partial/full append. It must compute all
 mutation-time totals after acquiring the Debt lock and capture server time once
 there. It writes Payment, Debt, IdempotencyKey completion, and AuditLog as one
 atomic TX-B unit.
+
+`app/payment/targeting.py:lock_tenant_payment_debt` is the post-idempotency
+tenant recheck and `FOR UPDATE` lock. `app/payment/service.py` owns the borrowed
+TX-B orchestration without committing or rolling back it:
+`read_locked_payment_balance` re-sums immutable Payment rows only under that
+Debt lock; `decide_locked_payment_amount` distinguishes partial, exact-full and
+overpayment; `record_debt_payment` resolves completed keys before target/debt
+state, inserts a new key before the Debt lock, captures its payment clock once
+after the lock, then flushes Payment, Debt, `payment.recorded` and conditional
+`debt.paid` in that order. Any post-key business denial is
+`PaymentMutationRejected` and must escape the caller-owned transaction so the
+new key and every mutation roll back together. Full payoff uses the same
+timestamp for Payment `created_at` and Debt `updated_at`/`paid_at`; replay
+returns the original typed Payment ID before inspecting the now-paid Debt.
+
+M13 remains payment-import-free. Its creation eligibility accepts the narrow
+injected open-set reader factory. `app/main.py` supplies
+`app/payment/repository.py:payment_open_set_reader_factory` through application
+state, and `app/debt/router.py` passes that opaque callable into the existing
+service seam. Thus production creation uses pending-original,
+active-original-minus-posted and paid-excluded exposure/count only after the
+ShopCustomer predecessor lock, while legacy no-payment callers and fixtures
+retain their existing default adapter.
 
 `app/debt/tenant_read_service.py` (`TenantDebtListProjection`,
 `TenantDebtDetailProjection`) and `app/debt/customer_read_service.py` receive

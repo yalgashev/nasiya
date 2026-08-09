@@ -72,21 +72,23 @@ def insert_or_resolve_key(
     key_digest: IdempotencyKeyDigest,
     request_hash: _RequestHash,
     result_object_id: UUID,
-    now: datetime,
+    now: datetime | None,
 ) -> IdempotencyInsertResult:
     result_type = _result_type_for_request(
         endpoint=endpoint,
         request_hash=request_hash,
     )
-    row = IdempotencyKey(
+    row_values = dict(
         actor_user_id=actor_user_id,
         endpoint=endpoint.value,
         key_digest=key_digest.value,
         request_hash=request_hash.value,
         result_object_type=result_type.value,
         result_object_id=result_object_id,
-        created_at=now,
     )
+    if now is not None:
+        row_values["created_at"] = now
+    row = IdempotencyKey(**row_values)
     try:
         with session.begin_nested():
             session.add(row)
