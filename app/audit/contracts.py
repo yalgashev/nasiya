@@ -16,6 +16,7 @@ from app.debt.enums import (
     DebtStatus,
 )
 from app.debt.values import (
+    ClawbackIncreaseUZS,
     DebtRevision,
     DiscountBasisPoints,
     DiscountedAmountUZS,
@@ -23,7 +24,7 @@ from app.debt.values import (
 )
 from app.offers.enums import OfferLanguage
 from app.payment.enums import PaymentMethod
-from app.payment.values import ClawbackIncreaseUZS, PaymentAmountUZS
+from app.payment.values import PaymentAmountUZS
 from app.shop_customer.contracts import (
     ShopCustomerPolicy,
     ShopCustomerRevision,

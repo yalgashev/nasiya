@@ -8,7 +8,7 @@ import pytest
 
 import app.payment.read_service as payment_read_service
 from app.auth.error_codes import ErrorCode
-from app.debt.enums import DebtStatus
+from app.debt.enums import DebtBalanceBasis, DebtStatus
 from app.debt.models import Debt
 from app.debt.payment_progress import DebtPaymentProgressProjection
 from app.debt.presentation import DebtWebLanguage
@@ -32,7 +32,11 @@ from app.shop.enums import ShopRole
 
 
 def _debt(
-    *, status: DebtStatus, due_date: date, paid_at: datetime | None = None
+    *,
+    status: DebtStatus,
+    due_date: date,
+    paid_at: datetime | None = None,
+    overdue_revision: int | None = None,
 ) -> Debt:
     return Debt(
         id=UUID("11111111-1111-4111-8111-111111111111"),
@@ -46,6 +50,10 @@ def _debt(
         status=status.value,
         revision=3,
         paid_at=paid_at,
+        overdue_at=(
+            None if overdue_revision is None else datetime(2026, 1, 1, tzinfo=UTC)
+        ),
+        overdue_revision=overdue_revision,
     )
 
 
@@ -70,13 +78,31 @@ def test_progress_is_server_derived_and_uses_tashkent_due_boundary() -> None:
         PostedPaymentTotalUZS(Decimal("900")),
         now,
     )
+    persisted_overdue = _progress(
+        _debt(
+            status=DebtStatus.OVERDUE,
+            due_date=date(2026, 1, 9),
+            overdue_revision=3,
+        ),
+        PostedPaymentTotalUZS(Decimal("400")),
+        now,
+    )
 
     assert active.posted_total_uzs == Decimal("400")
     assert active.remaining_due_uzs == Decimal("500")
     assert active.is_payable is True
+    assert active.balance_basis is DebtBalanceBasis.DISCOUNTED
+    assert active.is_effectively_overdue is False
     assert past_due.is_payable is False
+    assert past_due.remaining_due_uzs == Decimal("600")
+    assert past_due.balance_basis is DebtBalanceBasis.ORIGINAL
+    assert past_due.is_effectively_overdue is True
     assert paid.remaining_due_uzs == Decimal("0")
     assert paid.is_payable is False
+    assert paid.balance_basis is DebtBalanceBasis.DISCOUNTED
+    assert persisted_overdue.remaining_due_uzs == Decimal("600")
+    assert persisted_overdue.balance_basis is DebtBalanceBasis.ORIGINAL
+    assert persisted_overdue.is_effectively_overdue is True
 
 
 def test_progress_and_receipt_projections_are_identifier_and_privacy_safe() -> None:

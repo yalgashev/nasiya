@@ -9,7 +9,11 @@ from typing import Final
 from uuid import UUID
 
 from app.debt.enums import M15_PERSISTED_STATUSES, DebtBalanceBasis, DebtStatus
-from app.debt.values import DiscountedAmountUZS, OriginalAmountUZS
+from app.debt.values import (
+    ClawbackIncreaseUZS,
+    DiscountedAmountUZS,
+    OriginalAmountUZS,
+)
 
 __all__ = (
     "ClawbackIncreaseUZS",
@@ -111,20 +115,6 @@ class PaymentExposureUZS:
 
     def __repr__(self) -> str:
         return "PaymentExposureUZS(<redacted>)"
-
-    def __str__(self) -> str:
-        return "<redacted>"
-
-
-@dataclass(frozen=True, slots=True, repr=False)
-class ClawbackIncreaseUZS:
-    value: Decimal = field(repr=False)
-
-    def __post_init__(self) -> None:
-        _require_nonnegative_whole_uzs(self.value, field_name="Clawback increase")
-
-    def __repr__(self) -> str:
-        return "ClawbackIncreaseUZS(<redacted>)"
 
     def __str__(self) -> str:
         return "<redacted>"

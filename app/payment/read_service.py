@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import UUID
 
@@ -25,7 +25,7 @@ from app.debt.customer_read_service import (
     get_own_customer_debt_detail,
     list_own_customer_debts,
 )
-from app.debt.enums import DebtStatus
+from app.debt.enums import DebtBalanceBasis, DebtStatus
 from app.debt.models import Debt
 from app.debt.payment_progress import DebtPaymentProgressProjection
 from app.debt.repository import (
@@ -40,9 +40,19 @@ from app.debt.tenant_read_service import (
     get_tenant_debt_detail,
     list_tenant_customer_debts,
 )
-from app.debt.values import DebtId, DiscountedAmountUZS, UserId
+from app.debt.values import (
+    DebtId,
+    DebtRevision,
+    DiscountedAmountUZS,
+    OriginalAmountUZS,
+    UserId,
+)
 from app.offers.enums import OfferLanguage
-from app.payment.contracts import PaymentHistoryItem, PaymentReceiptProjection
+from app.payment.contracts import (
+    PaymentHistoryItem,
+    PaymentReceiptProjection,
+    resolve_current_balance_basis,
+)
 from app.payment.dependencies import DetachedPaymentReadActorContext
 from app.payment.models import Payment
 from app.payment.repository import (
@@ -57,7 +67,11 @@ from app.payment.repository import (
     remaining_due,
 )
 from app.payment.service import RecordDebtPaymentResult
-from app.payment.values import PaymentId, PostedPaymentTotalUZS, calculate_remaining_due
+from app.payment.values import (
+    PaymentId,
+    PostedPaymentTotalUZS,
+    calculate_remaining_due_for_basis,
+)
 from app.shop.enums import ShopRole, ShopStatus
 from app.shop.repository import get_shop_staff_access
 from app.shop.values import ShopId
@@ -639,7 +653,18 @@ def _progress(
     debt: Debt, posted: PostedPaymentTotalUZS, now: datetime
 ) -> DebtPaymentProgressProjection:
     status = DebtStatus(debt.status)
-    remaining = calculate_remaining_due(
+    overdue_revision = (
+        None if debt.overdue_revision is None else DebtRevision(debt.overdue_revision)
+    )
+    basis = _current_progress_basis(
+        status=status,
+        due_date=debt.due_date,
+        server_now=now,
+        overdue_revision=overdue_revision,
+    )
+    remaining = calculate_remaining_due_for_basis(
+        basis=basis,
+        original_amount=OriginalAmountUZS(debt.original_amount_uzs),
         discounted_amount=DiscountedAmountUZS(debt.discounted_amount_uzs),
         posted_total=posted,
     )
@@ -656,7 +681,33 @@ def _progress(
         if debt.paid_at is None
         else debt.paid_at.astimezone(UTC).isoformat(),
         is_payable=payable,
+        balance_basis=basis,
+        is_effectively_overdue=(
+            status is DebtStatus.OVERDUE
+            or (status is DebtStatus.ACTIVE and basis is DebtBalanceBasis.ORIGINAL)
+        ),
     )
+
+
+def _current_progress_basis(
+    *,
+    status: DebtStatus,
+    due_date: date,
+    server_now: datetime,
+    overdue_revision: DebtRevision | None,
+) -> DebtBalanceBasis:
+    """Use the M15 basis resolver only for statuses with a current balance."""
+
+    if status in {DebtStatus.ACTIVE, DebtStatus.OVERDUE, DebtStatus.PAID}:
+        return resolve_current_balance_basis(
+            status=status,
+            due_date=due_date,
+            server_now=server_now,
+            overdue_revision=overdue_revision,
+        )
+    if overdue_revision is not None:
+        raise ValueError("Terminal non-paid debt cannot carry overdue revision")
+    return DebtBalanceBasis.DISCOUNTED
 
 
 def _history(rows: Iterable[ScopedPaymentRow]) -> tuple[PaymentHistoryItem, ...]:

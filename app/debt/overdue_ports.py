@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
 from app.debt.policy import GlobalHardBlockProjection
-from app.debt.values import CustomerId
+from app.debt.values import CustomerId, DebtId
 
 __all__ = (
     "GlobalHardBlockConsumer",
     "LockedCustomerGlobalHardBlockReadPort",
+    "LockedDebtPostedTotalReadPort",
     "require_hard_block_business_date",
 )
 
@@ -31,6 +33,13 @@ class LockedCustomerGlobalHardBlockReadPort(Protocol):
         customer_id: CustomerId,
         as_of_business_date: date,
     ) -> GlobalHardBlockProjection: ...
+
+
+@runtime_checkable
+class LockedDebtPostedTotalReadPort(Protocol):
+    """Re-sum immutable Payment rows only after the caller locks Debt."""
+
+    def read_posted_total_uzs(self, *, debt_id: DebtId) -> Decimal: ...
 
 
 def require_hard_block_business_date(value: date) -> date:

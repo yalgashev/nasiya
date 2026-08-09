@@ -16,7 +16,7 @@ from app.audit.contracts import (
 )
 from app.customer_document.contracts import CustomerDocumentStatus
 from app.customer_identity.contracts import CustomerDocumentType
-from app.debt.enums import DebtExpirySource
+from app.debt.enums import DebtExpirySource, DebtOverdueSource
 from app.debt.values import MAX_DEBT_AMOUNT_UZS
 from app.offers.enums import OfferLanguage, OfferPurpose, OfferStatus
 from app.payment.enums import PaymentMethod
@@ -402,6 +402,50 @@ def _debt_expired_payload(metadata: Mapping[str, object]) -> AuditPayload:
         raise ValueError("Debt expired audit source is invalid") from exc
 
 
+def _debt_overdue_payload(metadata: Mapping[str, object]) -> AuditPayload:
+    values = _exact_required(
+        metadata,
+        "source",
+        "from_status",
+        "to_status",
+        "overdue_revision",
+        "business_date",
+    )
+    if values["from_status"] != "active" or values["to_status"] != "overdue":
+        raise ValueError("Debt overdue audit transition is invalid")
+    return {
+        "source": _overdue_source(values["source"]),
+        "from_status": "active",
+        "to_status": "overdue",
+        "overdue_revision": _payment_revision(values["overdue_revision"]),
+        "business_date": _iso_date(values["business_date"]),
+    }
+
+
+def _debt_clawback_applied_payload(
+    metadata: Mapping[str, object],
+) -> AuditPayload:
+    values = _exact_required(
+        metadata,
+        "source",
+        "from_basis",
+        "to_basis",
+        "balance_increase_uzs",
+        "overdue_revision",
+    )
+    if values["from_basis"] != "discounted" or values["to_basis"] != "original":
+        raise ValueError("Debt clawback audit basis transition is invalid")
+    return {
+        "source": _overdue_source(values["source"]),
+        "from_basis": "discounted",
+        "to_basis": "original",
+        "balance_increase_uzs": _nonnegative_debt_amount_uzs(
+            values["balance_increase_uzs"]
+        ),
+        "overdue_revision": _payment_revision(values["overdue_revision"]),
+    }
+
+
 def _payment_recorded_payload(metadata: Mapping[str, object]) -> AuditPayload:
     values = _exact_required(
         metadata,
@@ -418,14 +462,19 @@ def _payment_recorded_payload(metadata: Mapping[str, object]) -> AuditPayload:
         canonical_method = PaymentMethod(method).value
     except ValueError as exc:
         raise ValueError("Payment recorded audit method is invalid") from exc
-    if values["from_status"] != "active":
+    allowed_targets = {
+        "active": {"active", "paid"},
+        "overdue": {"overdue", "paid"},
+    }
+    from_status = values["from_status"]
+    if not isinstance(from_status, str) or from_status not in allowed_targets:
         raise ValueError("Payment recorded audit source status is invalid")
-    if values["to_status"] not in {"active", "paid"}:
+    if values["to_status"] not in allowed_targets[from_status]:
         raise ValueError("Payment recorded audit target status is invalid")
     return {
         "amount_uzs": _payment_amount_uzs(values["amount_uzs"]),
         "method": canonical_method,
-        "from_status": "active",
+        "from_status": from_status,
         "to_status": values["to_status"],
         "debt_revision_after": _payment_revision(values["debt_revision_after"]),
     }
@@ -470,6 +519,8 @@ _PAYLOAD_BUILDERS: Final[
     AuditEventType.DEBT_REJECTED: _debt_rejected_payload,
     AuditEventType.DEBT_CANCELLED: _debt_cancelled_payload,
     AuditEventType.DEBT_EXPIRED: _debt_expired_payload,
+    AuditEventType.DEBT_OVERDUE: _debt_overdue_payload,
+    AuditEventType.DEBT_CLAWBACK_APPLIED: _debt_clawback_applied_payload,
     AuditEventType.PAYMENT_RECORDED: _payment_recorded_payload,
     AuditEventType.DEBT_PAID: _debt_paid_payload,
 }
@@ -554,6 +605,25 @@ def _debt_amount_uzs(value: object) -> int:
     ):
         raise ValueError("Debt created audit amount is invalid")
     return value
+
+
+def _nonnegative_debt_amount_uzs(value: object) -> int:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not 0 <= value <= int(MAX_DEBT_AMOUNT_UZS)
+    ):
+        raise ValueError("Debt audit amount increase is invalid")
+    return value
+
+
+def _overdue_source(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Debt overdue audit source is invalid")
+    try:
+        return DebtOverdueSource(value).value
+    except ValueError as exc:
+        raise ValueError("Debt overdue audit source is invalid") from exc
 
 
 def _payment_amount_uzs(value: object) -> int:

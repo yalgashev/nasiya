@@ -57,7 +57,7 @@ def test_repository_map_marks_prospective_symbols_and_preserves_containment() ->
         "`PLANNED`",
         "| EXISTS | `app/debt/overdue_ports.py`",
         "| EXISTS | `app/debt/overdue_targeting.py`",
-        "`app/debt/overdue_service.py`",
+        "| EXISTS | `app/debt/overdue_service.py`",
         "`alembic/versions/b6c7d8e9f0a1_add_overdue_persistence.py`",
         "`app.debt` must not import\n`app.payment`",
         "Shop -> Customer -> ShopCustomer -> Debt\n-> AuditLog",

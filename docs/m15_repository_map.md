@@ -12,20 +12,21 @@ needs a bounded M15 change; `PLANNED` means no M15 symbol is claimed to exist.
 | EXISTS | `app/debt/models.py` | `Debt` M15 metadata | Marker fields and exact constraints are implemented by M15.15. |
 | EXTEND | `app/debt/contracts.py` | `DebtAggregate`, projections | Carry effective/persisted overdue and marker data only. |
 | EXTEND | `app/debt/business_time.py` | `tashkent_business_date` | Reuse the one timezone helper for due-past predicate. |
-| EXISTS | `app/debt/repository.py` | debt mapping/hard-block reader | Marker mapping and locked-Customer boolean read are implemented by M15.16. |
+| EXISTS | `app/debt/repository.py` | debt mapping/lock scopes/hard-block reader | Marker mapping, locked-Customer boolean read, and the Debt-owned adapter for an already forward-locked transition row are implemented. |
 | EXTEND | `app/debt/creation_eligibility.py` | hard-block reader seam | Replace `_LockedCustomerNoHardBlockReader` after Customer lock. |
 | EXTEND | `app/debt/customer_accept_service.py` | hard-block reader seam | Replace `_NoReachableCustomerHardBlock` with same authority. |
 | EXISTS | `app/debt/targeting.py` | `lock_debt_target_before_offer` | Preserve proposal predecessor order. |
 | EXISTS | `app/debt/customer_decision_targeting.py` | `lock_customer_debt_predecessors` | Preserve acceptance predecessor order. |
-| EXISTS | `app/debt/overdue_ports.py` | overdue/materialization ports | Narrow boolean/date protocols; no payment import into debt. |
-| EXISTS | `app/debt/overdue_targeting.py` | candidate discovery and locks | Scalar discovery and `Shop -> Customer -> ShopCustomer -> Debt` locks are implemented by M15.16. |
-| PLANNED | `app/debt/overdue_service.py` | inline/bounded batch transition | Exactly-once rollover/clawback, caller-owned session. |
+| EXISTS | `app/debt/overdue_ports.py` | overdue/materialization ports | Narrow hard-block/date and locked-Debt posted-total protocols; no payment import into debt. |
+| EXISTS | `app/debt/overdue_targeting.py` | candidate discovery and locks | M15.19 adds bounded detached scalar discovery and `Shop -> Customer -> ShopCustomer -> Debt` locked revalidation. |
+| EXISTS | `app/debt/overdue_service.py` | inline/bounded batch transition | M15.20–21 exact-once rollover/audit pair and per-candidate caller-owned transactions. |
 | EXTEND | `app/payment/contracts.py` | v1 payment hash contracts | Add v2 domain/hash and typed basis contract. |
 | EXTEND | `app/payment/commands.py` | payment command assembly | Parse mutation-v2 versus legacy-replay-v1 sum type. |
 | EXTEND | `app/payment/service.py` | `record_debt_payment` | Materialize after Debt lock, capture clock there, late amount/status. |
-| EXTEND | `app/payment/repository.py` | open-set adapter/history reads | Overdue exposure/count is implemented; marker receipt basis remains later work. |
+| EXTEND | `app/payment/repository.py` | open-set/posted-total/history adapters | Overdue exposure/count and the locked-Debt posted-total adapter are implemented; marker receipt basis remains later work. |
 | EXTEND | `app/payment/router.py` | `create_shop_debt_payment` | Pass post-lock callable clock, never `lambda: request_now`. |
-| EXTEND | `app/payment/read_service.py` / templates | payment GET/form/receipt | Emit hidden basis and overdue copy without client money logic. |
+| EXISTS | `app/payment/read_service.py` | payment progress composition | M15.22 projects effective-overdue/original-basis progress through existing tenant and own-customer reads without a GET write. |
+| EXTEND | templates / `app/payment/router.py` | payment GET/form/receipt | Later web work emits hidden basis and overdue copy without client money logic. |
 | EXISTS | `app/audit/models.py` | registry metadata | Safe SYSTEM `debt.overdue` and `debt.clawback_applied` schema shapes are implemented by M15.15. |
 | EXTEND | `app/db.py`, `alembic/env.py`, `tests/postgresql.py` | registration/cleanup | Register existing metadata delta and keep FK-safe cleanup. |
 | EXISTS | `alembic/versions/b6c7d8e9f0a1_add_overdue_persistence.py` | one migration | One child of `a5b6c7d8e9f0`; guarded downgrade. |
@@ -58,8 +59,8 @@ lock, queue, or background transaction is authorised.
 
 | Threat or invariant | Required evidence placement |
 | --- | --- |
-| Due-date, delayed materialization, exactly-once clawback | `tests/test_debt_business_time.py`, new overdue PostgreSQL tests |
-| Batch overlap and parent-lock order | new overdue PostgreSQL tests |
+| Due-date, delayed materialization, exactly-once clawback | `tests/test_debt_business_time.py`, `tests/test_m15_overdue_service_postgresql.py` |
+| Batch/payment overlap, stale candidates, edge money, rollback and privacy | `tests/test_m15_transition_race_postgresql.py` plus the overdue-service PostgreSQL matrix |
 | Batch/payment and payment/proposal/acceptance races | new M15 combined-lock-order PostgreSQL tests |
 | Cross-Shop hard block and lawful unblock | debt-creation and customer-accept PostgreSQL gate tests |
 | Basis drift, v1/v2 replay, stale revision | payment contract/command/service PostgreSQL tests |

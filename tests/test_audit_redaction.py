@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from decimal import Decimal
 from uuid import UUID
 
 import pytest
@@ -8,8 +9,12 @@ from app.audit.contracts import (
     AuditEvent,
     AuditEventType,
     AuditObjectType,
+    DebtClawbackAppliedAuditPayload,
+    DebtOverdueAuditPayload,
 )
 from app.audit.redaction import redact_audit_payload
+from app.debt.enums import DebtOverdueSource
+from app.debt.values import ClawbackIncreaseUZS, DebtRevision
 from app.offers.enums import OfferLanguage, OfferPurpose, OfferStatus
 
 ACTOR_ID = UUID("11111111-1111-4111-8111-111111111111")
@@ -199,6 +204,57 @@ def test_redaction_drops_every_unknown_sensitive_key() -> None:
         "status": "DRAFT",
     }
     assert set(forbidden).isdisjoint(payload)
+
+
+def test_m15_overdue_redaction_emits_only_exact_safe_payloads() -> None:
+    overdue = DebtOverdueAuditPayload(
+        source=DebtOverdueSource.BATCH,
+        overdue_revision=DebtRevision(3),
+        business_date=NOW.date(),
+    )
+    clawback = DebtClawbackAppliedAuditPayload(
+        source=DebtOverdueSource.BATCH,
+        balance_increase_uzs=ClawbackIncreaseUZS(Decimal("0")),
+        overdue_revision=DebtRevision(3),
+    )
+
+    overdue_payload = redact_audit_payload(
+        AuditEvent(
+            event_type=AuditEventType.DEBT_OVERDUE,
+            actor_kind=AuditActorKind.SYSTEM,
+            actor_user_id=None,
+            object_type=AuditObjectType.DEBT,
+            object_id=OBJECT_ID,
+            occurred_at=NOW,
+            candidate_metadata=overdue.as_candidate_metadata(),
+        )
+    )
+    clawback_payload = redact_audit_payload(
+        AuditEvent(
+            event_type=AuditEventType.DEBT_CLAWBACK_APPLIED,
+            actor_kind=AuditActorKind.SYSTEM,
+            actor_user_id=None,
+            object_type=AuditObjectType.DEBT,
+            object_id=OBJECT_ID,
+            occurred_at=NOW,
+            candidate_metadata=clawback.as_candidate_metadata(),
+        )
+    )
+
+    assert overdue_payload == {
+        "source": "batch",
+        "from_status": "active",
+        "to_status": "overdue",
+        "overdue_revision": 3,
+        "business_date": "2026-07-31",
+    }
+    assert clawback_payload == {
+        "source": "batch",
+        "from_basis": "discounted",
+        "to_basis": "original",
+        "balance_increase_uzs": 0,
+        "overdue_revision": 3,
+    }
 
 
 def test_registration_acceptance_redaction_drops_all_sensitive_canaries() -> None:

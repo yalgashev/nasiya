@@ -41,6 +41,7 @@ from app.shop_customer.repository import (
 
 __all__ = (
     "LockedDebtPredecessor",
+    "LockedDebtTransitionScope",
     "LockedCustomerHardBlockScope",
     "SqlAlchemyLockedCustomerGlobalHardBlockReader",
     "SqlAlchemyDebtOpenSetReader",
@@ -57,8 +58,10 @@ __all__ = (
     "lock_debts_in_id_order",
     "lock_customer_hard_block_scope",
     "mark_debt_predecessor_locked",
+    "mark_locked_debt_transition_scope",
     "update_locked_debt",
     "validate_locked_debt_predecessor",
+    "validate_locked_debt_transition_scope",
     "validate_locked_customer_hard_block_scope",
 )
 
@@ -71,6 +74,17 @@ class LockedDebtPredecessor:
 
     def __repr__(self) -> str:
         return "LockedDebtPredecessor(<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class LockedDebtTransitionScope:
+    """Debt-owned adapter token created only after a caller locks this row."""
+
+    _row: Debt
+    _session: Session
+
+    def __repr__(self) -> str:
+        return "LockedDebtTransitionScope(<redacted>)"
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -140,6 +154,19 @@ def mark_debt_predecessor_locked(
         customer_id=locked.row.customer_id,
         _session=session,
     )
+
+
+def mark_locked_debt_transition_scope(
+    session: Session, *, locked_row: Debt
+) -> LockedDebtTransitionScope:
+    """Adapt an already forward-locked Debt without acquiring another row lock."""
+
+    if (
+        not isinstance(locked_row, Debt)
+        or session.get(Debt, locked_row.id) is not locked_row
+    ):
+        raise RuntimeError("locked Debt must be attached to this session")
+    return LockedDebtTransitionScope(_row=locked_row, _session=session)
 
 
 def lock_customer_hard_block_scope(
@@ -465,6 +492,18 @@ def validate_locked_debt_predecessor(
     """Validate the bounded lock token for cross-package persistence adapters."""
 
     return _validate_predecessor(session, token)
+
+
+def validate_locked_debt_transition_scope(
+    session: Session, token: object
+) -> LockedDebtTransitionScope:
+    if not isinstance(token, LockedDebtTransitionScope):
+        raise TypeError("locked_debt must come from mark_locked_debt_transition_scope")
+    if token._session is not session:
+        raise RuntimeError("locked Debt belongs to a different session")
+    if session.get(Debt, token._row.id) is not token._row:
+        raise RuntimeError("locked Debt is not attached to this session")
+    return token
 
 
 def validate_locked_customer_hard_block_scope(

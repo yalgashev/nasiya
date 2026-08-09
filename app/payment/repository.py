@@ -42,6 +42,7 @@ from app.shop_customer.models import ShopCustomer
 __all__ = (
     "ScopedPaymentRow",
     "SqlAlchemyPaymentOpenSetReader",
+    "SqlAlchemyLockedDebtPostedTotalReader",
     "get_customer_owned_payment",
     "get_tenant_payment",
     "historical_balance_after",
@@ -65,6 +66,18 @@ class ScopedPaymentRow:
 
     def __repr__(self) -> str:
         return "ScopedPaymentRow(<redacted>)"
+
+
+class SqlAlchemyLockedDebtPostedTotalReader:
+    """Narrow M15 adapter; the debt service owns lock validation and mutation."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def read_posted_total_uzs(self, *, debt_id: DebtId) -> Decimal:
+        if not isinstance(debt_id, DebtId):
+            raise TypeError("debt_id must be a DebtId")
+        return posted_payment_total(self._session, debt_id=debt_id).value
 
 
 def payment_aggregate_from_row(row: Payment) -> PaymentAggregate:

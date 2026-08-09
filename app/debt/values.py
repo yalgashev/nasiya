@@ -13,6 +13,7 @@ from app.shop_customer.values import CustomerId, ShopCustomerId
 
 __all__ = (
     "CustomerId",
+    "ClawbackIncreaseUZS",
     "DebtId",
     "DebtRevision",
     "DiscountBasisPoints",
@@ -111,6 +112,27 @@ class DiscountedAmountUZS:
 
     def __post_init__(self) -> None:
         _require_bounded_whole_uzs(self.value, field_name="Discounted amount")
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ClawbackIncreaseUZS:
+    """Debt-owned nonnegative whole-UZS basis increase."""
+
+    value: Decimal = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.value, Decimal):
+            raise TypeError("Clawback increase must be a Decimal")
+        if not self.value.is_finite() or self.value.as_tuple().exponent != 0:
+            raise ValueError("Clawback increase must be whole UZS")
+        if not Decimal("0") <= self.value <= MAX_DEBT_AMOUNT_UZS:
+            raise ValueError("Clawback increase is outside allowed bounds")
+
+    def __repr__(self) -> str:
+        return "ClawbackIncreaseUZS(<redacted>)"
+
+    def __str__(self) -> str:
+        return "<redacted>"
 
 
 def parse_discount_percent(value: str) -> DiscountPercent:

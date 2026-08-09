@@ -15,7 +15,7 @@ from app.auth.models import User
 from app.customer.models import Customer
 from app.db import create_database_session_factory
 from app.debt.customer_authority import CustomerDebtAuthority
-from app.debt.enums import DebtStatus
+from app.debt.enums import DebtBalanceBasis, DebtStatus
 from app.debt.models import Debt
 from app.debt.presentation import DebtWebLanguage
 from app.debt.values import DebtId, DiscountedAmountUZS, OriginalAmountUZS
@@ -208,6 +208,118 @@ def _ledger_counts(factory) -> tuple[int, int, int, int]:
             int(session.scalar(select(func.count()).select_from(AuditLog))),
             int(session.scalar(select(func.max(Debt.revision))) or 0),
         )
+
+
+@pytest.mark.integration
+def test_effective_overdue_progress_is_scoped_batched_and_read_only(
+    m2_test_database: Engine,
+) -> None:
+    seed = _seed_read_graph(
+        m2_test_database,
+        discounted="900",
+        due_date=date(2026, 8, 9),
+    )
+    other_shop = _add_second_shop_for_customer(
+        m2_test_database,
+        customer_id=seed.customer_id,
+    )
+    factory = create_database_session_factory(m2_test_database)
+    with factory() as session:
+        before = session.get_one(Debt, seed.debt_id)
+        before_state = (
+            before.status,
+            before.revision,
+            before.overdue_at,
+            before.overdue_revision,
+            int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(AuditLog)
+                    .where(AuditLog.object_id == seed.debt_id)
+                )
+                or 0
+            ),
+        )
+
+    with factory() as session:
+        foreign_tenant_projection = list_tenant_customer_debts_with_payment_progress(
+            session,
+            shop_id=ShopId(seed.shop_id),
+            shop_customer_id=ShopCustomerId(other_shop.relation_id),
+            server_now=PAYMENT_TIME,
+        )
+    assert foreign_tenant_projection == ()
+
+    writes: list[str] = []
+    selects: list[str] = []
+
+    def capture(_conn, _cursor, statement, _params, _context, _many) -> None:
+        upper = statement.lstrip().upper()
+        if upper.startswith("SELECT"):
+            selects.append(statement)
+        elif upper.startswith(("INSERT", "UPDATE", "DELETE")):
+            writes.append(statement)
+
+    event.listen(m2_test_database, "before_cursor_execute", capture)
+    try:
+        with factory() as session:
+            tenant_projection = list_tenant_customer_debts_with_payment_progress(
+                session,
+                shop_id=ShopId(seed.shop_id),
+                shop_customer_id=ShopCustomerId(seed.relation_id),
+                server_now=PAYMENT_TIME,
+            )
+            authority = CustomerDebtAuthority(
+                user_id=seed.customer_user_id,
+                customer_id=seed.customer_id,
+            )
+            customer_projection = list_customer_debts_with_payment_progress(
+                session,
+                authority=authority,
+                server_now=PAYMENT_TIME,
+            )
+    finally:
+        event.remove(m2_test_database, "before_cursor_execute", capture)
+
+    assert len(tenant_projection) == 1
+    tenant_progress = tenant_projection[0].payment_progress
+    assert tenant_progress is not None
+    assert tenant_projection[0].status is DebtStatus.ACTIVE
+    assert tenant_progress.is_effectively_overdue is True
+    assert tenant_progress.balance_basis is DebtBalanceBasis.ORIGINAL
+    assert tenant_progress.remaining_due_uzs == Decimal("1000")
+
+    customer_progress = next(
+        item.payment_progress
+        for item in customer_projection
+        if item.payment_progress is not None
+        and item.payment_progress.is_effectively_overdue
+    )
+    assert customer_progress.balance_basis is DebtBalanceBasis.ORIGINAL
+    assert customer_progress.remaining_due_uzs == Decimal("1000")
+    assert writes == []
+    # Tenant is one debt list plus one grouped Payment sum plus its existing
+    # presentation list; customer is the same two debt/shop batches around one
+    # grouped Payment sum. Both remain constant as the own-customer set grows.
+    assert len(selects) == 8
+
+    with factory() as session:
+        after = session.get_one(Debt, seed.debt_id)
+        after_state = (
+            after.status,
+            after.revision,
+            after.overdue_at,
+            after.overdue_revision,
+            int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(AuditLog)
+                    .where(AuditLog.object_id == seed.debt_id)
+                )
+                or 0
+            ),
+        )
+    assert after_state == before_state
 
 
 @pytest.mark.integration
