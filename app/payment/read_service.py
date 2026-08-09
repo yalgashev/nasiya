@@ -1,0 +1,454 @@
+"""Read-only, tenant/own-customer Payment history and receipt composition."""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from decimal import Decimal
+from uuid import UUID
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.auth.error_codes import ErrorCode
+from app.auth.models import User
+from app.customer.models import Customer
+from app.debt.business_time import (
+    is_payment_due_date_payable,
+    normalize_payment_created_at,
+)
+from app.debt.customer_authority import CustomerDebtAuthority
+from app.debt.customer_read_service import (
+    CustomerDebtDetailResult,
+    CustomerDebtListProjection,
+    get_own_customer_debt_detail,
+    list_own_customer_debts,
+)
+from app.debt.enums import DebtStatus
+from app.debt.models import Debt
+from app.debt.payment_progress import DebtPaymentProgressProjection
+from app.debt.repository import (
+    get_customer_owned_debt_with_shop,
+    get_tenant_debt,
+    list_customer_owned_debts_with_shops,
+    list_tenant_debts,
+)
+from app.debt.tenant_read_service import (
+    TenantDebtDetailProjection,
+    TenantDebtListProjection,
+    get_tenant_debt_detail,
+    list_tenant_customer_debts,
+)
+from app.debt.values import DebtId, DiscountedAmountUZS, UserId
+from app.offers.enums import OfferLanguage
+from app.payment.contracts import PaymentHistoryItem, PaymentReceiptProjection
+from app.payment.dependencies import DetachedPaymentReadActorContext
+from app.payment.models import Payment
+from app.payment.repository import (
+    ScopedPaymentRow,
+    get_customer_owned_payment,
+    get_tenant_payment,
+    historical_balance_after,
+    list_customer_owned_debt_payments,
+    list_tenant_debt_payments,
+    payment_aggregate_from_row,
+    remaining_due,
+)
+from app.payment.service import RecordDebtPaymentResult
+from app.payment.values import PaymentId, PostedPaymentTotalUZS, calculate_remaining_due
+from app.shop.enums import ShopRole, ShopStatus
+from app.shop.models import Shop, ShopStaff
+from app.shop.values import ShopId
+from app.shop_customer.models import ShopCustomer
+from app.shop_customer.values import ShopCustomerId
+
+__all__ = (
+    "CustomerPaymentReadResult",
+    "TenantPaymentReadAuthority",
+    "TenantPaymentReadResult",
+    "compose_payment_receipt",
+    "get_customer_debt_detail_with_payment_progress",
+    "get_own_customer_payment_receipt",
+    "get_tenant_debt_detail_with_payment_progress",
+    "get_tenant_payment_receipt",
+    "get_tenant_payment_receipt_for_result",
+    "list_customer_debts_with_payment_progress",
+    "list_own_customer_payment_history",
+    "list_payment_progress_for_debts",
+    "list_tenant_customer_debts_with_payment_progress",
+    "list_tenant_payment_history",
+    "resolve_tenant_payment_read_authority",
+)
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class TenantPaymentReadAuthority:
+    shop_id: ShopId = field(repr=False)
+    actor_user_id: UserId = field(repr=False)
+    role: ShopRole
+
+    def __repr__(self) -> str:
+        return "TenantPaymentReadAuthority(<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class TenantPaymentReadResult:
+    error: ErrorCode | None
+    history: tuple[PaymentHistoryItem, ...] = field(default=(), repr=False)
+    receipt: PaymentReceiptProjection | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.error is not None and self.error not in {
+            ErrorCode.FORBIDDEN,
+            ErrorCode.DEBT_UNAVAILABLE,
+            ErrorCode.PAYMENT_UNAVAILABLE,
+        }:
+            raise ValueError("Tenant payment read error is invalid")
+        if self.error is not None and (self.history or self.receipt is not None):
+            raise ValueError("Failed tenant payment read must not carry data")
+        if self.history and self.receipt is not None:
+            raise ValueError("Tenant payment read result is ambiguous")
+
+    def __repr__(self) -> str:
+        return f"TenantPaymentReadResult(error={self.error!r}, data=<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class CustomerPaymentReadResult:
+    error: ErrorCode | None
+    history: tuple[PaymentHistoryItem, ...] = field(default=(), repr=False)
+    receipt: PaymentReceiptProjection | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.error is not None and self.error is not ErrorCode.PAYMENT_UNAVAILABLE:
+            raise ValueError("Customer payment read error is invalid")
+        if self.error is not None and (self.history or self.receipt is not None):
+            raise ValueError("Failed customer payment read must not carry data")
+        if self.history and self.receipt is not None:
+            raise ValueError("Customer payment read result is ambiguous")
+
+    def __repr__(self) -> str:
+        return f"CustomerPaymentReadResult(error={self.error!r}, data=<redacted>)"
+
+
+def resolve_tenant_payment_read_authority(
+    session: Session, *, actor: DetachedPaymentReadActorContext
+) -> TenantPaymentReadAuthority | None:
+    """Recheck live active staff without locking; suspended shops remain readable."""
+
+    if not isinstance(actor, DetachedPaymentReadActorContext):
+        raise TypeError("actor must be detached payment read context")
+    row = session.execute(
+        select(Shop.id, ShopStaff.role)
+        .join(ShopStaff, ShopStaff.shop_id == Shop.id)
+        .join(User, User.id == ShopStaff.user_id)
+        .where(
+            Shop.id == actor.current_shop_id,
+            Shop.status.in_((ShopStatus.ACTIVE.value, ShopStatus.SUSPENDED.value)),
+            ShopStaff.user_id == actor.actor_user_id,
+            ShopStaff.is_active.is_(True),
+            ShopStaff.revoked_at.is_(None),
+            User.is_active.is_(True),
+        )
+    ).one_or_none()
+    if row is None:
+        return None
+    role = ShopRole(row.role)
+    return TenantPaymentReadAuthority(
+        shop_id=ShopId(row.id), actor_user_id=actor.actor_user_id, role=role
+    )
+
+
+def list_tenant_payment_history(
+    session: Session, *, actor: DetachedPaymentReadActorContext, debt_id: DebtId
+) -> TenantPaymentReadResult:
+    authority = resolve_tenant_payment_read_authority(session, actor=actor)
+    if authority is None:
+        return TenantPaymentReadResult(error=ErrorCode.FORBIDDEN)
+    if not isinstance(debt_id, DebtId):
+        raise TypeError("debt_id must be a DebtId")
+    # A foreign/absent Debt locator must not disclose whether payments exist.
+    debt_exists = session.scalar(
+        select(Debt.id)
+        .join(ShopCustomer, ShopCustomer.id == Debt.shop_customer_id)
+        .where(
+            Debt.id == debt_id.as_uuid(),
+            ShopCustomer.shop_id == authority.shop_id,
+        )
+    )
+    if debt_exists is None:
+        return TenantPaymentReadResult(error=ErrorCode.DEBT_UNAVAILABLE)
+    rows = list_tenant_debt_payments(
+        session, shop_id=authority.shop_id, debt_id=debt_id
+    )
+    return TenantPaymentReadResult(error=None, history=_history(rows))
+
+
+def get_tenant_payment_receipt(
+    session: Session, *, actor: DetachedPaymentReadActorContext, payment_id: PaymentId
+) -> TenantPaymentReadResult:
+    if not isinstance(payment_id, PaymentId):
+        raise TypeError("payment_id must be a PaymentId")
+    authority = resolve_tenant_payment_read_authority(session, actor=actor)
+    if authority is None:
+        return TenantPaymentReadResult(error=ErrorCode.FORBIDDEN)
+    row = get_tenant_payment(session, shop_id=authority.shop_id, payment_id=payment_id)
+    if row is None:
+        return TenantPaymentReadResult(error=ErrorCode.PAYMENT_UNAVAILABLE)
+    return TenantPaymentReadResult(
+        error=None, receipt=compose_payment_receipt(session, row=row)
+    )
+
+
+def get_tenant_payment_receipt_for_result(
+    session: Session,
+    *,
+    actor: DetachedPaymentReadActorContext,
+    result: RecordDebtPaymentResult,
+) -> TenantPaymentReadResult:
+    """Carry the coordinator's typed locator into the scoped receipt reader."""
+
+    if not isinstance(result, RecordDebtPaymentResult):
+        raise TypeError("result must be a RecordDebtPaymentResult")
+    return get_tenant_payment_receipt(
+        session,
+        actor=actor,
+        payment_id=result.payment_id,
+    )
+
+
+def list_own_customer_payment_history(
+    session: Session, *, authenticated_user: User, debt_id: DebtId
+) -> CustomerPaymentReadResult:
+    if not isinstance(debt_id, DebtId):
+        raise TypeError("debt_id must be a DebtId")
+    customer_id = _resolve_own_customer_id(
+        session, authenticated_user=authenticated_user
+    )
+    if customer_id is None:
+        return CustomerPaymentReadResult(error=ErrorCode.PAYMENT_UNAVAILABLE)
+    rows = list_customer_owned_debt_payments(
+        session, customer_id=customer_id, debt_id=debt_id
+    )
+    # Lists do not expose a debt existence oracle to the customer-facing surface.
+    return CustomerPaymentReadResult(error=None, history=_history(rows))
+
+
+def get_own_customer_payment_receipt(
+    session: Session, *, authenticated_user: User, payment_id: PaymentId
+) -> CustomerPaymentReadResult:
+    if not isinstance(payment_id, PaymentId):
+        raise TypeError("payment_id must be a PaymentId")
+    customer_id = _resolve_own_customer_id(
+        session, authenticated_user=authenticated_user
+    )
+    if customer_id is None:
+        return CustomerPaymentReadResult(error=ErrorCode.PAYMENT_UNAVAILABLE)
+    row = get_customer_owned_payment(
+        session, customer_id=customer_id, payment_id=payment_id
+    )
+    if row is None:
+        return CustomerPaymentReadResult(error=ErrorCode.PAYMENT_UNAVAILABLE)
+    return CustomerPaymentReadResult(
+        error=None, receipt=compose_payment_receipt(session, row=row)
+    )
+
+
+def list_payment_progress_for_debts(
+    session: Session, *, debts: Iterable[Debt], server_now: datetime
+) -> dict[UUID, DebtPaymentProgressProjection]:
+    """Batch all totals once; both tenant and customer callers use this calculator."""
+
+    now = normalize_payment_created_at(server_now)
+    rows = tuple(debts)
+    if not rows:
+        return {}
+    ids = tuple(debt.id for debt in rows)
+    totals = dict(
+        session.execute(
+            select(
+                Payment.debt_id,
+                func.coalesce(func.sum(Payment.amount_uzs), Decimal("0")),
+            )
+            .where(Payment.debt_id.in_(ids))
+            .group_by(Payment.debt_id)
+        ).all()
+    )
+    return {
+        debt.id: _progress(
+            debt, PostedPaymentTotalUZS(Decimal(totals.get(debt.id, 0))), now
+        )
+        for debt in rows
+    }
+
+
+def list_tenant_customer_debts_with_payment_progress(
+    session: Session,
+    *,
+    shop_id: ShopId,
+    shop_customer_id: ShopCustomerId,
+    server_now: datetime,
+) -> tuple[TenantDebtListProjection, ...]:
+    """Payment adapter for the existing tenant list; no payment import in debt."""
+
+    candidates = tuple(
+        debt
+        for debt in list_tenant_debts(session, shop_id=shop_id)
+        if debt.shop_customer_id == shop_customer_id.as_uuid()
+    )
+    return list_tenant_customer_debts(
+        session,
+        shop_id=shop_id,
+        shop_customer_id=shop_customer_id,
+        payment_progress_by_debt_id=list_payment_progress_for_debts(
+            session, debts=candidates, server_now=server_now
+        ),
+    )
+
+
+def get_tenant_debt_detail_with_payment_progress(
+    session: Session,
+    *,
+    shop_id: ShopId,
+    debt_id: DebtId,
+    server_now: datetime,
+) -> TenantDebtDetailProjection | None:
+    debt = get_tenant_debt(session, shop_id=shop_id, debt_id=debt_id)
+    progress = list_payment_progress_for_debts(
+        session, debts=() if debt is None else (debt,), server_now=server_now
+    )
+    return get_tenant_debt_detail(
+        session,
+        shop_id=shop_id,
+        debt_id=debt_id,
+        payment_progress_by_debt_id=progress,
+    )
+
+
+def list_customer_debts_with_payment_progress(
+    session: Session,
+    *,
+    authority: CustomerDebtAuthority | None,
+    server_now: datetime,
+) -> tuple[CustomerDebtListProjection, ...]:
+    if authority is None:
+        return list_own_customer_debts(session, authority=None)
+    candidates = list_customer_owned_debts_with_shops(
+        session, customer_id=authority.customer_id
+    )
+    return list_own_customer_debts(
+        session,
+        authority=authority,
+        payment_progress_by_debt_id=list_payment_progress_for_debts(
+            session,
+            debts=(candidate.debt for candidate in candidates),
+            server_now=server_now,
+        ),
+    )
+
+
+def get_customer_debt_detail_with_payment_progress(
+    session: Session,
+    *,
+    authority: CustomerDebtAuthority | None,
+    debt_id: DebtId,
+    language: OfferLanguage,
+    server_now: datetime,
+) -> CustomerDebtDetailResult:
+    candidate = (
+        None
+        if authority is None
+        else get_customer_owned_debt_with_shop(
+            session, customer_id=authority.customer_id, debt_id=debt_id
+        )
+    )
+    progress = list_payment_progress_for_debts(
+        session,
+        debts=() if candidate is None else (candidate.debt,),
+        server_now=server_now,
+    )
+    return get_own_customer_debt_detail(
+        session,
+        authority=authority,
+        debt_id=debt_id,
+        language=language,
+        payment_progress_by_debt_id=progress,
+    )
+
+
+def compose_payment_receipt(
+    session: Session, *, row: ScopedPaymentRow
+) -> PaymentReceiptProjection:
+    """Immutable receipt fact plus labelled historical/current server balances."""
+
+    payment = row.payment
+    debt = row.debt
+    aggregate = payment_aggregate_from_row(payment)
+    return PaymentReceiptProjection(
+        amount=aggregate.amount,
+        method=aggregate.method,
+        created_at=aggregate.created_at,
+        historical_balance_after=historical_balance_after(
+            session, debt=debt, payment=payment
+        ),
+        current_balance=remaining_due(session, debt=debt),
+        current_debt_status=DebtStatus(debt.status),
+        shop_display_name=row.shop_name,
+    )
+
+
+def _progress(
+    debt: Debt, posted: PostedPaymentTotalUZS, now: datetime
+) -> DebtPaymentProgressProjection:
+    status = DebtStatus(debt.status)
+    remaining = calculate_remaining_due(
+        discounted_amount=DiscountedAmountUZS(debt.discounted_amount_uzs),
+        posted_total=posted,
+    )
+    payable = (
+        status is DebtStatus.ACTIVE
+        and remaining.value > 0
+        and is_payment_due_date_payable(payment_created_at=now, due_date=debt.due_date)
+    )
+    return DebtPaymentProgressProjection(
+        posted_total_uzs=posted.value,
+        remaining_due_uzs=remaining.value,
+        status=status,
+        paid_at=None
+        if debt.paid_at is None
+        else debt.paid_at.astimezone(UTC).isoformat(),
+        is_payable=payable,
+    )
+
+
+def _history(rows: Iterable[ScopedPaymentRow]) -> tuple[PaymentHistoryItem, ...]:
+    items = tuple(
+        payment_aggregate_from_row(row.payment).to_history_item() for row in rows
+    )
+    revisions = tuple(item.debt_revision_after.value for item in items)
+    if any(
+        right <= left for left, right in zip(revisions, revisions[1:], strict=False)
+    ):
+        raise RuntimeError("Payment history revisions are not strictly increasing")
+    return items
+
+
+def _resolve_own_customer_id(
+    session: Session, *, authenticated_user: User
+) -> UUID | None:
+    """Resolve ownership only; repayment history does not depend on eligibility.
+
+    In particular, Customer onboarding, Telegram, blacklist, list and rating
+    state are not authority predicates for this historical read surface.
+    """
+
+    if not isinstance(authenticated_user, User):
+        raise TypeError("authenticated_user must be a User")
+    if not isinstance(authenticated_user.id, UUID) or not authenticated_user.is_active:
+        return None
+    return session.scalar(
+        select(Customer.id)
+        .join(User, User.id == Customer.user_id)
+        .where(User.id == authenticated_user.id, User.is_active.is_(True))
+    )

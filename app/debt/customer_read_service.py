@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
 from app.auth.error_codes import ErrorCode
 from app.debt.customer_authority import CustomerDebtAuthority
 from app.debt.enums import DebtStatus
+from app.debt.payment_progress import DebtPaymentProgressProjection
 from app.debt.repository import (
     CustomerOwnedDebtRow,
     get_customer_owned_debt_with_shop,
@@ -44,6 +47,7 @@ class CustomerDebtListProjection:
     discounted_amount: DiscountedAmountUZS
     due_date: str
     pending_expires_at: str
+    payment_progress: DebtPaymentProgressProjection | None = None
 
     def __repr__(self) -> str:
         return "CustomerDebtListProjection(<safe>)"
@@ -76,6 +80,7 @@ class CustomerDebtDetailProjection:
     legal_offer: CustomerDebtLegalOfferProjection | None = field(
         default=None, repr=False
     )
+    payment_progress: DebtPaymentProgressProjection | None = None
 
     def __repr__(self) -> str:
         return "CustomerDebtDetailProjection(<safe>)"
@@ -98,7 +103,11 @@ class CustomerDebtDetailResult:
 
 
 def list_own_customer_debts(
-    session: Session, *, authority: CustomerDebtAuthority | None
+    session: Session,
+    *,
+    authority: CustomerDebtAuthority | None,
+    payment_progress_by_debt_id: Mapping[UUID, DebtPaymentProgressProjection]
+    | None = None,
 ) -> tuple[CustomerDebtListProjection, ...]:
     """Read only the debts reached through the caller's own active Customer."""
 
@@ -108,7 +117,10 @@ def list_own_customer_debts(
     rows = list_customer_owned_debts_with_shops(
         session, customer_id=authority.customer_id
     )
-    return tuple(_present_list_item(row) for row in rows)
+    return tuple(
+        _present_list_item(row, payment_progress_by_debt_id=payment_progress_by_debt_id)
+        for row in rows
+    )
 
 
 def get_own_customer_debt_detail(
@@ -117,6 +129,8 @@ def get_own_customer_debt_detail(
     authority: CustomerDebtAuthority | None,
     debt_id: DebtId,
     language: OfferLanguage,
+    payment_progress_by_debt_id: Mapping[UUID, DebtPaymentProgressProjection]
+    | None = None,
 ) -> CustomerDebtDetailResult:
     """Return an own debt only; an absent or foreign locator is intentionally vague."""
 
@@ -137,11 +151,20 @@ def get_own_customer_debt_detail(
     legal_offer = _resolve_current_complete_legal_offer(session, language=language)
     return CustomerDebtDetailResult(
         error=None,
-        detail=_present_detail(row, legal_offer=legal_offer),
+        detail=_present_detail(
+            row,
+            legal_offer=legal_offer,
+            payment_progress_by_debt_id=payment_progress_by_debt_id,
+        ),
     )
 
 
-def _present_list_item(row: CustomerOwnedDebtRow) -> CustomerDebtListProjection:
+def _present_list_item(
+    row: CustomerOwnedDebtRow,
+    *,
+    payment_progress_by_debt_id: Mapping[UUID, DebtPaymentProgressProjection]
+    | None = None,
+) -> CustomerDebtListProjection:
     debt = row.debt
     return CustomerDebtListProjection(
         shop_name=row.shop_name,
@@ -151,6 +174,7 @@ def _present_list_item(row: CustomerOwnedDebtRow) -> CustomerDebtListProjection:
         discounted_amount=DiscountedAmountUZS(debt.discounted_amount_uzs),
         due_date=debt.due_date.isoformat(),
         pending_expires_at=_optional_iso(debt.pending_expires_at),
+        payment_progress=_progress_for(debt.id, payment_progress_by_debt_id),
     )
 
 
@@ -158,8 +182,12 @@ def _present_detail(
     row: CustomerOwnedDebtRow,
     *,
     legal_offer: CustomerDebtLegalOfferProjection | None,
+    payment_progress_by_debt_id: Mapping[UUID, DebtPaymentProgressProjection]
+    | None = None,
 ) -> CustomerDebtDetailProjection:
-    item = _present_list_item(row)
+    item = _present_list_item(
+        row, payment_progress_by_debt_id=payment_progress_by_debt_id
+    )
     debt = row.debt
     status = item.status
     decision_reason = (
@@ -183,6 +211,7 @@ def _present_detail(
         expired_at=_optional_iso(debt.expired_at),
         decision_reason=decision_reason,
         legal_offer=legal_offer if status is DebtStatus.PENDING else None,
+        payment_progress=item.payment_progress,
     )
 
 
@@ -231,3 +260,15 @@ def _optional_iso(value: datetime | None) -> str | None:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("Debt projection timestamp must be timezone-aware")
     return value.astimezone(UTC).isoformat()
+
+
+def _progress_for(
+    debt_id: UUID,
+    progress_by_debt_id: Mapping[UUID, DebtPaymentProgressProjection] | None,
+) -> DebtPaymentProgressProjection | None:
+    if progress_by_debt_id is None:
+        return None
+    progress = progress_by_debt_id.get(debt_id)
+    if progress is not None and not isinstance(progress, DebtPaymentProgressProjection):
+        raise TypeError("Payment progress projection is invalid")
+    return progress
