@@ -1,7 +1,8 @@
 # Nasiya M15 Final Technical Report
 
-Status: local final draft; M15.42–44 evidence is local and does not claim a
-remote CI run or a pushed closure.
+Status: M15 implementation is remote GREEN at the exact eighth checkpoint.
+This docs-only closeout records that immutable implementation evidence and does
+not claim or self-reference its own commit SHA.
 
 ## Delivered capability
 
@@ -95,9 +96,7 @@ all helper harness files were deleted after capture.
 5. `65a29f842095cdf8db3679327d7c29607c2744d6` — `M15: add late payments and global hard blocks`
 6. `c6c4f40bba1b8e3feb3c38e4da3340bf94fad083` — `M15: expose overdue payment web flows`
 7. `bc7206e1c599e287ab5711f86d6ee5464afa4c45` — `M15: harden overdue security and concurrency`
-8. `M15: complete overdue payment foundation` — this report is part of the
-   exact-subject local implementation checkpoint; its SHA is recorded only
-   after commit so the commit does not self-reference.
+8. `13bda85fb5df99d1be2b1da578e0f1a256f1d336` — `M15: complete overdue payment foundation`
 
 ## M15.44 repeated validation
 
@@ -113,3 +112,17 @@ privacy=PRIVATE`.
 | Ruff check / format-check | GREEN / GREEN; 610 files |
 | CI-equivalent MinIO and containment gates | 173 passed in 21.31s |
 | Full real-PostgreSQL pytest | 4090 passed in 304.68s; 307.17s wall; zero failed/skipped/xfailed/xpassed/warnings |
+
+## Exact implementation remote evidence
+
+The normal, non-force push checked out implementation SHA
+`13bda85fb5df99d1be2b1da578e0f1a256f1d336`, tree
+`f99e1de25361438171ae26d1c4bc27d041d3b042`, in GitHub Actions run
+[`31347914959`](https://github.com/yalgashev/nasiya/actions/runs/31347914959),
+job
+[`93333216249`](https://github.com/yalgashev/nasiya/actions/runs/31347914959/job/93333216249).
+The job completed successfully in 4m52s on 2026-08-10. Frozen dependency sync,
+Alembic upgrade/current/head `b6c7d8e9f0a1`, Ruff check and format-check over
+610 files, pinned private MinIO backup/restore and containment gates all
+succeeded. The exact-checkout full PostgreSQL suite reported `4090 passed in
+213.63s (0:03:33)` with zero test non-passes.

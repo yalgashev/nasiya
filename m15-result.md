@@ -1,10 +1,10 @@
 # M15 Result
 
-Local M15 result: deterministic overdue, clawback, late payment, marker-based
-receipt history, and cross-Shop debt-derived hard block are complete through
-the eight-checkpoint implementation sequence. The first seven checkpoint SHAs
-and the exact eighth subject are recorded in the final report; the eighth SHA
-is intentionally not self-referenced by its own commit.
+M15 implementation result: deterministic overdue, clawback, late payment,
+marker-based receipt history, and cross-Shop debt-derived hard block are remote
+GREEN through exact eighth checkpoint
+`13bda85fb5df99d1be2b1da578e0f1a256f1d336` (tree
+`f99e1de25361438171ae26d1c4bc27d041d3b042`).
 
 - Routes: the existing six payment routes only; no scheduler, trigger, admin,
   API, self-pay, void, reversal, rating, notification, or report surface.
@@ -15,3 +15,9 @@ is intentionally not self-referenced by its own commit.
   browser financial storage absence, and console cleanliness.
 - Final repeated local validation evidence is recorded in
   [`docs/m15_final_report.md`](docs/m15_final_report.md).
+- Exact implementation GitHub Actions run
+  [`31347914959`](https://github.com/yalgashev/nasiya/actions/runs/31347914959),
+  job
+  [`93333216249`](https://github.com/yalgashev/nasiya/actions/runs/31347914959/job/93333216249),
+  completed SUCCESS with Alembic head `b6c7d8e9f0a1`, Ruff GREEN, private MinIO
+  gates GREEN, and `4090 passed in 213.63s`.

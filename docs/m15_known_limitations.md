@@ -27,5 +27,6 @@ intentional and require a new authorised milestone to change.
    in local/session/Cache Storage, calculate money/time, or support offline
    payment operation.
 9. Manual Chrome evidence is synthetic local acceptance evidence only. It does
-   not contain production identifiers or replace a future exact-SHA remote CI
-   closure.
+   not contain production identifiers or exercise production data. Exact-SHA
+   remote CI separately validates the automated repository suite; it does not
+   turn the manual checklist into production acceptance.
