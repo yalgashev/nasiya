@@ -130,14 +130,16 @@ def test_new_replay_and_conflict_outcomes_do_not_leak_key_or_debt_identifier() -
         IdempotencyResolution(outcome=IdempotencyOutcome.NEW, completed_result=result)
 
 
-def test_m14_endpoint_result_vocabularies_and_generic_result_are_exact() -> None:
+def test_m16_endpoint_result_vocabularies_and_generic_result_are_exact() -> None:
     assert tuple(IdempotencyEndpoint) == (
         IdempotencyEndpoint.SHOP_DEBTS_CREATE,
         IdempotencyEndpoint.SHOP_DEBT_PAYMENTS_CREATE,
+        IdempotencyEndpoint.SHOP_RISK_BAND_DISCLOSURES_CREATE,
     )
     assert tuple(IdempotencyResultType) == (
         IdempotencyResultType.DEBT,
         IdempotencyResultType.PAYMENT,
+        IdempotencyResultType.DISCLOSURE_VIEW,
     )
 
     result_id = uuid4()
@@ -153,6 +155,17 @@ def test_m14_endpoint_result_vocabularies_and_generic_result_are_exact() -> None
         == result_id
     )
     assert str(result_id) not in repr(payment_result)
+    disclosure_result = CompletedIdempotencyResult(
+        result_type=IdempotencyResultType.DISCLOSURE_VIEW,
+        result_object_id=result_id,
+        completed_at=datetime(2026, 5, 1, tzinfo=UTC),
+    )
+    assert (
+        disclosure_result.require_result_object_id(
+            expected_type=IdempotencyResultType.DISCLOSURE_VIEW
+        )
+        == result_id
+    )
     with pytest.raises(ValueError, match="does not match accessor"):
         _ = payment_result.debt_id
 

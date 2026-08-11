@@ -6,6 +6,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 M15_RUNTIME_AND_PERSISTENCE = (
     "app/debt/overdue_ports.py",
+    "app/debt/rating_ports.py",
     "app/debt/overdue_targeting.py",
     "app/debt/overdue_service.py",
     "app/debt/creation_eligibility.py",
@@ -16,6 +17,7 @@ M15_RUNTIME_AND_PERSISTENCE = (
     "app/payment/read_service.py",
     "app/payment/service.py",
     "app/payment/router.py",
+    "app/payment/rating_ports.py",
     "alembic/versions/b6c7d8e9f0a1_add_overdue_persistence.py",
 )
 

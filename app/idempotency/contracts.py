@@ -93,11 +93,13 @@ class CreatePaymentRequestHash:
 class IdempotencyEndpoint(StrEnum):
     SHOP_DEBTS_CREATE = "shop.debts.create"
     SHOP_DEBT_PAYMENTS_CREATE = "shop.debt_payments.create"
+    SHOP_RISK_BAND_DISCLOSURES_CREATE = "shop.risk_band_disclosures.create"
 
 
 class IdempotencyResultType(StrEnum):
     DEBT = "debt"
     PAYMENT = "payment"
+    DISCLOSURE_VIEW = "disclosure_view"
 
 
 class IdempotencyOutcome(StrEnum):

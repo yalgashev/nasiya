@@ -1,0 +1,81 @@
+"""Payment-local structural boundary for an optional on-time source effect."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
+from enum import StrEnum
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from uuid import UUID
+
+from sqlalchemy.orm import Session
+
+from app.debt.business_time import tashkent_business_date
+from app.debt.values import DebtId
+from app.shop_customer.values import ShopCustomerId
+
+if TYPE_CHECKING:
+    from app.payment.targeting import LockedTenantPaymentDebt
+
+__all__ = (
+    "LockedPaymentRatingAppendPort",
+    "PaymentRatingAppendOutcome",
+    "PendingOnTimePaidRatingEffect",
+)
+
+
+class PaymentRatingAppendOutcome(StrEnum):
+    APPENDED = "appended"
+    DAILY_CAP_ALREADY_USED = "daily_cap_already_used"
+    SOURCE_ALREADY_EXISTS = "source_already_exists"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class PendingOnTimePaidRatingEffect:
+    event_id: UUID = field(repr=False)
+    debt_id: DebtId = field(repr=False)
+    shop_customer_id: ShopCustomerId = field(repr=False)
+    payment_created_at: datetime
+    payment_business_date: date
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.event_id, UUID):
+            raise ValueError("Pending on-time rating identity is invalid")
+        if not isinstance(self.debt_id, DebtId):
+            raise ValueError("Pending on-time rating Debt is invalid")
+        if not isinstance(self.shop_customer_id, ShopCustomerId):
+            raise ValueError("Pending on-time rating ShopCustomer is invalid")
+        occurred_at = _normalize_aware_utc(self.payment_created_at)
+        if (
+            not isinstance(self.payment_business_date, date)
+            or isinstance(self.payment_business_date, datetime)
+            or self.payment_business_date != tashkent_business_date(occurred_at)
+        ):
+            raise ValueError(
+                "Pending on-time rating date must match Tashkent payment date"
+            )
+        object.__setattr__(self, "payment_created_at", occurred_at)
+
+    def __repr__(self) -> str:
+        return "PendingOnTimePaidRatingEffect(<redacted>)"
+
+
+@runtime_checkable
+class LockedPaymentRatingAppendPort(Protocol):
+    def append_pending_on_time_paid(
+        self,
+        session: Session,
+        *,
+        locked_debt: LockedTenantPaymentDebt,
+        effect: PendingOnTimePaidRatingEffect,
+    ) -> PaymentRatingAppendOutcome: ...
+
+
+def _normalize_aware_utc(value: datetime) -> datetime:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() is None
+    ):
+        raise ValueError("Pending on-time rating time must be aware")
+    return value.astimezone(UTC)

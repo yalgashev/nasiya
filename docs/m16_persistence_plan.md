@@ -93,7 +93,7 @@ fk_disclosure_view_logs_actor_user_id_users_id
 ix_disclosure_view_logs_shop_id_id
 ```
 
-`purpose` is only `debt_proposal_review|credit_limit_review|existing_debt_review`; `band` is only `NEW|GREEN|YELLOW|RED|BLOCKED`. The redundant parent key is `uq_shop_customers_id_shop_id (id, shop_id)`. `fk_disclosure_logs_shop_customer_shop (shop_customer_id, shop_id)` references that pair with `RESTRICT`; `fk_disclosure_view_logs_actor_user_id_users_id` references `users(id)` with `RESTRICT`. The authorization/index access path is ascending `(shop_id, id)`, named `ix_disclosure_view_logs_shop_id_id`, without `INCLUDE`.
+`purpose` is only `debt_proposal_review|credit_limit_review|existing_debt_review`; `band` is only `new|green|yellow|red|blocked`. The redundant parent key is `uq_shop_customers_id_shop_id (id, shop_id)`. `fk_disclosure_logs_shop_customer_shop (shop_customer_id, shop_id)` references that pair with `RESTRICT`; `fk_disclosure_view_logs_actor_user_id_users_id` references `users(id)` with `RESTRICT`. The authorization/index access path is ascending `(shop_id, id)`, named `ix_disclosure_view_logs_shop_id_id`, without `INCLUDE`.
 
 A snapshot is append-only and stores the already-derived safe band, purpose, time, and internal authority keys. It stores no score, event/delta/count, amount/balance, hard-block cause, PII, business identifier, idempotency key/digest/request hash, or disclosure payload blob.
 

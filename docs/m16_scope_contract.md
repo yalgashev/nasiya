@@ -28,7 +28,7 @@ score_0 = 60
 score_i = min(100, max(0, score_(i-1) + delta_i))
 ```
 
-Final-sum-only clamp is forbidden. Score is derived from immutable events, not stored on Customer, Debt, Payment, or ShopCustomer. A Customer with no event is `NEW` even though its internal initial score is 60. Otherwise `GREEN=75..100`, `YELLOW=50..74`, and `RED=0..49`. The M15 hard-block overlay has precedence:
+Final-sum-only clamp is forbidden. Score is derived from immutable events, not stored on Customer, Debt, Payment, or ShopCustomer. Canonical persisted band strings are lowercase `new|green|yellow|red|blocked`; uppercase names below are presentation labels only. A Customer with no event is `NEW` even though its internal initial score is 60. Otherwise `GREEN=75..100`, `YELLOW=50..74`, and `RED=0..49`. The M15 hard-block overlay has precedence:
 
 ```text
 if global_hard_block: BLOCKED
