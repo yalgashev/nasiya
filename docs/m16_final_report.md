@@ -53,9 +53,23 @@ formatted. The explicit-environment full real-PostgreSQL pytest run completed
 as `4250 passed in 328.22s (0:05:28)`, with zero failed, skipped, xfailed,
 xpassed, or warnings. This is local evidence only.
 
+## Remote implementation evidence
+
+The exact eighth implementation checkpoint is
+`1c8423023be0d3bbb7f388b9e341d99e7117ed62`, tree
+`03252df69a970d5a60af984f8d7749c27b463727`. GitHub Actions run
+[`31597593080`](https://github.com/yalgashev/nasiya/actions/runs/31597593080),
+job
+[`94116812886`](https://github.com/yalgashev/nasiya/actions/runs/31597593080/job/94116812886),
+checked out that exact SHA. Frozen sync, M15-fixture migration/reconciliation,
+Alembic current/head `c7d8e9f0a1b2`, Ruff, inherited containment and MinIO
+gates completed successfully. The full real-PostgreSQL suite reported
+`4250 passed in 125.58s (0:02:05)` with zero test non-passes.
+
 ## Checkpoints and scope
 
 Checkpoints: `a887715`, `6664ade`, `8938e75`, `d49368c`, `9c42518`,
-`1461a94`, and `dba4b6f`. OUT remains excluded: rating overrides, written-off
-or compensation deltas, notifications, scheduler/jobs, reports, Customer or
-admin/API routes, global search, and cached score/band wiring.
+`1461a94`, `dba4b6f`, and `1c84230`. The separately approved contributor-guide
+commit is not an M16 checkpoint. OUT remains excluded: rating overrides,
+written-off or compensation deltas, notifications, scheduler/jobs, reports,
+Customer or admin/API routes, global search, and cached score/band wiring.

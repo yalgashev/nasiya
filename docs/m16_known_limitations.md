@@ -1,7 +1,12 @@
 # M16 known limitations
 
-- M16 evidence is local only. It does not claim remote CI, staging, or
-  production acceptance.
+- The exact implementation checkpoint passed GitHub Actions. This does not
+  constitute staging, production, operational-rollout, or real-customer
+  acceptance.
+- GitHub Actions reported a runner advisory that selected upstream actions
+  still target deprecated Node.js 20 and were forced onto Node.js 24. It did
+  not fail or skip a quality gate, but those action versions should be updated
+  separately.
 - Controlled Chrome acceptance used synthetic data and a temporary local
   PostgreSQL database. It is a release checklist, not telemetry or a
   replacement for operational rollout approval.
