@@ -16,6 +16,12 @@ from app.rating.contracts import (
     RatingSnapshot,
     numeric_risk_band,
 )
+from app.rating.disclosure_service import (
+    DisclosureMutationRejected,
+    DisclosurePersistenceError,
+    read_risk_band_disclosure_snapshot,
+    record_risk_band_disclosure,
+)
 from app.rating.enums import RiskBand
 from app.rating.ports import (
     LockedRatingSourceScope,
@@ -27,9 +33,13 @@ from app.shop_customer.models import ShopCustomer
 
 __all__ = (
     "INITIAL_RATING_SCORE",
+    "DisclosureMutationRejected",
+    "DisclosurePersistenceError",
     "IncoherentRatingHistoryError",
-    "derive_rating_snapshot",
     "append_locked_source_event",
+    "derive_rating_snapshot",
+    "read_risk_band_disclosure_snapshot",
+    "record_risk_band_disclosure",
 )
 
 INITIAL_RATING_SCORE: Final = 60

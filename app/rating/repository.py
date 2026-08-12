@@ -327,6 +327,44 @@ def read_tenant_disclosure_projection(
     )
 
 
+def read_exact_tenant_disclosure_projection(
+    session: Session,
+    *,
+    actor_user_id: UserId,
+    current_shop_id: ShopId,
+    shop_customer_id: ShopCustomerId,
+    disclosure_view_id: DisclosureViewId,
+) -> RiskBandDisclosureProjection | None:
+    """Resolve an immutable snapshot only through its complete tenant chain."""
+
+    row = session.execute(
+        select(
+            DisclosureViewLog.band,
+            DisclosureViewLog.purpose,
+            DisclosureViewLog.created_at,
+        )
+        .join(
+            ShopCustomer,
+            (ShopCustomer.id == DisclosureViewLog.shop_customer_id)
+            & (ShopCustomer.shop_id == DisclosureViewLog.shop_id),
+        )
+        .where(
+            DisclosureViewLog.id == disclosure_view_id.as_uuid(),
+            DisclosureViewLog.actor_user_id == actor_user_id,
+            DisclosureViewLog.shop_id == current_shop_id,
+            DisclosureViewLog.shop_customer_id == shop_customer_id.as_uuid(),
+            ShopCustomer.customer_id.is_not(None),
+        )
+    ).one_or_none()
+    if row is None:
+        return None
+    return RiskBandDisclosureProjection(
+        band=RiskBand(row.band),
+        purpose=RiskBandDisclosurePurpose(row.purpose),
+        viewed_at=row.created_at,
+    )
+
+
 class SqlAlchemyRatingRepository:
     """Structural adapter; every operation borrows the supplied Session."""
 
@@ -337,6 +375,9 @@ class SqlAlchemyRatingRepository:
     append_locked_event = staticmethod(append_locked_event)
     insert_disclosure_view_locked = staticmethod(insert_disclosure_view_locked)
     read_tenant_disclosure_projection = staticmethod(read_tenant_disclosure_projection)
+    read_exact_tenant_disclosure_projection = staticmethod(
+        read_exact_tenant_disclosure_projection
+    )
 
 
 def _constraint_name(exc: IntegrityError) -> str | None:
