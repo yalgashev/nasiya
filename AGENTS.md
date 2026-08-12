@@ -2,23 +2,20 @@
 
 ## Project Structure & Module Organization
 
-`app/` contains the Python 3.12 application, organized by domain (`auth/`,
-`debt/`, `payment/`, `rating/`, and `shop_customer/`).
-Composition lives in `app/main.py`; keep domain rules and adapters in their
-existing package boundaries. Jinja templates and
-static assets are under `app/templates/` and `app/static/`. Alembic revisions
-live in `alembic/versions/`; maintain one linear head. Tests are in `tests/`,
-with shared PostgreSQL helpers in `tests/postgresql.py`. Contracts, decisions,
-runbooks, and milestone reports are in `docs/`.
+`app/` contains the Python 3.12 application, split by domain (`auth/`, `debt/`,
+`payment/`, `rating/`, and `shop_customer/`). Composition lives in
+`app/main.py`; preserve package boundaries. Templates/assets are in
+`app/templates/` and `app/static/`; revisions are in `alembic/versions/` and
+must stay linear. Tests live in `tests/`, with PostgreSQL helpers in
+`tests/postgresql.py`. Milestone authority is in `docs/`.
 
 ## Build, Test, and Development Commands
 
-- `uv sync --dev --frozen` installs the locked runtime and development tools.
-- `docker compose up -d db` starts PostgreSQL; `docker compose up db migrate`
-  applies migrations to the development database.
+- `uv sync --dev --frozen` installs locked runtime and development tools.
+- `docker compose up -d db` starts PostgreSQL; add `migrate` to apply schema.
 - `uv run alembic upgrade head` upgrades the configured database; use a
   separate `TEST_DATABASE_URL` whose database name ends in `_test` for tests.
-- `uv run pytest -q` runs the complete suite; pass a test path for a focused run.
+- `uv run pytest -q` runs all tests; pass paths for a focused run.
 - `uv run ruff check .` and `uv run ruff format --check .` reproduce CI lint
   and formatting checks.
 - `docker compose up -d web` serves the application at `http://localhost:8000`.
@@ -44,12 +41,18 @@ change. CI expects Alembic, Ruff, and the full suite to be green.
 
 ## Commit & Pull Request Guidelines
 
-Follow the concise imperative history style: `M16: add rating and disclosure
-persistence` or `docs: close M15 remote evidence`. Keep each commit scoped and
-leave the tree clean. Pull requests should explain behavior and migration
-impact, link the relevant issue or milestone contract, list verification
-commands/results, and include screenshots for visible UI changes. Call out
-schema, security, privacy, or operational rollout requirements explicitly.
+Use concise imperative subjects: `M16: add rating and disclosure persistence`
+or `docs: close M15 remote evidence`. Keep commits scoped and the tree clean.
+PRs explain behavior/migration impact, link authority, list checks, include UI
+screenshots, and flag rollout or security requirements.
+
+## Bounded Milestone Workflow
+
+For M-series work follow `docs/milestone_workflow.md` using
+`docs/milestone_task_packet.md`. Read only this guide, cited decisions, and the
+finite task read-set. Expand only for an evidenced dependency and record why.
+Use focused checks per task; full suites belong to checkpoints, hardening, and
+closure. End with a compact handoff.
 
 ## Security & Configuration
 
