@@ -32,6 +32,8 @@ The operationally ordered schema actions are:
 
 There is no score, band, event-count, hard-block, current-rating, or disclosure cache column; no source-table update; no new dependency; and no second migration.
 
+The reconciled M15 source authority is the existing `debts` state machine and its named `ck_debts_status_allowed`, `ck_debts_status_metadata_matches_status`, `ck_debts_timestamp_order`, `ck_debts_overdue_metadata_pair`, `ck_debts_overdue_revision_positive`, and `ck_debts_overdue_revision_not_after_revision` checks; immutable `payments` rows are additionally bounded by `uq_payments_debt_id_debt_revision_after`. Source-audit coherence is evaluated only through the existing exact-shape `ck_audit_log_event_type_allowed`, `ck_audit_log_object_type_allowed`, `ck_audit_log_actor_matches_event`, `ck_audit_log_object_matches_event`, and `ck_audit_log_payload_exact_shape` registry. The existing `ck_idempotency_keys_endpoint_result_pair_allowed`, digest/hash checks, and actor/endpoint/key unique remain authoritative; M16 extends only the closed endpoint/result pair.
+
 ## Planned `rating_events` table
 
 ```text
@@ -160,6 +162,8 @@ any invalid row under the exact M15 idempotency or audit registry checks
 ```
 
 The error prefix is exactly `M16 downgrade blocked:`. The downgrade path never DELETEs or truncates M16/source data to make itself succeed. Only an empty, valid M16 state may structurally remove the schema extension.
+
+Every guard executes before the first downgrade DDL. After the registries are restored to their exact M15 predicates, downgrade drops the two child tables and their indexes/foreign keys first; only then may it drop `uq_shop_customers_id_shop_id` and `uq_debts_id_shop_customer_id`. Thus no downgrade can silently discard an event, disclosure, idempotency result, audit fact, or parent-chain authority.
 
 Real PostgreSQL evidence is mandatory:
 

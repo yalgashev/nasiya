@@ -36,7 +36,12 @@ class IdempotencyKey(Base):
                 "OR "
                 f"(endpoint = "
                 f"'{IdempotencyEndpoint.SHOP_DEBT_PAYMENTS_CREATE.value}' "
-                f"AND result_object_type = '{IdempotencyResultType.PAYMENT.value}')"
+                f"AND result_object_type = '{IdempotencyResultType.PAYMENT.value}') "
+                "OR "
+                f"(endpoint = "
+                f"'{IdempotencyEndpoint.SHOP_RISK_BAND_DISCLOSURES_CREATE.value}' "
+                f"AND result_object_type = "
+                f"'{IdempotencyResultType.DISCLOSURE_VIEW.value}')"
             ),
             name="ck_idempotency_keys_endpoint_result_pair_allowed",
         ),

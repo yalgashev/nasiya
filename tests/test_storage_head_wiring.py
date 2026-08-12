@@ -14,6 +14,7 @@ M12_REVISION = "e3f4a5b6c7d8"
 M13_REVISION = "f4a5b6c7d8e"
 M14_REVISION = "a5b6c7d8e9f0"
 M15_REVISION = "b6c7d8e9f0a1"
+M16_REVISION = "c7d8e9f0a1b2"
 M11_CLEANUP_PREFIX = (
     "otp_challenge_events",
     "otp_dispatches",
@@ -44,6 +45,10 @@ M14_CLEANUP_PREFIX = (
     "idempotency_keys",
     "debts",
     "shop_customers",
+)
+M16_CLEANUP_PREFIX = (
+    "disclosure_view_logs",
+    "rating_events",
 )
 INHERITED_CLEANUP_ORDER = (
     "otp_dispatcher_state",
@@ -80,9 +85,9 @@ M13_INHERITED_CLEANUP_ORDER = (
 def test_code_and_ci_are_wired_to_exact_m14_head() -> None:
     workflow = (PROJECT_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
-    assert get_alembic_head() == M15_REVISION
-    assert "Verify Alembic M15 head" in workflow
-    assert f'test "$current_revision" = "{M15_REVISION}"' in workflow
+    assert get_alembic_head() == M16_REVISION
+    assert "Verify Alembic M16 head" in workflow
+    assert f'test "$current_revision" = "{M16_REVISION}"' in workflow
     assert f'test "$current_revision" = "{M13_REVISION}"' not in workflow
     assert f'test "$current_revision" = "{M11_RECOVERY_REVISION}"' not in workflow
     assert f'test "$current_revision" = "{M11_ORIGINAL_REVISION}"' not in workflow
@@ -106,8 +111,16 @@ def test_alembic_metadata_has_minimal_storage_model_import() -> None:
     assert env_source.count("app.shop_customer") == 1
 
 
-def test_cleanup_extends_current_head_with_m14_children_first_order() -> None:
-    assert M2_CLEANUP_TABLE_NAMES == M14_CLEANUP_PREFIX + M13_INHERITED_CLEANUP_ORDER
+def test_cleanup_extends_current_head_with_m16_children_first_order() -> None:
+    assert M2_CLEANUP_TABLE_NAMES == (
+        M16_CLEANUP_PREFIX + M14_CLEANUP_PREFIX + M13_INHERITED_CLEANUP_ORDER
+    )
+    assert M2_CLEANUP_TABLE_NAMES.index("rating_events") < (
+        M2_CLEANUP_TABLE_NAMES.index("debts")
+    )
+    assert M2_CLEANUP_TABLE_NAMES.index("disclosure_view_logs") < (
+        M2_CLEANUP_TABLE_NAMES.index("shop_customers")
+    )
     assert M2_CLEANUP_TABLE_NAMES.index("offer_acceptances") < (
         M2_CLEANUP_TABLE_NAMES.index("debts")
     )

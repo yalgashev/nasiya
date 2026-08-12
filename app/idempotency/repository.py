@@ -21,9 +21,14 @@ from app.idempotency.contracts import (
     IdempotencyResultType,
 )
 from app.idempotency.models import IdempotencyKey
+from app.rating.values import RiskBandDisclosureRequestHash
 
 _UNIQUE = "uq_idempotency_keys_actor_user_id_endpoint_key_digest"
-_RequestHash = CreateDebtRequestHash | CreatePaymentRequestHash
+_RequestHash = (
+    CreateDebtRequestHash
+    | CreatePaymentRequestHash
+    | RiskBandDisclosureRequestHash
+)
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -131,6 +136,13 @@ def _result_type_for_request(
                 "request_hash must be a CreatePaymentRequestHash for payment creation"
             )
         return IdempotencyResultType.PAYMENT
+    if endpoint is IdempotencyEndpoint.SHOP_RISK_BAND_DISCLOSURES_CREATE:
+        if not isinstance(request_hash, RiskBandDisclosureRequestHash):
+            raise TypeError(
+                "request_hash must be a RiskBandDisclosureRequestHash "
+                "for disclosure creation"
+            )
+        return IdempotencyResultType.DISCLOSURE_VIEW
     raise ValueError("unsupported idempotency endpoint")
 
 

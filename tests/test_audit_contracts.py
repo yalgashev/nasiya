@@ -51,6 +51,7 @@ def test_audit_contract_registries_include_exact_m12_extensions() -> None:
         "debt.clawback_applied",
         "payment.recorded",
         "debt.paid",
+        "disclosure.risk_band_viewed",
     }
     assert {object_type.value for object_type in AuditObjectType} == {
         "user",
@@ -64,6 +65,7 @@ def test_audit_contract_registries_include_exact_m12_extensions() -> None:
         "shop",
         "debt",
         "payment",
+        "disclosure_view",
     }
     assert {kind.value for kind in AuditActorKind} == {"USER", "SYSTEM"}
 

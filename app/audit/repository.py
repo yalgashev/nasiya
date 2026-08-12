@@ -13,10 +13,12 @@ from app.audit.contracts import (
 )
 from app.audit.models import AuditLog
 from app.audit.redaction import redact_audit_payload
+from app.rating.disclosure import RiskBandDisclosureAuditPayload
 
 __all__ = [
     "SqlAlchemyAuditWriter",
     "append_audit_event",
+    "append_risk_band_disclosure_audit",
 ]
 
 
@@ -89,6 +91,34 @@ def append_debt_paid_audit(
             actor_user_id=actor_user_id,
             object_type=AuditObjectType.DEBT,
             object_id=debt_id,
+            occurred_at=occurred_at,
+            candidate_metadata=payload.as_candidate_metadata(),
+        ),
+    )
+
+
+def append_risk_band_disclosure_audit(
+    session: Session,
+    *,
+    disclosure_view_id: UUID,
+    actor_user_id: UUID,
+    occurred_at: datetime,
+    payload: RiskBandDisclosureAuditPayload,
+) -> None:
+    if not isinstance(disclosure_view_id, UUID) or not isinstance(
+        actor_user_id, UUID
+    ):
+        raise ValueError("Disclosure audit identifiers are invalid")
+    if not isinstance(payload, RiskBandDisclosureAuditPayload):
+        raise ValueError("Disclosure audit payload is invalid")
+    append_audit_event(
+        session,
+        AuditEvent(
+            event_type=AuditEventType.DISCLOSURE_RISK_BAND_VIEWED,
+            actor_kind=AuditActorKind.USER,
+            actor_user_id=actor_user_id,
+            object_type=AuditObjectType.DISCLOSURE_VIEW,
+            object_id=disclosure_view_id,
             occurred_at=occurred_at,
             candidate_metadata=payload.as_candidate_metadata(),
         ),

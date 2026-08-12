@@ -16,6 +16,7 @@ from app.idempotency import models as _idempotency_models  # noqa: F401
 from app.offers import models as _offer_models  # noqa: F401
 from app.otp import models as _otp_models  # noqa: F401
 from app.payment import models as _payment_models  # noqa: F401
+from app.rating import models as _rating_models  # noqa: F401
 from app.settings import Settings
 from app.shop import models as _shop_models  # noqa: F401
 from app.shop_customer import models as _shop_customer_models  # noqa: F401
@@ -60,6 +61,16 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
+    supplied_connection = config.attributes.get("connection")
+    if supplied_connection is not None:
+        context.configure(
+            connection=supplied_connection,
+            target_metadata=target_metadata,
+        )
+        with context.begin_transaction():
+            context.run_migrations()
+        return
+
     configuration = config.get_section(config.config_ini_section, {})
     configuration["sqlalchemy.url"] = _get_database_url()
     connectable = engine_from_config(

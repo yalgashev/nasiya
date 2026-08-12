@@ -490,6 +490,29 @@ def _debt_paid_payload(metadata: Mapping[str, object]) -> AuditPayload:
     }
 
 
+def _risk_band_disclosure_payload(
+    metadata: Mapping[str, object],
+) -> AuditPayload:
+    values = _exact_required(metadata, "purpose", "band")
+    purpose = values["purpose"]
+    band = values["band"]
+    if not isinstance(purpose, str) or purpose not in {
+        "debt_proposal_review",
+        "credit_limit_review",
+        "existing_debt_review",
+    }:
+        raise ValueError("Disclosure audit purpose is invalid")
+    if not isinstance(band, str) or band not in {
+        "new",
+        "green",
+        "yellow",
+        "red",
+        "blocked",
+    }:
+        raise ValueError("Disclosure audit band is invalid")
+    return {"purpose": purpose, "band": band}
+
+
 _PAYLOAD_BUILDERS: Final[
     Mapping[AuditEventType, Callable[[Mapping[str, object]], AuditPayload]]
 ] = {
@@ -523,6 +546,9 @@ _PAYLOAD_BUILDERS: Final[
     AuditEventType.DEBT_CLAWBACK_APPLIED: _debt_clawback_applied_payload,
     AuditEventType.PAYMENT_RECORDED: _payment_recorded_payload,
     AuditEventType.DEBT_PAID: _debt_paid_payload,
+    AuditEventType.DISCLOSURE_RISK_BAND_VIEWED: (
+        _risk_band_disclosure_payload
+    ),
 }
 
 

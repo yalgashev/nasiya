@@ -43,8 +43,6 @@ EXPECTED_ROUTES = {
     ("POST", "/customer/debts/{debt_id}/accept"),
     ("POST", "/customer/debts/{debt_id}/reject"),
 }
-
-
 def _linked_customer(db: Session, *, add_offer: bool = True):
     actor, shop, target, customer = _seed(db)
     linked = ShopCustomer(
@@ -149,7 +147,9 @@ def test_shop_create_list_detail_replay_conflict_and_no_store(
 
 def test_customer_legal_accept_prg_replay_and_foreign_locator_are_safe(
     m2_test_database: Engine,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr("app.debt.customer_accept_service._utc_now", lambda: NOW)
     from app.db import create_database_session_factory
 
     session_factory = create_database_session_factory(m2_test_database)

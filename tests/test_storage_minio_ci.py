@@ -25,7 +25,7 @@ def test_ci_keeps_one_dependency_sync_job_and_existing_gates() -> None:
     assert "\n  build:" not in jobs
     assert "\n  minio:" not in jobs
     assert "Run Alembic migrations" in workflow
-    assert 'test "$current_revision" = "b6c7d8e9f0a1"' in workflow
+    assert 'test "$current_revision" = "c7d8e9f0a1b2"' in workflow
     assert "Run Ruff" in workflow
     assert "Run M5 containment guard" in workflow
     assert "Run M6 Telegram fake-runtime guard" in workflow

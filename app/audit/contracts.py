@@ -57,6 +57,7 @@ class AuditEventType(StrEnum):
     DEBT_CLAWBACK_APPLIED = "debt.clawback_applied"
     PAYMENT_RECORDED = "payment.recorded"
     DEBT_PAID = "debt.paid"
+    DISCLOSURE_RISK_BAND_VIEWED = "disclosure.risk_band_viewed"
 
 
 class AuditObjectType(StrEnum):
@@ -71,6 +72,7 @@ class AuditObjectType(StrEnum):
     SHOP = "shop"
     DEBT = "debt"
     PAYMENT = "payment"
+    DISCLOSURE_VIEW = "disclosure_view"
 
 
 class AuditActorKind(StrEnum):
@@ -108,6 +110,9 @@ _EVENT_OBJECT_TYPES: Final[Mapping[AuditEventType, AuditObjectType]] = MappingPr
         AuditEventType.DEBT_CLAWBACK_APPLIED: AuditObjectType.DEBT,
         AuditEventType.PAYMENT_RECORDED: AuditObjectType.PAYMENT,
         AuditEventType.DEBT_PAID: AuditObjectType.DEBT,
+        AuditEventType.DISCLOSURE_RISK_BAND_VIEWED: (
+            AuditObjectType.DISCLOSURE_VIEW
+        ),
     }
 )
 

@@ -4,14 +4,18 @@ from pathlib import Path
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
-from app.audit.models import _AUDIT_PAYLOAD_EXACT_SHAPE_SQL
 from app.debt.models import Debt
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 M14_REVISION = "a5b6c7d8e9f0"
 M15_REVISION = "b6c7d8e9f0a1"
+M16_REVISION = "c7d8e9f0a1b2"
 MIGRATION_PATH = (
     PROJECT_ROOT / "alembic/versions/b6c7d8e9f0a1_add_overdue_persistence.py"
+)
+M16_MIGRATION_PATH = (
+    PROJECT_ROOT
+    / "alembic/versions/c7d8e9f0a1b2_add_rating_and_disclosure_persistence.py"
 )
 
 
@@ -27,16 +31,20 @@ def test_m15_is_the_single_linear_child_of_exact_m14() -> None:
     scripts = ScriptDirectory.from_config(Config(str(PROJECT_ROOT / "alembic.ini")))
     revision = scripts.get_revision(M15_REVISION)
 
-    assert scripts.get_heads() == [M15_REVISION]
+    assert scripts.get_heads() == [M16_REVISION]
     assert revision is not None
     assert revision.down_revision == M14_REVISION
 
 
-def test_m15_migration_payload_matches_runtime_audit_metadata_exactly() -> None:
+def test_m15_migration_payload_remains_exact_m16_downgrade_authority() -> None:
     migration = _migration_module()
+    spec = spec_from_file_location("m16_rating_migration", M16_MIGRATION_PATH)
+    assert spec is not None and spec.loader is not None
+    m16 = module_from_spec(spec)
+    spec.loader.exec_module(m16)
 
     assert migration._audit_payload_sql(include_m15=True) == (
-        _AUDIT_PAYLOAD_EXACT_SHAPE_SQL
+        m16._audit_payload_sql(include_m16=False)
     )
 
 
@@ -102,5 +110,5 @@ def test_all_m15_downgrade_guards_run_before_ddl() -> None:
 def test_ci_verifies_exact_m15_head() -> None:
     workflow = (PROJECT_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
-    assert "Verify Alembic M15 head" in workflow
-    assert f'test "$current_revision" = "{M15_REVISION}"' in workflow
+    assert "Verify Alembic M16 head" in workflow
+    assert f'test "$current_revision" = "{M16_REVISION}"' in workflow

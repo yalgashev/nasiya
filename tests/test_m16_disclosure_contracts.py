@@ -194,7 +194,7 @@ def test_safe_get_projection_and_audit_payload_are_exact_closed_strings() -> Non
     assert "blocked" not in repr(payload)
 
 
-def test_idempotency_contract_adds_exact_disclosure_pair_without_storage_wiring() -> (
+def test_idempotency_contract_wires_exact_disclosure_pair_for_persistence() -> (
     None
 ):
     assert (
@@ -209,8 +209,10 @@ def test_idempotency_contract_adds_exact_disclosure_pair_without_storage_wiring(
     repository_source = (PROJECT_ROOT / "app/idempotency/repository.py").read_text(
         encoding="utf-8"
     )
-    assert "SHOP_RISK_BAND_DISCLOSURES_CREATE" not in model_source
-    assert "SHOP_RISK_BAND_DISCLOSURES_CREATE" not in repository_source
+    assert model_source.count("SHOP_RISK_BAND_DISCLOSURES_CREATE") == 1
+    assert repository_source.count("SHOP_RISK_BAND_DISCLOSURES_CREATE") == 1
+    assert model_source.count("DISCLOSURE_VIEW") == 1
+    assert repository_source.count("DISCLOSURE_VIEW") == 1
 
 
 def test_exact_two_no_store_same_origin_ssr_route_contracts() -> None:
@@ -264,10 +266,10 @@ def test_uz_ru_labels_cover_only_closed_band_and_purpose_vocabulary() -> None:
         assert forbidden not in presentation_source
 
 
-def test_checkpoint_has_contracts_but_no_rating_persistence_or_product_router() -> None:
-    assert not (PROJECT_ROOT / "app/rating/models.py").exists()
+def test_persistence_checkpoint_has_no_product_router() -> None:
+    assert (PROJECT_ROOT / "app/rating/models.py").is_file()
     assert not (PROJECT_ROOT / "app/rating/router.py").exists()
-    assert not any(
+    assert sum(
         "c7d8e9f0a1b2" in path.read_text(encoding="utf-8")
         for path in (PROJECT_ROOT / "alembic/versions").glob("*.py")
-    )
+    ) == 1

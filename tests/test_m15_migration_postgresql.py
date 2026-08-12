@@ -25,6 +25,7 @@ from app.shop_customer.models import ShopCustomer
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 M14_REVISION = "a5b6c7d8e9f0"
 M15_REVISION = "b6c7d8e9f0a1"
+M16_REVISION = "c7d8e9f0a1b2"
 NOW = datetime(2026, 8, 9, 8, tzinfo=UTC)
 
 
@@ -140,14 +141,14 @@ def test_fresh_upgrade_and_every_revision_walk_reach_single_m15_head(
 ) -> None:
     config = _config()
     scripts = ScriptDirectory.from_config(config)
-    assert scripts.get_heads() == [M15_REVISION]
+    assert scripts.get_heads() == [M16_REVISION]
     revisions = tuple(reversed(tuple(scripts.walk_revisions(base="base", head="head"))))
     try:
         command.downgrade(config, "base")
         for revision in revisions:
             command.upgrade(config, revision.revision)
             assert _current_revision(m2_test_database) == revision.revision
-        assert _current_revision(m2_test_database) == M15_REVISION
+        assert _current_revision(m2_test_database) == M16_REVISION
     finally:
         command.upgrade(config, "head")
 
@@ -263,7 +264,7 @@ def test_overdue_and_late_paid_rows_block_downgrade_before_schema_mutation(
     with pytest.raises(RuntimeError, match="M15 downgrade blocked"):
         command.downgrade(_config(), M14_REVISION)
 
-    assert _current_revision(m2_test_database) == M15_REVISION
+    assert _current_revision(m2_test_database) == M16_REVISION
     assert "overdue_at" in {
         item["name"] for item in inspect(m2_test_database).get_columns("debts")
     }
@@ -320,7 +321,7 @@ def test_m15_system_audit_history_blocks_downgrade_without_debt_row(
     with pytest.raises(RuntimeError, match="M15 downgrade blocked"):
         command.downgrade(_config(), M14_REVISION)
 
-    assert _current_revision(m2_test_database) == M15_REVISION
+    assert _current_revision(m2_test_database) == M16_REVISION
 
 
 @pytest.mark.integration
@@ -351,7 +352,7 @@ def test_overdue_payment_audit_shape_is_accepted_and_blocks_m14_downgrade(
     with pytest.raises(RuntimeError, match="M15 downgrade blocked"):
         command.downgrade(_config(), M14_REVISION)
 
-    assert _current_revision(m2_test_database) == M15_REVISION
+    assert _current_revision(m2_test_database) == M16_REVISION
 
 
 @pytest.mark.integration

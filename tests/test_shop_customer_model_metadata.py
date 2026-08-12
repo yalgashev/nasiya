@@ -105,7 +105,8 @@ def test_shop_customer_constraints_indexes_and_fks_are_exact() -> None:
         "ck_shop_customers_timestamp_order": "updated_at >= created_at",
     }
     assert uniques == {
-        "uq_shop_customers_shop_id_customer_id": ("shop_id", "customer_id")
+        "uq_shop_customers_shop_id_customer_id": ("shop_id", "customer_id"),
+        "uq_shop_customers_id_shop_id": ("id", "shop_id"),
     }
     assert indexes == {
         "ix_shop_customers_shop_id_created_at_id": (

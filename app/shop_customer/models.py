@@ -39,6 +39,11 @@ class ShopCustomer(Base):
             "customer_id",
             name="uq_shop_customers_shop_id_customer_id",
         ),
+        UniqueConstraint(
+            "id",
+            "shop_id",
+            name="uq_shop_customers_id_shop_id",
+        ),
         CheckConstraint(
             "credit_limit_uzs BETWEEN 0 AND 1000000000000",
             name="ck_shop_customers_credit_limit_uzs_bounds",

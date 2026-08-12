@@ -27,6 +27,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 M13_REVISION = "f4a5b6c7d8e"
 M14_REVISION = "a5b6c7d8e9f0"
 M15_REVISION = "b6c7d8e9f0a1"
+M16_REVISION = "c7d8e9f0a1b2"
 NOW = datetime(2026, 8, 9, 8, tzinfo=UTC)
 
 
@@ -157,7 +158,7 @@ def test_every_revision_walks_from_base_to_the_single_current_head(
 ) -> None:
     config = _config()
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == [M15_REVISION]
+    assert script.get_heads() == [M16_REVISION]
     revisions = tuple(
         reversed(tuple(script.walk_revisions(base="base", head=M14_REVISION)))
     )

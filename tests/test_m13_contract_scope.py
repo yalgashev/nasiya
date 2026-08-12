@@ -17,6 +17,7 @@ FORBIDDEN_RUNTIME_IMPORTS = (
 RUNTIME_IMPORT_EXCEPTIONS = {
     Path("app/debt/dependencies.py"): ("fastapi",),
     Path("app/debt/router.py"): ("fastapi", "starlette"),
+    Path("app/idempotency/repository.py"): ("app.rating.values",),
 }
 
 

@@ -331,6 +331,19 @@ _AUDIT_PAYLOAD_EXACT_SHAPE_SQL = (
                 ),
             ),
             _exact_payload_clause(
+                AuditEventType.DISCLOSURE_RISK_BAND_VIEWED,
+                ("purpose", "band"),
+                extra_predicate=(
+                    "jsonb_typeof(payload -> 'purpose') = 'string' "
+                    "AND jsonb_typeof(payload -> 'band') = 'string' "
+                    "AND payload ->> 'purpose' IN "
+                    "('debt_proposal_review','credit_limit_review',"
+                    "'existing_debt_review') "
+                    "AND payload ->> 'band' IN "
+                    "('new','green','yellow','red','blocked')"
+                ),
+            ),
+            _exact_payload_clause(
                 AuditEventType.DEBT_PAID,
                 ("source", "debt_revision_after"),
                 extra_predicate=(
@@ -434,6 +447,7 @@ class AuditLog(Base):
                 f", '{AuditEventType.DEBT_CLAWBACK_APPLIED.value}'"
                 f", '{AuditEventType.PAYMENT_RECORDED.value}'"
                 f", '{AuditEventType.DEBT_PAID.value}'"
+                f", '{AuditEventType.DISCLOSURE_RISK_BAND_VIEWED.value}'"
                 ")"
             ),
             name="ck_audit_log_event_type_allowed",
@@ -460,6 +474,7 @@ class AuditLog(Base):
                 f", '{AuditObjectType.SHOP.value}'"
                 f", '{AuditObjectType.DEBT.value}'"
                 f", '{AuditObjectType.PAYMENT.value}'"
+                f", '{AuditObjectType.DISCLOSURE_VIEW.value}'"
                 ")"
             ),
             name="ck_audit_log_object_type_allowed",
@@ -527,6 +542,10 @@ class AuditLog(Base):
                 f"AND object_type = '{AuditObjectType.DEBT.value}')"
                 f" OR (event_type = '{AuditEventType.PAYMENT_RECORDED.value}' "
                 f"AND object_type = '{AuditObjectType.PAYMENT.value}')"
+                f" OR (event_type = "
+                f"'{AuditEventType.DISCLOSURE_RISK_BAND_VIEWED.value}' "
+                f"AND object_type = "
+                f"'{AuditObjectType.DISCLOSURE_VIEW.value}')"
             ),
             name="ck_audit_log_object_matches_event",
         ),

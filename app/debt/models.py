@@ -18,6 +18,7 @@ from sqlalchemy import (
     Numeric,
     SmallInteger,
     Text,
+    UniqueConstraint,
     desc,
 )
 from sqlalchemy import text as sqlalchemy_text
@@ -34,6 +35,11 @@ class Debt(Base):
 
     __tablename__ = "debts"
     __table_args__ = (
+        UniqueConstraint(
+            "id",
+            "shop_customer_id",
+            name="uq_debts_id_shop_customer_id",
+        ),
         CheckConstraint(
             "original_amount_uzs BETWEEN 1 AND 1000000000000",
             name="ck_debts_original_amount_uzs_bounds",

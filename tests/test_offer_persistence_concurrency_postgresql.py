@@ -527,6 +527,7 @@ def test_audit_application_api_is_append_only() -> None:
     assert audit_repository.__all__ == [
         "SqlAlchemyAuditWriter",
         "append_audit_event",
+        "append_risk_band_disclosure_audit",
     ]
     source = python_inspect.getsource(audit_repository)
     assert "def append_audit_event(" in source
