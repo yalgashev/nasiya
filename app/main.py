@@ -28,6 +28,7 @@ from app.payment.read_service import (
 )
 from app.payment.repository import payment_open_set_reader_factory
 from app.payment.router import router as payment_router
+from app.rating.adapters import SqlAlchemyLockedRatingAppendAdapter
 from app.security_headers import install_security_headers_middleware
 from app.settings import Settings
 from app.shop.router import router as shop_router
@@ -81,6 +82,7 @@ def create_app(
         list_customer_debt_web_items=list_customer_debt_web_items_with_payment_progress,
         get_customer_debt_web_detail=get_customer_debt_web_detail_with_payment_progress,
     )
+    application.state.rating_append_port = SqlAlchemyLockedRatingAppendAdapter()
     application.state.get_database_session = create_database_session_dependency(
         database_session_factory
     )

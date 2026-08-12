@@ -13,6 +13,10 @@ from app.debt.business_time import tashkent_business_date
 from app.debt.enums import DebtStatus
 from app.debt.models import Debt
 from app.debt.overdue_ports import require_hard_block_business_date
+from app.debt.rating_ports import (
+    LockedOverdueRatingSource,
+    mark_locked_overdue_rating_source,
+)
 from app.debt.repository import (
     LockedCustomerHardBlockScope,
     lock_customer_hard_block_scope,
@@ -22,6 +26,7 @@ from app.debt.values import CustomerId, DebtId
 from app.shop.repository import _LockedShop, lock_shop_for_update
 from app.shop.values import ShopId
 from app.shop_customer.models import ShopCustomer
+from app.shop_customer.values import ShopCustomerId
 
 __all__ = (
     "LockedOverdueDebt",
@@ -31,6 +36,7 @@ __all__ = (
     "discover_overdue_batch",
     "discover_overdue_candidates",
     "locked_overdue_debt_row",
+    "locked_overdue_rating_source",
     "resolve_and_lock_overdue_candidate",
 )
 
@@ -200,6 +206,20 @@ def resolve_and_lock_overdue_candidate(
 def locked_overdue_debt_row(session: Session, token: object) -> Debt:
     locked = _validate_locked_overdue_debt(session, token)
     return locked._debt
+
+
+def locked_overdue_rating_source(
+    session: Session, token: object
+) -> LockedOverdueRatingSource:
+    """Derive a debt-local rating proof without acquiring another lock."""
+
+    locked = _validate_locked_overdue_debt(session, token)
+    return mark_locked_overdue_rating_source(
+        session,
+        customer_id=locked._locked_customer._customer.id,
+        shop_customer_id=ShopCustomerId(locked._shop_customer.id),
+        debt_id=DebtId(locked._debt.id),
+    )
 
 
 def _validate_locked_overdue_debt(session: Session, token: object) -> LockedOverdueDebt:

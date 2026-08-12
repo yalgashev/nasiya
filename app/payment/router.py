@@ -244,6 +244,7 @@ def create_shop_debt_payment(
                     db,
                     actor=authority,
                     command=assembled.command,
+                    rating_append_port=request.app.state.rating_append_port,
                 )
             else:
                 assert assembled.legacy_completed_replay is not None

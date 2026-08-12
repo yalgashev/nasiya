@@ -18,9 +18,10 @@ from app.idempotency.contracts import IdempotencyOutcome
 from app.idempotency.models import IdempotencyKey
 from app.payment.commands import CreatePaymentV2RawForm, assemble_create_payment_request
 from app.payment.models import Payment
-from app.payment.service import PaymentMutationRejected, record_debt_payment
+from app.payment.service import PaymentMutationRejected
 from app.shop.enums import ShopRole
 from app.shop.models import Shop, ShopStaff
+from tests.rating_support import record_debt_payment
 from tests.test_payment_targeting_postgresql import _context, _seed_one
 
 PAYMENT_TIME = datetime(2026, 8, 10, 12, tzinfo=UTC)

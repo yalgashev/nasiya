@@ -39,8 +39,12 @@ from app.idempotency.repository import insert_or_resolve_key
 from app.offers.enums import OfferLanguage
 from app.payment.models import Payment
 from app.payment.repository import payment_open_set_reader_factory
-from app.payment.service import PaymentMutationRejected, record_debt_payment
+from app.payment.service import PaymentMutationRejected
+from app.payment.service import (
+    record_debt_payment as production_record_debt_payment,
+)
 from app.shop.models import Shop
+from tests.rating_support import record_debt_payment
 from tests.test_customer_debt_accept_postgresql import (
     _command as _accept_command,
 )
@@ -87,15 +91,16 @@ def test_m13_m14_shared_paths_have_one_forward_order_and_append_tail() -> None:
         "lock_shop_customer_by_tenant_locator",
     )
 
-    payment = inspect.getsource(record_debt_payment)
+    payment = inspect.getsource(production_record_debt_payment)
     assert _ordered(
         payment,
         "lock_tenant_payment_predecessors",
         "insert_or_resolve_key",
         "lock_tenant_payment_debt",
         "read_locked_payment_balance",
-        "insert_payment",
         "update_locked_debt",
+        "insert_payment",
+        "append_pending_on_time_paid",
         "append_payment_recorded_audit",
         "append_debt_paid_audit",
     )

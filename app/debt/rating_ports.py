@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -14,19 +14,42 @@ from app.debt.business_time import tashkent_business_date
 from app.debt.values import DebtId
 from app.shop_customer.values import ShopCustomerId
 
-if TYPE_CHECKING:
-    from app.debt.overdue_targeting import LockedOverdueDebt
-
 __all__ = (
     "LockedOverdueRatingAppendPort",
+    "LockedOverdueRatingSource",
     "OverdueRatingAppendOutcome",
     "PendingOverdueRatingEffect",
+    "mark_locked_overdue_rating_source",
+    "validate_locked_overdue_rating_source",
 )
 
 
 class OverdueRatingAppendOutcome(StrEnum):
     APPENDED = "appended"
     SOURCE_ALREADY_EXISTS = "source_already_exists"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class LockedOverdueRatingSource:
+    """Debt-owned proof derived after the caller locks the complete chain."""
+
+    customer_id: UUID = field(repr=False)
+    shop_customer_id: ShopCustomerId = field(repr=False)
+    debt_id: DebtId = field(repr=False)
+    _session: Session = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.customer_id, UUID):
+            raise ValueError("Locked overdue Customer is invalid")
+        if not isinstance(self.shop_customer_id, ShopCustomerId):
+            raise ValueError("Locked overdue ShopCustomer is invalid")
+        if not isinstance(self.debt_id, DebtId):
+            raise ValueError("Locked overdue Debt is invalid")
+        if not isinstance(self._session, Session):
+            raise ValueError("Locked overdue Session is invalid")
+
+    def __repr__(self) -> str:
+        return "LockedOverdueRatingSource(<redacted>)"
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -57,9 +80,43 @@ class LockedOverdueRatingAppendPort(Protocol):
         self,
         session: Session,
         *,
-        locked_debt: LockedOverdueDebt,
+        locked_source: LockedOverdueRatingSource,
         effect: PendingOverdueRatingEffect,
     ) -> OverdueRatingAppendOutcome: ...
+
+
+def mark_locked_overdue_rating_source(
+    session: Session,
+    *,
+    customer_id: UUID,
+    shop_customer_id: ShopCustomerId,
+    debt_id: DebtId,
+) -> LockedOverdueRatingSource:
+    if not isinstance(session, Session):
+        raise TypeError("session must be a Session")
+    if not isinstance(customer_id, UUID):
+        raise TypeError("customer_id must be a UUID")
+    if not isinstance(shop_customer_id, ShopCustomerId):
+        raise TypeError("shop_customer_id must be a ShopCustomerId")
+    if not isinstance(debt_id, DebtId):
+        raise TypeError("debt_id must be a DebtId")
+    return LockedOverdueRatingSource(
+        customer_id=customer_id,
+        shop_customer_id=shop_customer_id,
+        debt_id=debt_id,
+        _session=session,
+    )
+
+
+def validate_locked_overdue_rating_source(
+    session: Session,
+    token: object,
+) -> LockedOverdueRatingSource:
+    if not isinstance(token, LockedOverdueRatingSource):
+        raise TypeError("locked source must come from debt rating boundary")
+    if token._session is not session:
+        raise RuntimeError("locked overdue rating source belongs to another session")
+    return token
 
 
 def _normalize_aware_utc(value: datetime) -> datetime:

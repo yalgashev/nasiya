@@ -15,7 +15,7 @@ from app.debt.values import ShopCustomerId
 from app.payment.commands import CreatePaymentV2RawForm, assemble_create_payment_request
 from app.payment.models import Payment
 from app.payment.repository import payment_open_set_reader_factory
-from app.payment.service import record_debt_payment
+from tests.rating_support import record_debt_payment
 from tests.test_debt_creation_gates_postgresql import (
     NOW,
     _add_complete_offer,

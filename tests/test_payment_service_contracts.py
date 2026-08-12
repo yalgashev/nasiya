@@ -60,8 +60,9 @@ def test_coordinator_source_freezes_gate_and_write_order() -> None:
         "command.expected_balance_basis is not payability.balance_basis",
         "read_locked_payment_balance(",
         "decide_locked_payment_amount(",
-        "insert_payment(",
         "update_locked_debt(",
+        "insert_payment(",
+        "append_pending_on_time_paid(",
         "append_payment_recorded_audit(",
         "append_debt_paid_audit(",
     )

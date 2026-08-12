@@ -18,7 +18,7 @@ from app.rating.enums import (
     RiskBand,
     RiskBandDisclosurePurpose,
 )
-from app.rating.ports import LockedRatingCustomerScope
+from app.rating.ports import LockedRatingCustomerScope, RatingEventAppendError
 from app.rating.repository import (
     append_locked_event,
     insert_disclosure_view_locked,
@@ -89,15 +89,31 @@ def test_locked_repository_append_order_source_and_daily_cap(
         recording_source=RatingRecordingSource.LIVE,
     )
 
-    assert append_locked_event(
-        db_session, locked_customer=locked, event=first
-    ).outcome is RatingEventAppendOutcome.APPENDED
-    assert append_locked_event(
-        db_session, locked_customer=locked, event=first
-    ).outcome is RatingEventAppendOutcome.SOURCE_ALREADY_EXISTS
-    assert append_locked_event(
-        db_session, locked_customer=locked, event=second
-    ).outcome is RatingEventAppendOutcome.POSITIVE_DAILY_CAP_ALREADY_USED
+    assert (
+        append_locked_event(db_session, locked_customer=locked, event=first).outcome
+        is RatingEventAppendOutcome.APPENDED
+    )
+    assert (
+        append_locked_event(db_session, locked_customer=locked, event=first).outcome
+        is RatingEventAppendOutcome.SOURCE_ALREADY_EXISTS
+    )
+    mismatched_replay = create_on_time_paid_rating_event(
+        event_id=RatingEventId(uuid4()),
+        shop_customer_id=ShopCustomerId(relation.id),
+        debt_id=DebtId(first_debt.id),
+        payment_created_at=datetime(2026, 8, 12, 8, 1, tzinfo=UTC),
+        recording_source=RatingRecordingSource.LIVE,
+    )
+    with pytest.raises(RatingEventAppendError, match="Rating event append failed"):
+        append_locked_event(
+            db_session,
+            locked_customer=locked,
+            event=mismatched_replay,
+        )
+    assert (
+        append_locked_event(db_session, locked_customer=locked, event=second).outcome
+        is RatingEventAppendOutcome.POSITIVE_DAILY_CAP_ALREADY_USED
+    )
     assert source_event_exists_locked(
         db_session,
         locked_customer=locked,
@@ -110,9 +126,7 @@ def test_locked_repository_append_order_source_and_daily_cap(
         shop_customer_id=ShopCustomerId(relation.id),
         business_date=first.business_date,
     )
-    assert read_ordered_locked_events(
-        db_session, locked_customer=locked
-    ) == (first,)
+    assert read_ordered_locked_events(db_session, locked_customer=locked) == (first,)
 
 
 @pytest.mark.integration
@@ -149,18 +163,24 @@ def test_disclosure_insert_and_read_are_actor_and_shop_tenant_bound(
     assert projection.band is RiskBand.YELLOW
     assert projection.purpose is RiskBandDisclosurePurpose.CREDIT_LIMIT_REVIEW
     assert projection.viewed_at == viewed_at
-    assert read_tenant_disclosure_projection(
-        db_session,
-        actor_user_id=uuid4(),
-        current_shop_id=relation.shop_id,
-        disclosure_view_id=disclosure_id,
-    ) is None
-    assert read_tenant_disclosure_projection(
-        db_session,
-        actor_user_id=actor.id,
-        current_shop_id=uuid4(),
-        disclosure_view_id=disclosure_id,
-    ) is None
+    assert (
+        read_tenant_disclosure_projection(
+            db_session,
+            actor_user_id=uuid4(),
+            current_shop_id=relation.shop_id,
+            disclosure_view_id=disclosure_id,
+        )
+        is None
+    )
+    assert (
+        read_tenant_disclosure_projection(
+            db_session,
+            actor_user_id=actor.id,
+            current_shop_id=uuid4(),
+            disclosure_view_id=disclosure_id,
+        )
+        is None
+    )
 
 
 @pytest.mark.integration

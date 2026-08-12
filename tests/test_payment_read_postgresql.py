@@ -34,7 +34,7 @@ from app.payment.read_service import (
     list_tenant_customer_debts_with_payment_progress,
     list_tenant_payment_history,
 )
-from app.payment.service import PaymentMutationRejected, record_debt_payment
+from app.payment.service import PaymentMutationRejected
 from app.payment.values import (
     PaymentId,
     PostedPaymentTotalUZS,
@@ -45,6 +45,7 @@ from app.shop.enums import ShopRole, ShopStatus
 from app.shop.models import Shop, ShopStaff
 from app.shop.values import ShopId
 from app.shop_customer.values import ShopCustomerId
+from tests.rating_support import record_debt_payment
 from tests.test_payment_targeting_postgresql import (
     NOW,
     _add_customer,

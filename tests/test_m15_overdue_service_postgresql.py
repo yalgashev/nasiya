@@ -20,16 +20,19 @@ from app.debt.overdue_service import (
     OverdueBatchTransitionError,
     OverdueTransitionOutcome,
     materialize_locked_overdue_debt,
-    materialize_overdue_candidate,
-    materialize_overdue_debts,
 )
 from app.debt.overdue_targeting import OverdueCandidateLocator
 from app.debt.repository import mark_locked_debt_transition_scope
 from app.debt.values import DebtId
 from app.payment.models import Payment
 from app.payment.repository import SqlAlchemyLockedDebtPostedTotalReader
+from app.rating.models import RatingEvent
 from app.shop.models import Shop
 from app.shop_customer.models import ShopCustomer
+from tests.rating_support import (
+    materialize_overdue_candidate,
+    materialize_overdue_debts,
+)
 
 CREATED_AT = datetime(2026, 8, 1, 8, tzinfo=UTC)
 ACCEPTED_AT = CREATED_AT + timedelta(days=1)
@@ -210,11 +213,20 @@ def test_atomic_transition_is_exact_once_with_one_revision_and_audit_pair(
                 .order_by(AuditLog.event_type)
             )
         )
+        ratings = list(
+            session.scalars(
+                select(RatingEvent).where(RatingEvent.debt_id == seed.debt_id)
+            )
+        )
     assert debt.status == "overdue"
     assert debt.revision == 3
     assert debt.overdue_revision == 3
     assert debt.overdue_at == NOW
     assert debt.updated_at == NOW
+    assert len(ratings) == 1
+    assert ratings[0].event_type == "overdue"
+    assert ratings[0].delta == -15
+    assert ratings[0].occurred_at == NOW
     assert [audit.event_type for audit in audits] == [
         "debt.clawback_applied",
         "debt.overdue",
@@ -255,6 +267,8 @@ def test_inline_transition_accepts_an_already_locked_debt_scope(
         )
 
     assert result.outcome is OverdueTransitionOutcome.TRANSITIONED
+    assert result.effect is not None
+    assert result.effect.source is DebtOverdueSource.INLINE_PAYMENT
     with factory() as session:
         debt = session.get_one(Debt, seed.debt_id)
         audit_sources = set(
@@ -266,7 +280,7 @@ def test_inline_transition_accepts_an_already_locked_debt_scope(
         )
     assert debt.status == "overdue"
     assert debt.revision == 3
-    assert audit_sources == {DebtOverdueSource.INLINE_PAYMENT.value}
+    assert audit_sources == set()
 
 
 @pytest.mark.integration

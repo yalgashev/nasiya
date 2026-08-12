@@ -11,7 +11,9 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.debt.business_time import tashkent_business_date
-from app.debt.values import DebtId
+from app.debt.enums import DebtStatus
+from app.debt.values import DebtId, DebtRevision, OriginalAmountUZS
+from app.payment.values import PaymentAmountUZS, RemainingDueUZS
 from app.shop_customer.values import ShopCustomerId
 
 if TYPE_CHECKING:
@@ -20,6 +22,8 @@ if TYPE_CHECKING:
 __all__ = (
     "LockedPaymentRatingAppendPort",
     "PaymentRatingAppendOutcome",
+    "PaymentRatingEligibility",
+    "PaymentRatingEligibilityFacts",
     "PendingOnTimePaidRatingEffect",
 )
 
@@ -28,6 +32,31 @@ class PaymentRatingAppendOutcome(StrEnum):
     APPENDED = "appended"
     DAILY_CAP_ALREADY_USED = "daily_cap_already_used"
     SOURCE_ALREADY_EXISTS = "source_already_exists"
+
+
+class PaymentRatingEligibility(StrEnum):
+    AWARD = "award"
+    NO_BONUS = "no_bonus"
+    DAILY_CAP_ALREADY_USED = "daily_cap_already_used"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class PaymentRatingEligibilityFacts:
+    shop_customer_id: ShopCustomerId = field(repr=False)
+    pre_status: DebtStatus
+    post_status: DebtStatus
+    payment_amount: PaymentAmountUZS = field(repr=False)
+    discounted_remaining: RemainingDueUZS = field(repr=False)
+    original_amount: OriginalAmountUZS = field(repr=False)
+    accepted_at: datetime
+    payment_created_at: datetime
+    due_date: date
+    overdue_at: datetime | None = field(default=None, repr=False)
+    overdue_revision: DebtRevision | None = field(default=None, repr=False)
+    daily_cap_already_used: bool = False
+
+    def __repr__(self) -> str:
+        return "PaymentRatingEligibilityFacts(<redacted>)"
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -62,6 +91,18 @@ class PendingOnTimePaidRatingEffect:
 
 @runtime_checkable
 class LockedPaymentRatingAppendPort(Protocol):
+    def evaluate_on_time_paid(
+        self, facts: PaymentRatingEligibilityFacts
+    ) -> PaymentRatingEligibility: ...
+
+    def positive_daily_slot_used(
+        self,
+        session: Session,
+        *,
+        locked_debt: LockedTenantPaymentDebt,
+        payment_business_date: date,
+    ) -> bool: ...
+
     def append_pending_on_time_paid(
         self,
         session: Session,

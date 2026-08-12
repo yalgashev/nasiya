@@ -37,9 +37,9 @@ from app.shop_customer.values import ShopCustomerId
 
 _SOURCE_UNIQUE = "uq_rating_events_debt_id_event_type"
 _PRIMARY_KEY = "pk_rating_events"
-_POSITIVE_CAP_UNIQUE = (
-    "ux_rating_events_positive_shop_customer_business_date"
-)
+_POSITIVE_CAP_UNIQUE = "ux_rating_events_positive_shop_customer_business_date"
+
+type OrderedRatingEventTuple = tuple[datetime, UUID, str, int]
 
 
 def _owned_shop_customer_query(
@@ -91,6 +91,33 @@ def read_ordered_locked_events(
     )
 
 
+def read_ordered_locked_event_tuples(
+    session: Session,
+    *,
+    locked_customer: LockedRatingCustomerScope,
+) -> tuple[OrderedRatingEventTuple, ...]:
+    """Read only scalar fold inputs for every ShopCustomer of one Customer."""
+
+    locked = validate_locked_rating_customer_scope(session, locked_customer)
+    rows = session.execute(
+        select(
+            RatingEvent.occurred_at,
+            RatingEvent.debt_id,
+            RatingEvent.event_type,
+            RatingEvent.delta,
+        )
+        .join(ShopCustomer, ShopCustomer.id == RatingEvent.shop_customer_id)
+        .where(ShopCustomer.customer_id == locked.customer_id)
+        .order_by(
+            RatingEvent.occurred_at,
+            RatingEvent.debt_id,
+            RatingEvent.event_type,
+            RatingEvent.delta,
+        )
+    ).tuples()
+    return tuple(tuple(row) for row in rows)
+
+
 def source_event_exists_locked(
     session: Session,
     *,
@@ -113,6 +140,36 @@ def source_event_exists_locked(
                 )
             )
         )
+    )
+
+
+def _exact_source_event_exists_locked(
+    session: Session,
+    *,
+    locked_customer: LockedRatingCustomerScope,
+    event: RatingEventContract,
+) -> bool:
+    row = session.execute(
+        select(
+            RatingEvent.shop_customer_id,
+            RatingEvent.delta,
+            RatingEvent.occurred_at,
+            RatingEvent.business_date,
+            RatingEvent.recording_source,
+        )
+        .join(ShopCustomer, ShopCustomer.id == RatingEvent.shop_customer_id)
+        .where(
+            ShopCustomer.customer_id == locked_customer.customer_id,
+            RatingEvent.debt_id == event.debt_id.as_uuid(),
+            RatingEvent.event_type == event.event_type.value,
+        )
+    ).one_or_none()
+    return row is not None and (
+        row.shop_customer_id == event.shop_customer_id.as_uuid()
+        and row.delta == event.delta
+        and row.occurred_at == event.occurred_at
+        and row.business_date == event.business_date
+        and row.recording_source == event.recording_source.value
     )
 
 
@@ -178,18 +235,16 @@ def append_locked_event(
             session.flush()
     except IntegrityError as exc:
         constraint = _constraint_name(exc)
-        if constraint == _SOURCE_UNIQUE or (
-            constraint == _PRIMARY_KEY
-            and source_event_exists_locked(
+        if constraint in {_SOURCE_UNIQUE, _PRIMARY_KEY}:
+            if _exact_source_event_exists_locked(
                 session,
                 locked_customer=locked,
-                debt_id=event.debt_id,
-                event_type=event.event_type,
-            )
-        ):
-            return RatingEventAppendResult(
-                RatingEventAppendOutcome.SOURCE_ALREADY_EXISTS
-            )
+                event=event,
+            ):
+                return RatingEventAppendResult(
+                    RatingEventAppendOutcome.SOURCE_ALREADY_EXISTS
+                )
+            raise RatingEventAppendError() from None
         if constraint == _POSITIVE_CAP_UNIQUE:
             return RatingEventAppendResult(
                 RatingEventAppendOutcome.POSITIVE_DAILY_CAP_ALREADY_USED
@@ -276,13 +331,12 @@ class SqlAlchemyRatingRepository:
     """Structural adapter; every operation borrows the supplied Session."""
 
     read_ordered_locked_events = staticmethod(read_ordered_locked_events)
+    read_ordered_locked_event_tuples = staticmethod(read_ordered_locked_event_tuples)
     source_event_exists_locked = staticmethod(source_event_exists_locked)
     positive_cap_used_locked = staticmethod(positive_cap_used_locked)
     append_locked_event = staticmethod(append_locked_event)
     insert_disclosure_view_locked = staticmethod(insert_disclosure_view_locked)
-    read_tenant_disclosure_projection = staticmethod(
-        read_tenant_disclosure_projection
-    )
+    read_tenant_disclosure_projection = staticmethod(read_tenant_disclosure_projection)
 
 
 def _constraint_name(exc: IntegrityError) -> str | None:

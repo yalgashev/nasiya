@@ -14,8 +14,17 @@ from sqlalchemy.orm import Session
 from app.audit.contracts import DebtPaidAuditPayload, PaymentRecordedAuditPayload
 from app.audit.repository import append_debt_paid_audit, append_payment_recorded_audit
 from app.auth.error_codes import ErrorCode
+from app.debt.business_time import tashkent_business_date
 from app.debt.enums import DebtBalanceBasis, DebtOverdueSource
-from app.debt.overdue_service import materialize_locked_overdue_debt
+from app.debt.overdue_service import (
+    append_pending_overdue_audits,
+    materialize_locked_overdue_debt,
+)
+from app.debt.rating_ports import (
+    LockedOverdueRatingAppendPort,
+    OverdueRatingAppendOutcome,
+    mark_locked_overdue_rating_source,
+)
 from app.debt.repository import (
     debt_aggregate_from_row,
     mark_locked_debt_transition_scope,
@@ -43,6 +52,13 @@ from app.payment.policy import (
     capture_payment_server_now,
     evaluate_locked_debt_payability,
 )
+from app.payment.rating_ports import (
+    LockedPaymentRatingAppendPort,
+    PaymentRatingAppendOutcome,
+    PaymentRatingEligibility,
+    PaymentRatingEligibilityFacts,
+    PendingOnTimePaidRatingEffect,
+)
 from app.payment.repository import (
     SqlAlchemyLockedDebtPostedTotalReader,
     get_tenant_payment,
@@ -65,6 +81,7 @@ from app.payment.values import (
     RemainingDueUZS,
     calculate_remaining_due_for_basis,
 )
+from app.shop_customer.values import ShopCustomerId
 
 __all__ = (
     "LockedPaymentBalance",
@@ -185,6 +202,7 @@ def record_debt_payment(
     *,
     actor: DetachedPaymentActorContext,
     command: CreatePaymentV2Command,
+    rating_append_port: LockedPaymentRatingAppendPort,
     payment_clock: PaymentServerClock | None = None,
 ) -> RecordDebtPaymentResult:
     """Append one idempotent Payment/Debt/audit unit in the borrowed TX-B.
@@ -194,6 +212,10 @@ def record_debt_payment(
     """
 
     _validate_service_inputs(actor=actor, command=command)
+    if not isinstance(
+        rating_append_port, LockedPaymentRatingAppendPort
+    ) or not isinstance(rating_append_port, LockedOverdueRatingAppendPort):
+        raise TypeError("rating_append_port must implement payment and overdue ports")
     clock = payment_clock or _utc_now
     if not callable(clock):
         raise TypeError("payment_clock must be callable")
@@ -267,8 +289,16 @@ def record_debt_payment(
     if command.expected_balance_basis is not payability.balance_basis:
         raise PaymentMutationRejected(ErrorCode.DEBT_CHANGED)
 
+    overdue_effect = None
+    overdue_rating_source = None
     if payability.requires_overdue_transition:
-        materialize_locked_overdue_debt(
+        overdue_rating_source = mark_locked_overdue_rating_source(
+            session,
+            customer_id=locked_debt.predecessors.customer_id,
+            shop_customer_id=ShopCustomerId(locked_debt.row.shop_customer_id),
+            debt_id=DebtId(locked_debt.row.id),
+        )
+        overdue_result = materialize_locked_overdue_debt(
             session,
             locked_debt=mark_locked_debt_transition_scope(
                 session, locked_row=locked_debt.row
@@ -277,6 +307,9 @@ def record_debt_payment(
             source=DebtOverdueSource.INLINE_PAYMENT,
             posted_total_reader=SqlAlchemyLockedDebtPostedTotalReader(session),
         )
+        overdue_effect = overdue_result.effect
+        if overdue_effect is None:
+            raise RuntimeError("Required overdue transition produced no source fact")
         debt = debt_aggregate_from_row(locked_debt.row)
 
     balance = read_locked_payment_balance(
@@ -307,8 +340,75 @@ def record_debt_payment(
         debt_revision_after=updated_debt.revision,
         created_at=payability.payment_created_at,
     )
-    insert_payment(session, locked_debt=locked_debt.row, payment=payment)
     update_locked_debt(session, row=locked_debt.row, debt=updated_debt)
+    insert_payment(session, locked_debt=locked_debt.row, payment=payment)
+
+    if overdue_effect is not None:
+        assert overdue_rating_source is not None
+        overdue_outcome = rating_append_port.append_pending_overdue(
+            session,
+            locked_source=overdue_rating_source,
+            effect=overdue_effect.rating_effect,
+        )
+        if overdue_outcome is not OverdueRatingAppendOutcome.APPENDED:
+            raise RuntimeError("Overdue rating source is inconsistent")
+        append_pending_overdue_audits(session, effect=overdue_effect)
+    else:
+        assert debt.accepted_at is not None
+        initial_facts = PaymentRatingEligibilityFacts(
+            shop_customer_id=debt.shop_customer_id,
+            pre_status=debt.status,
+            post_status=updated_debt.status,
+            payment_amount=command.amount,
+            discounted_remaining=balance.remaining,
+            original_amount=debt.original_amount,
+            accepted_at=debt.accepted_at,
+            payment_created_at=payment.created_at,
+            due_date=debt.due_date,
+            overdue_at=debt.overdue_at,
+            overdue_revision=debt.overdue_revision,
+        )
+        eligibility = rating_append_port.evaluate_on_time_paid(initial_facts)
+        if eligibility is PaymentRatingEligibility.AWARD:
+            payment_business_date = tashkent_business_date(payment.created_at)
+            daily_cap_used = rating_append_port.positive_daily_slot_used(
+                session,
+                locked_debt=locked_debt,
+                payment_business_date=payment_business_date,
+            )
+            eligibility = rating_append_port.evaluate_on_time_paid(
+                PaymentRatingEligibilityFacts(
+                    shop_customer_id=debt.shop_customer_id,
+                    pre_status=debt.status,
+                    post_status=updated_debt.status,
+                    payment_amount=command.amount,
+                    discounted_remaining=balance.remaining,
+                    original_amount=debt.original_amount,
+                    accepted_at=debt.accepted_at,
+                    payment_created_at=payment.created_at,
+                    due_date=debt.due_date,
+                    overdue_at=debt.overdue_at,
+                    overdue_revision=debt.overdue_revision,
+                    daily_cap_already_used=daily_cap_used,
+                )
+            )
+            if eligibility is PaymentRatingEligibility.AWARD:
+                rating_outcome = rating_append_port.append_pending_on_time_paid(
+                    session,
+                    locked_debt=locked_debt,
+                    effect=PendingOnTimePaidRatingEffect(
+                        event_id=uuid4(),
+                        debt_id=debt.id,
+                        shop_customer_id=debt.shop_customer_id,
+                        payment_created_at=payment.created_at,
+                        payment_business_date=payment_business_date,
+                    ),
+                )
+                if rating_outcome not in {
+                    PaymentRatingAppendOutcome.APPENDED,
+                    PaymentRatingAppendOutcome.DAILY_CAP_ALREADY_USED,
+                }:
+                    raise RuntimeError("On-time rating source is inconsistent")
     append_payment_recorded_audit(
         session,
         payment_id=payment_id.as_uuid(),

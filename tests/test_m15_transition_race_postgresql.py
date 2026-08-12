@@ -16,8 +16,6 @@ from app.debt.enums import DebtOverdueSource
 from app.debt.models import Debt
 from app.debt.overdue_service import (
     OverdueTransitionOutcome,
-    materialize_overdue_candidate,
-    materialize_overdue_debts,
 )
 from app.debt.overdue_targeting import discover_overdue_batch
 from app.debt.values import MAX_DEBT_AMOUNT_UZS
@@ -26,10 +24,16 @@ from app.payment import service as payment_service
 from app.payment import targeting as payment_targeting
 from app.payment.models import Payment
 from app.payment.repository import SqlAlchemyLockedDebtPostedTotalReader
-from app.payment.service import PaymentMutationRejected, record_debt_payment
+from app.payment.service import PaymentMutationRejected
+from app.rating.models import RatingEvent
 from app.shop.enums import ShopStatus
 from app.shop.models import Shop
 from app.shop_customer.models import ShopCustomer
+from tests.rating_support import (
+    materialize_overdue_candidate,
+    materialize_overdue_debts,
+    record_debt_payment,
+)
 from tests.test_m15_overdue_service_postgresql import (
     ACCEPTED_AT,
     _seed_debt,
@@ -174,6 +178,11 @@ def test_on_time_payment_holds_lock_before_stale_batch_revalidation(
         assert debt.revision == expected_revision
         assert session.scalar(select(func.count()).select_from(Payment)) == 1
         assert session.scalar(select(func.count()).select_from(IdempotencyKey)) == 1
+        rating_events = tuple(
+            session.scalars(
+                select(RatingEvent).where(RatingEvent.debt_id == seed.debt_id)
+            )
+        )
     if expected_status == "overdue":
         assert debt.overdue_revision == 4
         assert event_types == (
@@ -181,9 +190,12 @@ def test_on_time_payment_holds_lock_before_stale_batch_revalidation(
             "debt.overdue",
             "payment.recorded",
         )
+        assert len(rating_events) == 1
+        assert rating_events[0].event_type == "overdue"
     else:
         assert debt.overdue_revision is None
         assert event_types == ("debt.paid", "payment.recorded")
+        assert rating_events == ()
 
 
 @pytest.mark.integration
@@ -276,7 +288,13 @@ def test_batch_holds_lock_before_boundary_payment_and_is_the_only_winner(
         assert debt.revision == debt.overdue_revision == 3
         assert session.scalar(select(func.count()).select_from(Payment)) == 0
         assert session.scalar(select(func.count()).select_from(IdempotencyKey)) == 0
+        ratings = tuple(
+            session.scalars(
+                select(RatingEvent).where(RatingEvent.debt_id == seed.debt_id)
+            )
+        )
     assert event_types == ("debt.clawback_applied", "debt.overdue")
+    assert len(ratings) == 1 and ratings[0].event_type == "overdue"
 
 
 @pytest.mark.integration

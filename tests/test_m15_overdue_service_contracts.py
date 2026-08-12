@@ -18,6 +18,7 @@ from app.debt.overdue_targeting import (
     discover_overdue_batch,
 )
 from app.debt.values import DebtId
+from app.rating.adapters import SqlAlchemyLockedRatingAppendAdapter
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 8, 9, 20, tzinfo=timezone(timedelta(hours=5)))
@@ -95,6 +96,7 @@ def test_missing_target_is_safe_no_op_without_ledger_read(monkeypatch) -> None:
         now=NOW,
         source=DebtOverdueSource.BATCH,
         posted_total_reader=_ZeroPostedReader(),
+        rating_append_port=SqlAlchemyLockedRatingAppendAdapter(),
     )
 
     assert result.outcome is OverdueTransitionOutcome.NO_OP

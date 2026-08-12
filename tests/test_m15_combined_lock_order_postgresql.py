@@ -30,7 +30,6 @@ from app.debt.dependencies import DebtRequestContext, DetachedDebtActorAuthority
 from app.debt.enums import DebtStatus
 from app.debt.expiry_targeting import lock_debt_for_expiry
 from app.debt.models import Debt
-from app.debt.overdue_service import materialize_overdue_debts
 from app.debt.service import create_pending_debt_proposal
 from app.debt.tenant_cancel_targeting import lock_tenant_debt_for_cancel
 from app.debt.values import ShopCustomerId
@@ -44,6 +43,7 @@ from app.shop_customer.contracts import (
 )
 from app.shop_customer.models import ShopCustomer
 from app.telegram.service import unlink
+from tests.rating_support import materialize_overdue_debts
 from tests.test_debt_creation_gates_postgresql import (
     NOW as M13_NOW,
 )
@@ -125,8 +125,9 @@ def test_inherited_graph_keeps_every_relevant_path_forward_ordered() -> None:
         "lock_tenant_payment_predecessors",
         "insert_or_resolve_key",
         "lock_tenant_payment_debt",
-        "insert_payment",
         "update_locked_debt",
+        "insert_payment",
+        "append_pending_on_time_paid",
     )
 
     assert "lock_shop_for_update" in inspect.getsource(lock_customer_debt_predecessors)

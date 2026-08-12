@@ -25,10 +25,11 @@ from app.payment.read_service import compose_payment_receipt
 from app.payment.repository import get_tenant_payment
 from app.payment.service import (
     PaymentMutationRejected,
-    record_debt_payment,
     resolve_completed_m14_payment_replay,
 )
 from app.payment.values import PaymentId
+from app.rating.models import RatingEvent
+from tests.rating_support import record_debt_payment
 from tests.test_debt_creation_gates_postgresql import (
     _add_complete_offer,
     _create_command,
@@ -100,6 +101,12 @@ def test_inline_late_payment_rolls_over_then_records_atomically(
         assert payment.debt_revision_after == 4
         assert payment.amount_uzs == Decimal(amount)
         assert session.scalar(select(func.count()).select_from(AuditLog)) == audit_count
+        rating = session.scalar(
+            select(RatingEvent).where(RatingEvent.debt_id == debt_id)
+        )
+        assert rating is not None
+        assert rating.event_type == "overdue" and rating.delta == -15
+        assert rating.occurred_at == LATE_NOW
         if expected_status == "paid":
             assert debt.paid_at == LATE_NOW
         else:

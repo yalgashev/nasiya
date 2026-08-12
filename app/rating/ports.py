@@ -8,15 +8,18 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.debt.values import DebtId
 from app.rating.contracts import RatingEvent, RatingEventAppendResult
-from app.shop_customer.values import CustomerId
+from app.shop_customer.values import CustomerId, ShopCustomerId
 
 __all__ = (
     "LockedRatingCustomerScope",
+    "LockedRatingSourceScope",
     "RatingEventAppendError",
     "RatingEventReadPort",
     "RatingEventWriterPort",
     "validate_locked_rating_customer_scope",
+    "validate_locked_rating_source_scope",
 )
 
 
@@ -42,6 +45,36 @@ class LockedRatingCustomerScope:
         return "LockedRatingCustomerScope(<redacted>)"
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class LockedRatingSourceScope:
+    """Semantic proof derived from an already locked source chain."""
+
+    customer_id: CustomerId = field(repr=False)
+    shop_customer_id: ShopCustomerId = field(repr=False)
+    debt_id: DebtId = field(repr=False)
+    _session: Session = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.customer_id, UUID):
+            raise ValueError("Locked rating source Customer is invalid")
+        if not isinstance(self.shop_customer_id, ShopCustomerId):
+            raise ValueError("Locked rating source ShopCustomer is invalid")
+        if not isinstance(self.debt_id, DebtId):
+            raise ValueError("Locked rating source Debt is invalid")
+        if not isinstance(self._session, Session):
+            raise ValueError("Locked rating source Session is invalid")
+
+    @property
+    def customer_scope(self) -> LockedRatingCustomerScope:
+        return LockedRatingCustomerScope(
+            customer_id=self.customer_id,
+            _session=self._session,
+        )
+
+    def __repr__(self) -> str:
+        return "LockedRatingSourceScope(<redacted>)"
+
+
 def validate_locked_rating_customer_scope(
     session: Session,
     token: object,
@@ -50,6 +83,17 @@ def validate_locked_rating_customer_scope(
         raise TypeError("Rating Customer lock token is invalid")
     if token._session is not session:
         raise RuntimeError("Rating Customer lock belongs to another session")
+    return token
+
+
+def validate_locked_rating_source_scope(
+    session: Session,
+    token: object,
+) -> LockedRatingSourceScope:
+    if not isinstance(token, LockedRatingSourceScope):
+        raise TypeError("Rating source lock token is invalid")
+    if token._session is not session:
+        raise RuntimeError("Rating source lock belongs to another session")
     return token
 
 
