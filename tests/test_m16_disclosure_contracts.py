@@ -194,9 +194,7 @@ def test_safe_get_projection_and_audit_payload_are_exact_closed_strings() -> Non
     assert "blocked" not in repr(payload)
 
 
-def test_idempotency_contract_wires_exact_disclosure_pair_for_persistence() -> (
-    None
-):
+def test_idempotency_contract_wires_exact_disclosure_pair_for_persistence() -> None:
     assert (
         IdempotencyEndpoint.SHOP_RISK_BAND_DISCLOSURES_CREATE.value
         == "shop.risk_band_disclosures.create"
@@ -249,6 +247,10 @@ def test_uz_ru_labels_cover_only_closed_band_and_purpose_vocabulary() -> None:
         "viewed_at",
         "historical_notice",
         "new_view",
+        "page_title",
+        "purpose_label",
+        "band_label",
+        "generic_error",
     }
 
     assert set(RISK_BAND_WEB_COPY) == set(DebtWebLanguage)
@@ -266,10 +268,13 @@ def test_uz_ru_labels_cover_only_closed_band_and_purpose_vocabulary() -> None:
         assert forbidden not in presentation_source
 
 
-def test_persistence_checkpoint_has_no_product_router() -> None:
+def test_route_checkpoint_has_one_product_router_and_one_migration_child() -> None:
     assert (PROJECT_ROOT / "app/rating/models.py").is_file()
-    assert not (PROJECT_ROOT / "app/rating/router.py").exists()
-    assert sum(
-        "c7d8e9f0a1b2" in path.read_text(encoding="utf-8")
-        for path in (PROJECT_ROOT / "alembic/versions").glob("*.py")
-    ) == 1
+    assert (PROJECT_ROOT / "app/rating/router.py").is_file()
+    assert (
+        sum(
+            "c7d8e9f0a1b2" in path.read_text(encoding="utf-8")
+            for path in (PROJECT_ROOT / "alembic/versions").glob("*.py")
+        )
+        == 1
+    )

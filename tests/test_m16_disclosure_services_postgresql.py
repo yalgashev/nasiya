@@ -438,7 +438,7 @@ def test_cross_shop_same_customer_disclosures_are_tenant_bound(
 
 
 @pytest.mark.integration
-def test_revoked_or_suspended_historical_read_is_generic_unavailable(
+def test_suspended_denies_fresh_but_preserves_own_historical_read(
     db_session: Session,
 ) -> None:
     seed = _seed(db_session)
@@ -462,14 +462,13 @@ def test_revoked_or_suspended_historical_read_is_generic_unavailable(
         )
     assert fresh_error.value.error is ErrorCode.SHOP_SUSPENDED
 
-    assert (
-        read_risk_band_disclosure_snapshot(
-            db_session,
-            actor=_actor(seed),
-            disclosure_view_id=DisclosureViewId(result.disclosure_view_id.as_uuid()),
-        )
-        is None
+    historical = read_risk_band_disclosure_snapshot(
+        db_session,
+        actor=_actor(seed),
+        disclosure_view_id=DisclosureViewId(result.disclosure_view_id.as_uuid()),
     )
+    assert historical is not None
+    assert historical.band is RiskBand.NEW
 
 
 @pytest.mark.integration

@@ -8,6 +8,7 @@ from types import MappingProxyType
 from typing import Final
 
 from app.debt.presentation import DebtWebLanguage
+from app.rating.contracts import RiskBandDisclosureProjection
 from app.rating.enums import RiskBand, RiskBandDisclosurePurpose
 from app.rating.values import DisclosureViewId
 from app.shop_customer.values import ShopCustomerId
@@ -16,6 +17,7 @@ __all__ = (
     "RISK_BAND_DISCLOSURE_ROUTE_CONTRACTS",
     "RISK_BAND_WEB_COPY",
     "DisclosurePostActionContext",
+    "RiskBandDisclosurePageContext",
     "RiskBandDisclosureRouteContract",
     "disclosure_snapshot_path",
     "get_risk_band_web_copy",
@@ -65,6 +67,25 @@ class DisclosurePostActionContext:
         return "DisclosurePostActionContext(<redacted>)"
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class RiskBandDisclosurePageContext:
+    """Safe snapshot plus the sole server-side refresh capability."""
+
+    projection: RiskBandDisclosureProjection
+    action: DisclosurePostActionContext | None = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.projection, RiskBandDisclosureProjection):
+            raise ValueError("Disclosure page projection is invalid")
+        if self.action is not None and not isinstance(
+            self.action, DisclosurePostActionContext
+        ):
+            raise ValueError("Disclosure page action is invalid")
+
+    def __repr__(self) -> str:
+        return "RiskBandDisclosurePageContext(<safe>, action=<redacted>)"
+
+
 def disclosure_snapshot_path(disclosure_view_id: DisclosureViewId) -> str:
     if not isinstance(disclosure_view_id, DisclosureViewId):
         raise ValueError("Disclosure snapshot locator is invalid")
@@ -84,6 +105,10 @@ _UZ_LATN_COPY = MappingProxyType(
         "viewed_at": "Ko‘rish vaqti",
         "historical_notice": "Band ko‘rish vaqtida olingan.",
         "new_view": "Yangi ko‘rishni yaratish",
+        "page_title": "Risk bandi ko‘rinishi",
+        "purpose_label": "Ko‘rish maqsadi",
+        "band_label": "Risk bandi",
+        "generic_error": "Risk bandini ko‘rish hozir mavjud emas.",
     }
 )
 _RU_COPY = MappingProxyType(
@@ -99,6 +124,10 @@ _RU_COPY = MappingProxyType(
         "viewed_at": "Время просмотра",
         "historical_notice": "Рейтинг зафиксирован на момент просмотра.",
         "new_view": "Создать новый просмотр",
+        "page_title": "Просмотр группы риска",
+        "purpose_label": "Цель просмотра",
+        "band_label": "Группа риска",
+        "generic_error": "Просмотр группы риска сейчас недоступен.",
     }
 )
 RISK_BAND_WEB_COPY: Final[Mapping[DebtWebLanguage, Mapping[str, str]]] = (
@@ -121,6 +150,10 @@ def get_risk_band_web_copy(language: DebtWebLanguage) -> Mapping[str, str]:
         "viewed_at",
         "historical_notice",
         "new_view",
+        "page_title",
+        "purpose_label",
+        "band_label",
+        "generic_error",
     }
     if set(copy) != expected_keys:
         raise RuntimeError("Risk-band web copy is incomplete")

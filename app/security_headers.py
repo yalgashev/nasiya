@@ -35,10 +35,12 @@ M14_NO_STORE_PATH_PREFIXES: Final = (
     "/customer/debts",
     "/customer/payments",
 )
+M16_NO_STORE_PATH_PREFIXES: Final = ("/shop/risk-band-disclosures",)
 SENSITIVE_NO_STORE_PATH_PREFIXES: Final = (
     *M9_NO_STORE_PATH_PREFIXES,
     *M12_NO_STORE_PATH_PREFIXES,
     *M14_NO_STORE_PATH_PREFIXES,
+    *M16_NO_STORE_PATH_PREFIXES,
 )
 SECURITY_HEADERS: Final[Mapping[str, str]] = {
     "Content-Security-Policy": CONTENT_SECURITY_POLICY,

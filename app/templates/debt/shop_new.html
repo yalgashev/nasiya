@@ -15,6 +15,15 @@
     <input id="debt-due" name="due_date" type="date" required>
     <button type="submit">{{ copy.create }}</button>
   </form>
+  <form action="{{ disclosure_post_action }}" method="post" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="idempotency_key" value="{{ disclosure_idempotency_key }}">
+    <label for="risk-purpose">{{ risk_band_copy.new_view }}</label>
+      <select id="risk-purpose" name="purpose" required>
+      {% for purpose in disclosure_purposes %}<option value="{{ purpose.value }}">{{ risk_band_copy["purpose_" ~ purpose.value] }}</option>{% endfor %}
+      </select>
+    <button type="submit">{{ risk_band_copy.new_view }}</button>
+  </form>
   <nav aria-label="Do‘kon navigatsiyasi"><a href="/shop/customers/{{ shop_customer_id }}/debts">{{ copy.back }}</a></nav>
 </main>
 {% endblock %}

@@ -450,6 +450,30 @@ dd {
     background: #ecfdf5;
 }
 
+.rating-disclosure-page {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+
+.rating-disclosure-page form,
+.rating-disclosure-result {
+    min-inline-size: 0;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    padding: 16px;
+    background: #ffffff;
+}
+
+.rating-disclosure-page input,
+.rating-disclosure-page select,
+.rating-disclosure-page button {
+    max-width: 100%;
+}
+
+.rating-disclosure-result strong {
+    font-weight: 800;
+}
+
 @media (max-width: 430px) {
     main {
         width: min(100% - 24px, 640px);
@@ -476,7 +500,9 @@ dd {
     }
 
     .shop-customer-roster > li,
-    .shop-customer-page form {
+    .shop-customer-page form,
+    .rating-disclosure-page form,
+    .rating-disclosure-result {
         padding: 12px;
     }
 }

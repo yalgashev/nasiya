@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from uuid import UUID
 
@@ -40,6 +41,15 @@ _PRIMARY_KEY = "pk_rating_events"
 _POSITIVE_CAP_UNIQUE = "ux_rating_events_positive_shop_customer_business_date"
 
 type OrderedRatingEventTuple = tuple[datetime, UUID, str, int]
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class TenantDisclosureSnapshotRecord:
+    projection: RiskBandDisclosureProjection
+    shop_customer_id: ShopCustomerId = field(repr=False)
+
+    def __repr__(self) -> str:
+        return "TenantDisclosureSnapshotRecord(<safe>, relation=<redacted>)"
 
 
 def _owned_shop_customer_query(
@@ -301,11 +311,30 @@ def read_tenant_disclosure_projection(
     current_shop_id: ShopId,
     disclosure_view_id: DisclosureViewId,
 ) -> RiskBandDisclosureProjection | None:
+    record = read_tenant_disclosure_snapshot_record(
+        session,
+        actor_user_id=actor_user_id,
+        current_shop_id=current_shop_id,
+        disclosure_view_id=disclosure_view_id,
+    )
+    return None if record is None else record.projection
+
+
+def read_tenant_disclosure_snapshot_record(
+    session: Session,
+    *,
+    actor_user_id: UserId,
+    current_shop_id: ShopId,
+    disclosure_view_id: DisclosureViewId,
+) -> TenantDisclosureSnapshotRecord | None:
+    """Return safe fields plus a redacted same-origin POST target token."""
+
     row = session.execute(
         select(
             DisclosureViewLog.band,
             DisclosureViewLog.purpose,
             DisclosureViewLog.created_at,
+            DisclosureViewLog.shop_customer_id,
         )
         .join(
             ShopCustomer,
@@ -320,10 +349,13 @@ def read_tenant_disclosure_projection(
     ).one_or_none()
     if row is None:
         return None
-    return RiskBandDisclosureProjection(
-        band=RiskBand(row.band),
-        purpose=RiskBandDisclosurePurpose(row.purpose),
-        viewed_at=row.created_at,
+    return TenantDisclosureSnapshotRecord(
+        projection=RiskBandDisclosureProjection(
+            band=RiskBand(row.band),
+            purpose=RiskBandDisclosurePurpose(row.purpose),
+            viewed_at=row.created_at,
+        ),
+        shop_customer_id=ShopCustomerId(row.shop_customer_id),
     )
 
 
@@ -375,6 +407,9 @@ class SqlAlchemyRatingRepository:
     append_locked_event = staticmethod(append_locked_event)
     insert_disclosure_view_locked = staticmethod(insert_disclosure_view_locked)
     read_tenant_disclosure_projection = staticmethod(read_tenant_disclosure_projection)
+    read_tenant_disclosure_snapshot_record = staticmethod(
+        read_tenant_disclosure_snapshot_record
+    )
     read_exact_tenant_disclosure_projection = staticmethod(
         read_exact_tenant_disclosure_projection
     )

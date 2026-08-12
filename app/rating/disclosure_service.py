@@ -32,16 +32,21 @@ from app.rating.disclosure import (
     RiskBandDisclosureCommand,
 )
 from app.rating.ports import LockedRatingCustomerScope
+from app.rating.presentation import (
+    DisclosurePostActionContext,
+    RiskBandDisclosurePageContext,
+)
 from app.rating.repository import (
     insert_disclosure_view_locked,
     read_exact_tenant_disclosure_projection,
     read_tenant_disclosure_projection,
+    read_tenant_disclosure_snapshot_record,
 )
 from app.rating.targeting import (
     DetachedDisclosureActorContext,
     discover_tenant_disclosure_target,
     lock_tenant_disclosure_target,
-    recheck_historical_disclosure_authority,
+    resolve_historical_disclosure_authority,
 )
 from app.rating.values import DisclosureViewId
 
@@ -49,6 +54,7 @@ __all__ = (
     "DisclosureMutationRejected",
     "DisclosurePersistenceError",
     "read_risk_band_disclosure_snapshot",
+    "read_risk_band_disclosure_page_context",
     "record_risk_band_disclosure",
 )
 
@@ -204,13 +210,47 @@ def read_risk_band_disclosure_snapshot(
         raise TypeError("actor must be a DetachedDisclosureActorContext")
     if not isinstance(disclosure_view_id, DisclosureViewId):
         raise TypeError("disclosure_view_id must be a DisclosureViewId")
-    if recheck_historical_disclosure_authority(session, actor=actor) is not None:
+    authority = resolve_historical_disclosure_authority(session, actor=actor)
+    if authority is None:
         return None
     return read_tenant_disclosure_projection(
         session,
         actor_user_id=actor.actor_user_id,
         current_shop_id=actor.current_shop_id,
         disclosure_view_id=disclosure_view_id,
+    )
+
+
+def read_risk_band_disclosure_page_context(
+    session: Session,
+    *,
+    actor: DetachedDisclosureActorContext,
+    disclosure_view_id: DisclosureViewId,
+) -> RiskBandDisclosurePageContext | None:
+    """Read one immutable snapshot with a redacted refresh POST capability."""
+
+    if not isinstance(actor, DetachedDisclosureActorContext):
+        raise TypeError("actor must be a DetachedDisclosureActorContext")
+    if not isinstance(disclosure_view_id, DisclosureViewId):
+        raise TypeError("disclosure_view_id must be a DisclosureViewId")
+    authority = resolve_historical_disclosure_authority(session, actor=actor)
+    if authority is None:
+        return None
+    record = read_tenant_disclosure_snapshot_record(
+        session,
+        actor_user_id=actor.actor_user_id,
+        current_shop_id=actor.current_shop_id,
+        disclosure_view_id=disclosure_view_id,
+    )
+    if record is None:
+        return None
+    return RiskBandDisclosurePageContext(
+        projection=record.projection,
+        action=(
+            DisclosurePostActionContext(record.shop_customer_id)
+            if authority.fresh_allowed
+            else None
+        ),
     )
 
 

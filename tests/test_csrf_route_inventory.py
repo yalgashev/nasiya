@@ -15,6 +15,7 @@ from app.debt.dependencies import (
 )
 from app.main import create_app
 from app.payment.dependencies import get_detached_current_shop_payment_actor_context
+from app.rating.dependencies import get_detached_current_shop_disclosure_actor_context
 from app.settings import Settings
 from app.shop_customer.dependencies import get_detached_shop_customer_authority
 
@@ -70,6 +71,7 @@ def route_has_csrf_dependency(route: APIRoute) -> bool:
             get_detached_current_shop_debt_actor_authority,
             get_detached_customer_debt_authority,
             get_detached_current_shop_payment_actor_context,
+            get_detached_current_shop_disclosure_actor_context,
         }
         for dependency_call in iter_dependency_calls(route.dependant)
     )
@@ -106,6 +108,7 @@ def test_detached_transaction_dependencies_validate_csrf_before_returning() -> N
         get_detached_current_shop_debt_actor_authority,
         get_detached_customer_debt_authority,
         get_detached_current_shop_payment_actor_context,
+        get_detached_current_shop_disclosure_actor_context,
     ):
         source = getsource(dependency)
         assert "await validate_csrf(request," in source

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block title %}{{ copy.page_title }} - Nasiya{% endblock %}
+
+{% block content %}
+<main class="rating-disclosure-page">
+  <h1>{{ copy.page_title }}</h1>
+  <p>{{ copy.historical_notice }}</p>
+  <dl class="rating-disclosure-result" aria-label="{{ copy.page_title }}">
+    <dt>{{ copy.purpose_label }}</dt><dd>{{ purpose_label }}</dd>
+    <dt>{{ copy.band_label }}</dt><dd><strong>{{ band_label }}</strong></dd>
+    <dt>{{ copy.viewed_at }}</dt><dd><time datetime="{{ viewed_at.isoformat() }}">{{ viewed_at }}</time></dd>
+  </dl>
+  {% if disclosure_post_action %}<form action="{{ disclosure_post_action }}" method="post" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="idempotency_key" value="{{ disclosure_idempotency_key }}">
+    <label for="disclosure-purpose">{{ copy.purpose_label }}</label>
+    <select id="disclosure-purpose" name="purpose" required>
+    {% for purpose in disclosure_purposes %}<option value="{{ purpose.value }}"{% if purpose == selected_purpose %} selected{% endif %}>{{ copy["purpose_" ~ purpose.value] }}</option>{% endfor %}
+    </select>
+    <button type="submit">{{ copy.new_view }}</button>
+  </form>
+  {% endif %}
+</main>
+{% endblock %}

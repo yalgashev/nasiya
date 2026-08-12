@@ -1,4 +1,5 @@
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -29,6 +30,7 @@ from app.payment.read_service import (
 from app.payment.repository import payment_open_set_reader_factory
 from app.payment.router import router as payment_router
 from app.rating.adapters import SqlAlchemyLockedRatingAppendAdapter
+from app.rating.router import router as rating_router
 from app.security_headers import install_security_headers_middleware
 from app.settings import Settings
 from app.shop.router import router as shop_router
@@ -83,6 +85,7 @@ def create_app(
         get_customer_debt_web_detail=get_customer_debt_web_detail_with_payment_progress,
     )
     application.state.rating_append_port = SqlAlchemyLockedRatingAppendAdapter()
+    application.state.risk_band_disclosure_clock = lambda: datetime.now(UTC)
     application.state.get_database_session = create_database_session_dependency(
         database_session_factory
     )
@@ -95,6 +98,7 @@ def create_app(
     application.include_router(shop_customer_router)
     application.include_router(debt_router)
     application.include_router(payment_router)
+    application.include_router(rating_router)
     application.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @application.get("/", response_class=HTMLResponse)

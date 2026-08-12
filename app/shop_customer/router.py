@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Form, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -32,6 +32,8 @@ from app.auth.template_context import with_csrf_context
 from app.customer.models import CUSTOMER_ONBOARDING_STATUS_ACTIVE, Customer
 from app.customer.repository import load_existing_own_customer
 from app.otp.web_presentation import OTP_LOCALE_COOKIE_NAME
+from app.rating.enums import RiskBandDisclosurePurpose
+from app.rating.presentation import DisclosurePostActionContext, get_risk_band_web_copy
 from app.request_client_ip import ClientIpResolutionError, resolve_client_ip
 from app.security_headers import mark_auth_response_no_store
 from app.settings import Settings
@@ -108,6 +110,7 @@ def shop_customers_page(
     page: int = 1,
     error: str | None = None,
     notice: str | None = None,
+    risk_error: str | None = None,
 ) -> Response:
     resolved = _require_current_shop(db, settings, session_context)
     if isinstance(resolved, Response):
@@ -131,6 +134,11 @@ def shop_customers_page(
                 "page_language": language.value,
                 "copy": get_shop_customer_web_copy(language),
                 "error_message": _message(language, error),
+                "risk_band_error": (
+                    get_risk_band_web_copy(_debt_web_language(request))["generic_error"]
+                    if risk_error == "unavailable"
+                    else None
+                ),
                 "notice": _notice(language, notice),
                 "rows": rows,
                 "has_rows": bool(rows),
@@ -140,6 +148,9 @@ def shop_customers_page(
                     shop_context.status is ShopStatus.ACTIVE
                     and shop_context.role in {ShopRole.OWNER, ShopRole.MANAGER}
                 ),
+                "can_disclose": shop_context.status is ShopStatus.ACTIVE,
+                "disclosure_purposes": tuple(RiskBandDisclosurePurpose),
+                "risk_band_copy": get_risk_band_web_copy(_debt_web_language(request)),
                 "is_read_only": shop_context.status is ShopStatus.SUSPENDED,
                 "list_statuses": tuple(ShopCustomerListStatus),
                 "list_status_labels": _list_status_labels(language),
@@ -401,6 +412,10 @@ def _list_masked_roster(
     return [
         {
             "locator": str(row.id),
+            "disclosure_post_action": DisclosurePostActionContext(
+                ShopCustomerId(row.id)
+            ).same_origin_post_path(),
+            "disclosure_idempotency_key": str(uuid4()),
             "masked_phone": mask_phone_for_display(phone),
             "credit_limit_uzs": str(row.credit_limit_uzs),
             "max_open_debts": row.max_open_debts,
@@ -505,6 +520,12 @@ def _language(request: Request):
         request.cookies.get(OTP_LOCALE_COOKIE_NAME),
         request.headers.get("accept-language"),
     )
+
+
+def _debt_web_language(request: Request):
+    from app.debt.web_presentation import resolve_debt_web_language
+
+    return resolve_debt_web_language(request.headers.get("accept-language"))
 
 
 def _message(language, raw_error: str | None) -> str | None:

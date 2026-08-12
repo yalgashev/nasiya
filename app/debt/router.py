@@ -57,6 +57,8 @@ from app.debt.web_presentation import (
     resolve_debt_web_language,
 )
 from app.offers.enums import OfferLanguage
+from app.rating.enums import RiskBandDisclosurePurpose
+from app.rating.presentation import DisclosurePostActionContext, get_risk_band_web_copy
 from app.security_headers import mark_auth_response_no_store
 from app.settings import Settings
 from app.shop.context import CurrentShopContext
@@ -165,6 +167,12 @@ def new_shop_customer_debt_page(
                 "copy": COPY[language],
                 "shop_customer_id": shop_customer_id,
                 "idempotency_key": str(uuid4()),
+                "disclosure_post_action": DisclosurePostActionContext(
+                    ShopCustomerId(shop_customer_id)
+                ).same_origin_post_path(),
+                "disclosure_idempotency_key": str(uuid4()),
+                "disclosure_purposes": tuple(RiskBandDisclosurePurpose),
+                "risk_band_copy": get_risk_band_web_copy(language),
                 "error_message": debt_error_message(language, error),
             },
             context.get_session_row(),

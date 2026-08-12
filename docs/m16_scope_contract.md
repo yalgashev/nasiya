@@ -94,7 +94,7 @@ POST /shop/customers/{shop_customer_id}/risk-band-disclosures
 GET  /shop/risk-band-disclosures/{disclosure_view_id}
 ```
 
-GET is historical retrieval only: it creates no M16/domain row, does not lock the target or recompute band. Suspended, revoked, foreign, guessed, corrupt, or missing results are generic unavailable. Platform-admin status is not a membership bypass.
+GET is historical retrieval only: it creates no M16/domain row, does not lock the target or recompute band. A suspended Shop denies fresh POST but a still-live authorised member may read that actor/Shop's immutable historical snapshot. Revoked, foreign, guessed, corrupt, or missing results are generic unavailable. Platform-admin status is not a membership bypass.
 
 Shop presentation contains only band, purpose, and viewed time. It must not contain score, delta, event/history/count, amount/balance, other-Shop fact, hard-block cause, PII, business identifiers, raw key, digest, request hash, or internal authority IDs. The only narrow transports are an authorised ShopCustomer POST action locator, transient raw key in a same-origin no-store hidden field, and opaque disclosure-view locator in PRG Location/GET path. All templates are UZ-Latn/RU, SSR/autoescaped, no-store and CSP compatible; browser rating calculation/storage is forbidden.
 

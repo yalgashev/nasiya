@@ -47,7 +47,7 @@ M16.06 creates repository authority only. External planning files and the TT are
 27. **PO-M16-27:** Fresh view is CSRF/idempotent POST-created audit snapshot; PRG/repeated GET retrieve it only; same-key replay returns it without a write.
 28. **PO-M16-28:** Snapshot stores only band, purpose, view time, and internal authority FKs; never score/history/count/cause.
 29. **PO-M16-29:** Shop-safe output/repr/log/audit exposes only band/purpose/time, subject solely to the frozen POST/raw-key/opaque-GET transport exceptions.
-30. **PO-M16-30:** Suspended Shop cannot create or read a view; suspended/revoked/foreign/guessed lookup is generic unavailable.
+30. **PO-M16-30:** Suspended Shop cannot create a view but a still-live authorised member may read that actor/Shop's immutable historical snapshot; revoked/foreign/guessed lookup is generic unavailable.
 31. **PO-M16-31:** Schema adds exactly `rating_events`, `disclosure_view_logs`, and two redundant parent uniques/composite FKs; no score/band/block cache column.
 32. **PO-M16-32:** One fresh disclosure writes one snapshot plus one `disclosure.risk_band_viewed` USER audit in one transaction; replay duplicates neither.
 33. **PO-M16-33:** Disclosure extends endpoint/result idempotency; raw key is transient/no-store only, while digest/hash stay in `idempotency_keys` and never reach browser/log/audit/error/repr.

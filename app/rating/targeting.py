@@ -31,14 +31,21 @@ from app.shop_customer.values import CustomerId, ShopCustomerId
 __all__ = (
     "DetachedDisclosureActorContext",
     "LockedTenantDisclosureTarget",
+    "HistoricalDisclosureAuthority",
     "TenantDisclosureTargetResult",
     "discover_tenant_disclosure_target",
     "lock_tenant_disclosure_target",
     "recheck_historical_disclosure_authority",
+    "resolve_historical_disclosure_authority",
     "validate_locked_tenant_disclosure_target",
 )
 
 _DISCLOSURE_ROLES = frozenset({ShopRole.OWNER, ShopRole.MANAGER, ShopRole.CASHIER})
+
+
+@dataclass(frozen=True, slots=True)
+class HistoricalDisclosureAuthority:
+    fresh_allowed: bool
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -236,6 +243,18 @@ def recheck_historical_disclosure_authority(
 ) -> ErrorCode | None:
     """Read-only live authority check; all denial states are indistinguishable."""
 
+    return (
+        None
+        if resolve_historical_disclosure_authority(session, actor=actor) is not None
+        else ErrorCode.SHOP_CUSTOMER_UNAVAILABLE
+    )
+
+
+def resolve_historical_disclosure_authority(
+    session: Session, *, actor: DetachedDisclosureActorContext
+) -> HistoricalDisclosureAuthority | None:
+    """Resolve live historical authority and whether a fresh POST is allowed."""
+
     _require_actor(actor)
     access = get_shop_staff_access(
         session,
@@ -244,12 +263,14 @@ def recheck_historical_disclosure_authority(
     )
     if (
         access is None
-        or access.shop_status is not ShopStatus.ACTIVE
+        or access.shop_status not in {ShopStatus.ACTIVE, ShopStatus.SUSPENDED}
         or not access.is_live
         or access.role not in _DISCLOSURE_ROLES
     ):
-        return ErrorCode.SHOP_CUSTOMER_UNAVAILABLE
-    return None
+        return None
+    return HistoricalDisclosureAuthority(
+        fresh_allowed=access.shop_status is ShopStatus.ACTIVE
+    )
 
 
 def validate_locked_tenant_disclosure_target(

@@ -6,6 +6,7 @@
 <main class="shop-customer-page">
     <h1>{{ copy.roster_heading }}</h1>
     {% if error_message %}<p class="form-error" role="alert">{{ error_message }}</p>{% endif %}
+    {% if risk_band_error %}<p class="form-error" role="alert">{{ risk_band_error }}</p>{% endif %}
     {% if notice %}<p class="form-notice" role="status">{{ notice }}</p>{% endif %}
     {% if is_read_only %}<p class="shop-read-only">{{ copy.read_only_notice }}</p>{% endif %}
     {% if can_link %}
@@ -30,6 +31,17 @@
                 <p>{{ copy.max_open_debts_label }}: {{ row.max_open_debts }}</p>
                 <p>{{ copy.list_status_label }}: {{ list_status_labels[row.list_status] }}</p>
                 <p><a href="/shop/customers/{{ row.locator }}/debts">Qarzlar / Долги</a></p>
+                {% if can_disclose %}
+                <form action="{{ row.disclosure_post_action }}" method="post" autocomplete="off">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="idempotency_key" value="{{ row.disclosure_idempotency_key }}">
+                    <label for="risk-purpose-{{ loop.index }}">{{ risk_band_copy.new_view }}</label>
+                        <select id="risk-purpose-{{ loop.index }}" name="purpose" required>
+                        {% for purpose in disclosure_purposes %}<option value="{{ purpose.value }}">{{ risk_band_copy["purpose_" ~ purpose.value] }}</option>{% endfor %}
+                        </select>
+                    <button type="submit">{{ risk_band_copy.new_view }}</button>
+                </form>
+                {% endif %}
                 {% if can_edit_policy %}
                 <form action="/shop/customers/{{ row.locator }}/policy" method="post">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
