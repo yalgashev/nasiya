@@ -110,9 +110,7 @@ _EVENT_OBJECT_TYPES: Final[Mapping[AuditEventType, AuditObjectType]] = MappingPr
         AuditEventType.DEBT_CLAWBACK_APPLIED: AuditObjectType.DEBT,
         AuditEventType.PAYMENT_RECORDED: AuditObjectType.PAYMENT,
         AuditEventType.DEBT_PAID: AuditObjectType.DEBT,
-        AuditEventType.DISCLOSURE_RISK_BAND_VIEWED: (
-            AuditObjectType.DISCLOSURE_VIEW
-        ),
+        AuditEventType.DISCLOSURE_RISK_BAND_VIEWED: (AuditObjectType.DISCLOSURE_VIEW),
     }
 )
 

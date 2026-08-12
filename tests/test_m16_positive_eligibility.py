@@ -124,3 +124,49 @@ def test_eligibility_contract_has_no_client_or_request_clock() -> None:
     )
     with pytest.raises(ValueError, match="Payment created at"):
         _facts(payment_created_at=datetime(2026, 5, 2, 10))
+
+
+@pytest.mark.parametrize(
+    ("accepted_at", "payment_created_at", "due_date", "expected"),
+    (
+        (
+            datetime(2026, 5, 1, 18, 59, 59, 999999, tzinfo=UTC),
+            datetime(2026, 5, 1, 19, tzinfo=UTC),
+            date(2026, 5, 2),
+            True,
+        ),
+        (
+            datetime(2026, 5, 1, 18, 59, 59, 999999, tzinfo=UTC),
+            datetime(2026, 5, 2, 18, 59, 59, 999999, tzinfo=UTC),
+            date(2026, 5, 2),
+            True,
+        ),
+        (
+            datetime(2026, 5, 1, 18, 59, 59, 999999, tzinfo=UTC),
+            datetime(2026, 5, 2, 19, tzinfo=UTC),
+            date(2026, 5, 2),
+            False,
+        ),
+        (
+            datetime(2026, 5, 1, 19, tzinfo=UTC),
+            datetime(2026, 5, 2, 18, 59, 59, 999999, tzinfo=UTC),
+            date(2026, 5, 2),
+            False,
+        ),
+    ),
+)
+def test_tashkent_midnight_and_due_day_microsecond_edges(
+    accepted_at: datetime,
+    payment_created_at: datetime,
+    due_date: date,
+    expected: bool,
+) -> None:
+    result = evaluate_on_time_paid_eligibility(
+        _facts(
+            accepted_at=accepted_at,
+            payment_created_at=payment_created_at,
+            due_date=due_date,
+        )
+    )
+
+    assert result.awards_bonus is expected

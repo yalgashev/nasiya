@@ -105,9 +105,7 @@ def append_risk_band_disclosure_audit(
     occurred_at: datetime,
     payload: RiskBandDisclosureAuditPayload,
 ) -> None:
-    if not isinstance(disclosure_view_id, UUID) or not isinstance(
-        actor_user_id, UUID
-    ):
+    if not isinstance(disclosure_view_id, UUID) or not isinstance(actor_user_id, UUID):
         raise ValueError("Disclosure audit identifiers are invalid")
     if not isinstance(payload, RiskBandDisclosureAuditPayload):
         raise ValueError("Disclosure audit payload is invalid")

@@ -35,6 +35,7 @@ from app.debt.tenant_cancel_targeting import lock_tenant_debt_for_cancel
 from app.debt.values import ShopCustomerId
 from app.idempotency.models import IdempotencyKey
 from app.payment.repository import SqlAlchemyLockedDebtPostedTotalReader
+from app.rating.models import RatingEvent
 from app.shop.enums import ShopRole, ShopStatus
 from app.shop.models import Shop, ShopStaff
 from app.shop_customer.contracts import (
@@ -339,6 +340,7 @@ def test_batch_audit_vs_cross_shop_create_finishes_in_complete_blocked_state(
     with factory() as session:
         assert session.get_one(Debt, debt_id).status == DebtStatus.OVERDUE.value
         assert session.scalar(select(func.count()).select_from(Debt)) == 1
+        assert session.scalar(select(func.count()).select_from(RatingEvent)) == 1
         assert session.scalar(select(func.count()).select_from(IdempotencyKey)) == 0
         assert session.scalar(select(func.count()).select_from(AuditLog)) == 2
 
@@ -438,4 +440,5 @@ def test_batch_vs_m12_policy_mutations_serialize_at_shop_predecessor(
         assert mutation_result.outcome is ShopDefaultPolicyUpdateOutcome.CHANGED
     with factory() as session:
         assert session.get_one(Debt, debt_id).status == DebtStatus.OVERDUE.value
+        assert session.scalar(select(func.count()).select_from(RatingEvent)) == 1
         assert session.scalar(select(func.count()).select_from(AuditLog)) == 3

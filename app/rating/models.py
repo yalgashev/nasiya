@@ -41,8 +41,7 @@ class RatingEvent(Base):
             name="ck_rating_events_recording_source_allowed",
         ),
         CheckConstraint(
-            "business_date = "
-            "(occurred_at AT TIME ZONE 'Asia/Tashkent')::date",
+            "business_date = (occurred_at AT TIME ZONE 'Asia/Tashkent')::date",
             name="ck_rating_events_business_date_matches_occurred_at",
         ),
         ForeignKeyConstraint(

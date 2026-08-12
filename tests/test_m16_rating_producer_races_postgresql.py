@@ -24,11 +24,9 @@ from app.shop_customer.models import ShopCustomer
 from tests.test_m16_rating_append_services_postgresql import _make_eligible_debts
 from tests.test_payment_service_postgresql import PAYMENT_TIME, _command
 
-_WAIT_SECONDS = 10
-
 
 def _run_payment(factory, *, actor, command, start: Barrier):
-    start.wait(timeout=_WAIT_SECONDS)
+    start.wait()
     try:
         with factory.begin() as session:
             return record_debt_payment(

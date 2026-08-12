@@ -63,9 +63,7 @@ def m15_database(m2_test_database: Engine) -> Generator[Engine, None, None]:
 
 def _parents(session: Session) -> tuple[User, ShopCustomer]:
     actor = User(phone=f"+998{uuid4().int % 1_000_000_000:09d}", is_active=True)
-    customer_user = User(
-        phone=f"+998{uuid4().int % 1_000_000_000:09d}", is_active=True
-    )
+    customer_user = User(phone=f"+998{uuid4().int % 1_000_000_000:09d}", is_active=True)
     session.add_all((actor, customer_user))
     session.flush()
     customer = Customer(
@@ -291,23 +289,27 @@ def test_mixed_history_reconciles_deterministically_and_preserves_sources(
                     f"SELECT md5(row_to_json(source_row)::text) "
                     f"FROM {table} source_row ORDER BY id"
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
             for table in ("debts", "payments", "audit_log")
         }
 
     command.upgrade(_config(), M16_REVISION)
 
     with Session(m15_database) as session:
-        rows = session.execute(
-            text(
-                "SELECT id,debt_id,event_type,delta,occurred_at,business_date,"
-                "recording_source FROM rating_events "
-                "ORDER BY occurred_at,debt_id,event_type"
+        rows = (
+            session.execute(
+                text(
+                    "SELECT id,debt_id,event_type,delta,occurred_at,business_date,"
+                    "recording_source FROM rating_events "
+                    "ORDER BY occurred_at,debt_id,event_type"
+                )
             )
-        ).mappings().all()
-        assert [
-            (row["debt_id"], row["event_type"], row["delta"]) for row in rows
-        ] == [
+            .mappings()
+            .all()
+        )
+        assert [(row["debt_id"], row["event_type"], row["delta"]) for row in rows] == [
             (winner_id, "on_time_paid", 5),
             *sorted(
                 (
@@ -331,7 +333,9 @@ def test_mixed_history_reconciles_deterministically_and_preserves_sources(
                     f"SELECT md5(row_to_json(source_row)::text) "
                     f"FROM {table} source_row ORDER BY id"
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
             for table in ("debts", "payments", "audit_log")
         }
         assert after == before

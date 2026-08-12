@@ -30,9 +30,7 @@ def _named_constraints(table, constraint_type):
 def test_m16_is_exact_single_linear_child_and_ci_head() -> None:
     scripts = ScriptDirectory.from_config(Config(str(PROJECT_ROOT / "alembic.ini")))
     child = scripts.get_revision(REVISION)
-    workflow = (PROJECT_ROOT / ".github/workflows/ci.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = (PROJECT_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
     assert scripts.get_heads() == [REVISION]
     assert child is not None and child.down_revision == PARENT
@@ -89,14 +87,15 @@ def test_rating_metadata_matches_exact_chain_checks_and_indexes() -> None:
         "ux_rating_events_positive_shop_customer_business_date",
         "ix_rating_events_shop_customer_occurred_debt_event",
     }
-    assert indexes[
-        "ux_rating_events_positive_shop_customer_business_date"
-    ].unique
-    assert str(
-        indexes[
-            "ux_rating_events_positive_shop_customer_business_date"
-        ].dialect_options["postgresql"]["where"]
-    ) == "event_type = 'on_time_paid'"
+    assert indexes["ux_rating_events_positive_shop_customer_business_date"].unique
+    assert (
+        str(
+            indexes[
+                "ux_rating_events_positive_shop_customer_business_date"
+            ].dialect_options["postgresql"]["where"]
+        )
+        == "event_type = 'on_time_paid'"
+    )
 
 
 def test_disclosure_metadata_and_parent_redundant_uniques_are_exact() -> None:
@@ -182,9 +181,7 @@ def test_downgrade_guards_precede_ddl_and_parent_uniques_drop_last() -> None:
 
 
 def test_repositories_borrow_session_and_return_only_detached_safe_contracts() -> None:
-    source = (PROJECT_ROOT / "app/rating/repository.py").read_text(
-        encoding="utf-8"
-    )
+    source = (PROJECT_ROOT / "app/rating/repository.py").read_text(encoding="utf-8")
     for forbidden in ("session.commit(", "session.rollback(", "session.close("):
         assert forbidden not in source
     assert "RatingEventContract(" in source

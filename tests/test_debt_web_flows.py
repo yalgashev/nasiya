@@ -43,6 +43,8 @@ EXPECTED_ROUTES = {
     ("POST", "/customer/debts/{debt_id}/accept"),
     ("POST", "/customer/debts/{debt_id}/reject"),
 }
+
+
 def _linked_customer(db: Session, *, add_offer: bool = True):
     actor, shop, target, customer = _seed(db)
     linked = ShopCustomer(

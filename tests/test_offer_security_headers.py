@@ -5,6 +5,7 @@ from app.security_headers import (
     M9_NO_STORE_PATH_PREFIXES,
     M12_NO_STORE_PATH_PREFIXES,
     M14_NO_STORE_PATH_PREFIXES,
+    M16_NO_STORE_PATH_PREFIXES,
     SENSITIVE_NO_STORE_PATH_PREFIXES,
 )
 
@@ -27,10 +28,12 @@ def test_sensitive_no_store_scope_is_exact_and_csp_forbids_inline_code() -> None
         "/customer/debts",
         "/customer/payments",
     )
+    assert M16_NO_STORE_PATH_PREFIXES == ("/shop/risk-band-disclosures",)
     assert SENSITIVE_NO_STORE_PATH_PREFIXES == (
         *M9_NO_STORE_PATH_PREFIXES,
         *M12_NO_STORE_PATH_PREFIXES,
         *M14_NO_STORE_PATH_PREFIXES,
+        *M16_NO_STORE_PATH_PREFIXES,
     )
     assert "script-src 'self'" in CONTENT_SECURITY_POLICY
     assert "style-src 'self'" in CONTENT_SECURITY_POLICY

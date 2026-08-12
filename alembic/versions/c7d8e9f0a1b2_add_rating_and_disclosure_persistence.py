@@ -43,7 +43,10 @@ _M15_OBJECTS = tuple(_FROZEN_M15._M14_OBJECTS)
 _M16_OBJECTS = _M15_OBJECTS + ("disclosure_view",)
 
 _IDEMPOTENCY_M15 = "(endpoint = 'shop.debts.create' AND result_object_type = 'debt') OR (endpoint = 'shop.debt_payments.create' AND result_object_type = 'payment')"
-_IDEMPOTENCY_M16 = _IDEMPOTENCY_M15 + " OR (endpoint = 'shop.risk_band_disclosures.create' AND result_object_type = 'disclosure_view')"
+_IDEMPOTENCY_M16 = (
+    _IDEMPOTENCY_M15
+    + " OR (endpoint = 'shop.risk_band_disclosures.create' AND result_object_type = 'disclosure_view')"
+)
 
 
 def _disclosure_payload_sql() -> str:
@@ -220,7 +223,12 @@ def _reconcile_historical_rating_events() -> None:
     bind = op.get_bind()
     positives = bind.execute(_POSITIVE_RECONCILIATION_SQL).all()
     for row in positives:
-        if not (row.total_ok and row.terminal_ok and row.payment_audits_ok and row.paid_audit_ok):
+        if not (
+            row.total_ok
+            and row.terminal_ok
+            and row.payment_audits_ok
+            and row.paid_audit_ok
+        ):
             raise RuntimeError(
                 "M16 reconciliation blocked: incoherent positive source history"
             )
@@ -402,9 +410,5 @@ def downgrade() -> None:
         table_name="rating_events",
     )
     op.drop_table("rating_events")
-    op.drop_constraint(
-        "uq_shop_customers_id_shop_id", "shop_customers", type_="unique"
-    )
-    op.drop_constraint(
-        "uq_debts_id_shop_customer_id", "debts", type_="unique"
-    )
+    op.drop_constraint("uq_shop_customers_id_shop_id", "shop_customers", type_="unique")
+    op.drop_constraint("uq_debts_id_shop_customer_id", "debts", type_="unique")

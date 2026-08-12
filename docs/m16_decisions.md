@@ -69,6 +69,10 @@ M16.06 creates repository authority only. External planning files and the TT are
 
 The lifecycle, score, privacy, IN/OUT, and evidence boundary are normative in [`m16_scope_contract.md`](m16_scope_contract.md). Existing and prospective placement is normative in [`m16_repository_map.md`](m16_repository_map.md). Exact schema, migration, reconciliation, and downgrade contracts are normative in [`m16_persistence_plan.md`](m16_persistence_plan.md).
 
+## M16.40 local validation evidence
+
+The controlled local validation ran from sixth-checkpoint SHA `1461a9495017002bc44ede339623a014020c9996` with the M16.37–40 worktree on 2026-08-12. `uv sync --dev --frozen` checked 48 packages. Explicit local PostgreSQL `alembic upgrade head`, `current`, and `heads` all resolved to the single head `c7d8e9f0a1b2`; the full suite included the controlled M15 mixed-fixture upgrade, revision-local Debt table-lock barrier, reconciliation, downgrade guards, inherited containment, and MinIO/security integration gates. Ruff check passed and the repo-wide format check reported 652 files formatted. The final explicit-env real-PostgreSQL run was exactly `4250 passed in 337.88s (0:05:37)` with zero failed, skipped, xfailed, xpassed, or warnings.
+
 ## Closure decision
 
 M16.06 authorizes the later bounded implementation described by these documents. It does not add M16 product code, migration, or a checkpoint commit.

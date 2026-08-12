@@ -546,9 +546,7 @@ _PAYLOAD_BUILDERS: Final[
     AuditEventType.DEBT_CLAWBACK_APPLIED: _debt_clawback_applied_payload,
     AuditEventType.PAYMENT_RECORDED: _payment_recorded_payload,
     AuditEventType.DEBT_PAID: _debt_paid_payload,
-    AuditEventType.DISCLOSURE_RISK_BAND_VIEWED: (
-        _risk_band_disclosure_payload
-    ),
+    AuditEventType.DISCLOSURE_RISK_BAND_VIEWED: (_risk_band_disclosure_payload),
 }
 
 

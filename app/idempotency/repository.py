@@ -25,9 +25,7 @@ from app.rating.values import RiskBandDisclosureRequestHash
 
 _UNIQUE = "uq_idempotency_keys_actor_user_id_endpoint_key_digest"
 _RequestHash = (
-    CreateDebtRequestHash
-    | CreatePaymentRequestHash
-    | RiskBandDisclosureRequestHash
+    CreateDebtRequestHash | CreatePaymentRequestHash | RiskBandDisclosureRequestHash
 )
 
 

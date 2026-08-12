@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -125,6 +125,76 @@ def test_exact_payoff_replay_and_daily_cap_are_atomic(m2_test_database: Engine) 
         assert events[0].event_type == "on_time_paid"
         assert events[0].delta == 5
         assert session.scalar(select(func.count()).select_from(Payment)) == 2
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("original", "payment_at", "basis", "expected_event"),
+    (
+        (
+            "100000",
+            datetime(2026, 8, 10, 19, tzinfo=UTC),
+            "discounted",
+            "on_time_paid",
+        ),
+        (
+            "100000",
+            datetime(2026, 8, 12, 18, 59, 59, 999999, tzinfo=UTC),
+            "discounted",
+            "on_time_paid",
+        ),
+        (
+            "100000",
+            datetime(2026, 8, 12, 19, tzinfo=UTC),
+            "original",
+            "overdue",
+        ),
+        ("99999", datetime(2026, 8, 10, 19, tzinfo=UTC), "discounted", None),
+    ),
+)
+def test_real_postgresql_tashkent_due_and_threshold_edges_keep_payment_lawful(
+    m2_test_database: Engine,
+    original: str,
+    payment_at: datetime,
+    basis: str,
+    expected_event: str | None,
+) -> None:
+    actor_id, shop_id, _staff_id, _relation_id, debt_id = _seed_one(m2_test_database)
+    factory = create_database_session_factory(m2_test_database)
+    accepted_at = datetime(2026, 8, 10, 18, 59, 59, 999999, tzinfo=UTC)
+    with factory.begin() as session:
+        debt = session.get_one(Debt, debt_id)
+        debt.original_amount_uzs = Decimal(original)
+        debt.discounted_amount_uzs = Decimal(original)
+        debt.created_at = accepted_at - timedelta(days=1)
+        debt.pending_expires_at = debt.created_at + timedelta(hours=72)
+        debt.accepted_at = accepted_at
+        debt.updated_at = accepted_at
+        debt.due_date = date(2026, 8, 12)
+    actor, command = _command(
+        actor_id=actor_id,
+        shop_id=shop_id,
+        debt_id=debt_id,
+        amount=original,
+        revision=2,
+        key=uuid4(),
+        basis=basis,
+    )
+
+    with factory.begin() as session:
+        result = record_debt_payment(
+            session,
+            actor=actor,
+            command=command,
+            rating_append_port=SqlAlchemyLockedRatingAppendAdapter(),
+            payment_clock=lambda: payment_at,
+        )
+
+    assert result.payment_id is not None
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(Payment)) == 1
+        events = tuple(session.scalars(select(RatingEvent.event_type)))
+        assert events == (() if expected_event is None else (expected_event,))
 
 
 @pytest.mark.integration

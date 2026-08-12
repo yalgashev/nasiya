@@ -28,6 +28,7 @@ from app.db import create_database_session_factory
 from app.debt.dependencies import get_detached_current_shop_debt_actor_authority
 from app.main import create_app
 from app.payment.dependencies import get_detached_current_shop_payment_actor_context
+from app.rating.dependencies import get_detached_current_shop_disclosure_actor_context
 from app.security_headers import AUTH_NO_STORE_CACHE_CONTROL, CONTENT_SECURITY_POLICY
 from app.settings import Settings
 from app.shop.enums import ShopRole, ShopStatus
@@ -103,6 +104,16 @@ ROUTE_POLICIES = (
     RoutePolicy(
         "GET",
         "/shop/payments/{payment_id}",
+        RouteClass.TENANT_LOCATOR_READ,
+    ),
+    RoutePolicy(
+        "POST",
+        "/shop/customers/{shop_customer_id}/risk-band-disclosures",
+        RouteClass.TENANT_BUSINESS_MUTATION,
+    ),
+    RoutePolicy(
+        "GET",
+        "/shop/risk-band-disclosures/{disclosure_view_id}",
         RouteClass.TENANT_LOCATOR_READ,
     ),
     RoutePolicy(
@@ -275,6 +286,7 @@ def actual_path(policy: RoutePolicy, staff_id: UUID | None = None) -> str:
         path.replace("{shop_customer_id}", str(uuid4()))
         .replace("{debt_id}", str(uuid4()))
         .replace("{payment_id}", str(uuid4()))
+        .replace("{disclosure_view_id}", str(uuid4()))
     )
 
 
@@ -308,6 +320,11 @@ def post_data_for(
             expected_updated_at="2026-07-27T19:00:00+00:00",
             credit_limit_uzs="1000000",
             max_open_debts="2",
+        )
+    elif policy.path_format.endswith("/risk-band-disclosures"):
+        data.update(
+            purpose="debt_proposal_review",
+            idempotency_key=str(uuid4()),
         )
     return data
 
@@ -354,6 +371,7 @@ def route_has_csrf_dependency(route: APIRoute) -> bool:
             get_detached_shop_customer_authority,
             get_detached_current_shop_debt_actor_authority,
             get_detached_current_shop_payment_actor_context,
+            get_detached_current_shop_disclosure_actor_context,
         }
         for dependency_call in iter_dependency_calls(route.dependant)
     )
@@ -468,6 +486,11 @@ def test_shop_routes_have_no_membership_behavior_with_select_exception(
     elif policy.path_format == "/shop/select" and policy.method == "POST":
         assert response.status_code == 403
         assert response.headers["x-error-code"] == ErrorCode.FORBIDDEN.value
+    elif "risk-band-disclosures" in policy.path_format:
+        assert response.status_code == 303
+        assert response.headers["location"] == (
+            "/shop/customers?risk_error=unavailable"
+        )
     else:
         assert response.status_code == 303
         assert response.headers["location"] == "/shop/select"

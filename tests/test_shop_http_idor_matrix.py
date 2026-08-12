@@ -36,6 +36,7 @@ class IdorVector(StrEnum):
     FOREIGN_SHOP_CUSTOMER_UUID = "foreign_shop_customer_uuid"
     FOREIGN_DEBT_UUID = "foreign_debt_uuid"
     FOREIGN_PAYMENT_UUID = "foreign_payment_uuid"
+    FOREIGN_DISCLOSURE_VIEW_UUID = "foreign_disclosure_view_uuid"
     NOT_APPLICABLE = "not_applicable"
 
 
@@ -177,6 +178,18 @@ ROUTE_IDOR_CASES = (
         "/shop/payments/{payment_id}",
         IdorVector.FOREIGN_PAYMENT_UUID,
         "receipt joins payment_id through Debt and ShopCustomer authority",
+    ),
+    RouteIdorCase(
+        "POST",
+        "/shop/customers/{shop_customer_id}/risk-band-disclosures",
+        IdorVector.FOREIGN_SHOP_CUSTOMER_UUID,
+        "snapshot creation rechecks the complete current-Shop target chain",
+    ),
+    RouteIdorCase(
+        "GET",
+        "/shop/risk-band-disclosures/{disclosure_view_id}",
+        IdorVector.FOREIGN_DISCLOSURE_VIEW_UUID,
+        "opaque locator is scoped to the current actor, Shop, and stored chain",
     ),
 )
 
