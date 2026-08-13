@@ -28,16 +28,22 @@ class RatingEvent(Base):
     __tablename__ = "rating_events"
     __table_args__ = (
         CheckConstraint(
-            "event_type IN ('on_time_paid','overdue')",
+            "event_type IN "
+            "('on_time_paid','overdue','written_off','written_off_settled')",
             name="ck_rating_events_event_type_allowed",
         ),
         CheckConstraint(
             "(event_type = 'on_time_paid' AND delta = 5) OR "
-            "(event_type = 'overdue' AND delta = -15)",
+            "(event_type = 'overdue' AND delta = -15) OR "
+            "(event_type = 'written_off' AND delta = -40) OR "
+            "(event_type = 'written_off_settled' AND delta = 10)",
             name="ck_rating_events_delta_matches_event",
         ),
         CheckConstraint(
-            "recording_source IN ('live','historical_reconciliation')",
+            "(event_type IN ('on_time_paid','overdue') "
+            "AND recording_source IN ('live','historical_reconciliation')) OR "
+            "(event_type IN ('written_off','written_off_settled') "
+            "AND recording_source = 'live')",
             name="ck_rating_events_recording_source_allowed",
         ),
         CheckConstraint(

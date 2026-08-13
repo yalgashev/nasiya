@@ -12,6 +12,7 @@ from app.shop_customer.models import ShopCustomer
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REVISION = "c7d8e9f0a1b2"
+HEAD = "d8e9f0a1b2c3"
 PARENT = "b6c7d8e9f0a1"
 MIGRATION = (
     PROJECT_ROOT
@@ -32,10 +33,10 @@ def test_m16_is_exact_single_linear_child_and_ci_head() -> None:
     child = scripts.get_revision(REVISION)
     workflow = (PROJECT_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
-    assert scripts.get_heads() == [REVISION]
+    assert scripts.get_heads() == [HEAD]
     assert child is not None and child.down_revision == PARENT
-    assert "Verify Alembic M16 head" in workflow
-    assert f'test "$current_revision" = "{REVISION}"' in workflow
+    assert "Verify Alembic M17 head" in workflow
+    assert f'test "$current_revision" = "{HEAD}"' in workflow
 
 
 def test_revision_has_exact_two_tables_and_lock_is_first_source_action() -> None:

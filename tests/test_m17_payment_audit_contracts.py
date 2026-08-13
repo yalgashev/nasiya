@@ -58,7 +58,7 @@ def _written_off() -> DebtAggregate:
         written_off_at=datetime(2026, 1, 7, tzinfo=UTC),
         written_off_revision=DebtRevision(4),
         written_off_reason=WriteOffReason.CUSTOMER_UNREACHABLE,
-        written_off_by_user_id=uuid4(),
+        written_off_actor_user_id=uuid4(),
     )
 
 

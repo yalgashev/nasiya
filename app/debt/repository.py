@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.customer.models import Customer
-from app.debt.contracts import DebtAggregate, DebtReason
+from app.debt.contracts import DebtAggregate, DebtReason, WriteOffReason
 from app.debt.enums import DebtStatus
 from app.debt.models import Debt
 from app.debt.overdue_ports import require_hard_block_business_date
@@ -42,11 +42,14 @@ from app.shop_customer.repository import (
 __all__ = (
     "LockedDebtPredecessor",
     "LockedDebtTransitionScope",
+    "LockedWriteOffDebt",
     "LockedCustomerHardBlockScope",
     "SqlAlchemyLockedCustomerGlobalHardBlockReader",
     "SqlAlchemyDebtOpenSetReader",
     "CustomerOwnedDebtRow",
+    "WrittenOffCandidateLocator",
     "discover_debt_candidates",
+    "discover_written_off_candidates",
     "debt_aggregate_from_row",
     "get_customer_owned_debt",
     "get_customer_owned_debt_with_shop",
@@ -56,6 +59,7 @@ __all__ = (
     "list_customer_owned_debts_with_shops",
     "list_tenant_debts",
     "lock_debts_in_id_order",
+    "lock_scoped_write_off_debt",
     "lock_customer_hard_block_scope",
     "locked_customer_global_hard_block_reader_factory",
     "mark_locked_customer_hard_block_scope",
@@ -64,6 +68,7 @@ __all__ = (
     "update_locked_debt",
     "validate_locked_debt_predecessor",
     "validate_locked_debt_transition_scope",
+    "validate_locked_write_off_debt",
     "validate_locked_customer_hard_block_scope",
 )
 
@@ -90,6 +95,15 @@ class LockedDebtTransitionScope:
 
 
 @dataclass(frozen=True, slots=True, repr=False)
+class LockedWriteOffDebt:
+    _row: Debt
+    _session: Session
+
+    def __repr__(self) -> str:
+        return "LockedWriteOffDebt(<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
 class LockedCustomerHardBlockScope:
     """Proof that this Session locked the authoritative Customer row."""
 
@@ -109,6 +123,27 @@ class CustomerOwnedDebtRow:
 
     def __repr__(self) -> str:
         return "CustomerOwnedDebtRow(<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class WrittenOffCandidateLocator:
+    shop_id: UUID
+    customer_id: UUID
+    shop_customer_id: ShopCustomerId
+    debt_id: DebtId
+    overdue_at: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.shop_id, UUID) or not isinstance(self.customer_id, UUID):
+            raise ValueError("Write-off candidate parent identity is invalid")
+        if not isinstance(self.shop_customer_id, ShopCustomerId) or not isinstance(
+            self.debt_id, DebtId
+        ):
+            raise ValueError("Write-off candidate identity is invalid")
+        _require_aware(self.overdue_at)
+
+    def __repr__(self) -> str:
+        return "WrittenOffCandidateLocator(<redacted>)"
 
 
 def debt_aggregate_from_row(row: Debt) -> DebtAggregate:
@@ -143,6 +178,24 @@ def debt_aggregate_from_row(row: Debt) -> DebtAggregate:
             None
             if row.cancellation_reason is None
             else DebtReason(row.cancellation_reason)
+        ),
+        written_off_at=row.written_off_at,
+        written_off_revision=(
+            None
+            if row.written_off_revision is None
+            else DebtRevision(row.written_off_revision)
+        ),
+        written_off_reason=(
+            None
+            if row.written_off_reason is None
+            else WriteOffReason(row.written_off_reason)
+        ),
+        written_off_actor_user_id=row.written_off_actor_user_id,
+        written_off_settled_at=row.written_off_settled_at,
+        written_off_settled_revision=(
+            None
+            if row.written_off_settled_revision is None
+            else DebtRevision(row.written_off_settled_revision)
         ),
     )
 
@@ -362,6 +415,71 @@ def discover_debt_candidates(
     )
 
 
+def discover_written_off_candidates(
+    session: Session,
+) -> tuple[WrittenOffCandidateLocator, ...]:
+    """Return at most 50 detached scalars in exact overdue/source order."""
+
+    rows = session.execute(
+        select(
+            ShopCustomer.shop_id,
+            ShopCustomer.customer_id,
+            Debt.shop_customer_id,
+            Debt.id,
+            Debt.overdue_at,
+        )
+        .join(ShopCustomer, ShopCustomer.id == Debt.shop_customer_id)
+        .where(
+            Debt.status == DebtStatus.OVERDUE.value,
+            Debt.overdue_at.is_not(None),
+        )
+        .order_by(Debt.overdue_at, Debt.id)
+        .limit(50)
+    ).tuples()
+    return tuple(
+        WrittenOffCandidateLocator(
+            shop_id=row.shop_id,
+            customer_id=row.customer_id,
+            shop_customer_id=ShopCustomerId(row.shop_customer_id),
+            debt_id=DebtId(row.id),
+            overdue_at=row.overdue_at,
+        )
+        for row in rows
+    )
+
+
+def lock_scoped_write_off_debt(
+    session: Session,
+    *,
+    shop_id: UUID,
+    customer_id: UUID,
+    shop_customer_id: ShopCustomerId,
+    debt_id: DebtId,
+) -> LockedWriteOffDebt | None:
+    """Lock only Debt after callers already own the forward parent chain."""
+
+    if not isinstance(shop_id, UUID) or not isinstance(customer_id, UUID):
+        raise TypeError("write-off parent identifiers must be UUIDs")
+    if not isinstance(shop_customer_id, ShopCustomerId) or not isinstance(
+        debt_id, DebtId
+    ):
+        raise TypeError("write-off target identifiers are invalid")
+    row = session.scalar(
+        select(Debt)
+        .join(ShopCustomer, ShopCustomer.id == Debt.shop_customer_id)
+        .where(
+            ShopCustomer.shop_id == shop_id,
+            ShopCustomer.customer_id == customer_id,
+            ShopCustomer.id == shop_customer_id.as_uuid(),
+            Debt.id == debt_id.as_uuid(),
+        )
+        .with_for_update()
+    )
+    if row is None:
+        return None
+    return LockedWriteOffDebt(_row=row, _session=session)
+
+
 def lock_debts_in_id_order(
     session: Session, *, debt_ids: tuple[DebtId, ...]
 ) -> list[Debt]:
@@ -410,6 +528,22 @@ def insert_debt(
         overdue_revision=(
             None if debt.overdue_revision is None else debt.overdue_revision.value
         ),
+        written_off_at=debt.written_off_at,
+        written_off_revision=(
+            None
+            if debt.written_off_revision is None
+            else debt.written_off_revision.value
+        ),
+        written_off_reason=(
+            None if debt.written_off_reason is None else debt.written_off_reason.value
+        ),
+        written_off_actor_user_id=debt.written_off_actor_user_id,
+        written_off_settled_at=debt.written_off_settled_at,
+        written_off_settled_revision=(
+            None
+            if debt.written_off_settled_revision is None
+            else debt.written_off_settled_revision.value
+        ),
         created_at=debt.created_at,
         updated_at=debt.updated_at,
     )
@@ -443,6 +577,25 @@ def update_locked_debt(session: Session, *, row: Debt, debt: DebtAggregate) -> D
         (
             "overdue_revision",
             None if debt.overdue_revision is None else debt.overdue_revision.value,
+        ),
+        ("written_off_at", debt.written_off_at),
+        (
+            "written_off_revision",
+            None
+            if debt.written_off_revision is None
+            else debt.written_off_revision.value,
+        ),
+        (
+            "written_off_reason",
+            None if debt.written_off_reason is None else debt.written_off_reason.value,
+        ),
+        ("written_off_actor_user_id", debt.written_off_actor_user_id),
+        ("written_off_settled_at", debt.written_off_settled_at),
+        (
+            "written_off_settled_revision",
+            None
+            if debt.written_off_settled_revision is None
+            else debt.written_off_settled_revision.value,
         ),
         ("updated_at", debt.updated_at),
     ):
@@ -532,6 +685,18 @@ def validate_locked_debt_transition_scope(
         raise RuntimeError("locked Debt belongs to a different session")
     if session.get(Debt, token._row.id) is not token._row:
         raise RuntimeError("locked Debt is not attached to this session")
+    return token
+
+
+def validate_locked_write_off_debt(
+    session: Session, token: object
+) -> LockedWriteOffDebt:
+    if not isinstance(token, LockedWriteOffDebt):
+        raise TypeError("locked Debt must come from lock_scoped_write_off_debt")
+    if token._session is not session:
+        raise RuntimeError("locked write-off Debt belongs to another session")
+    if session.get(Debt, token._row.id) is not token._row:
+        raise RuntimeError("locked write-off Debt is not attached to this session")
     return token
 
 

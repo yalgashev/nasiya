@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 M14_REVISION = "a5b6c7d8e9f0"
 M15_REVISION = "b6c7d8e9f0a1"
 M16_REVISION = "c7d8e9f0a1b2"
+M17_REVISION = "d8e9f0a1b2c3"
 MIGRATION_PATH = (
     PROJECT_ROOT / "alembic/versions/b6c7d8e9f0a1_add_overdue_persistence.py"
 )
@@ -31,7 +32,7 @@ def test_m15_is_the_single_linear_child_of_exact_m14() -> None:
     scripts = ScriptDirectory.from_config(Config(str(PROJECT_ROOT / "alembic.ini")))
     revision = scripts.get_revision(M15_REVISION)
 
-    assert scripts.get_heads() == [M16_REVISION]
+    assert scripts.get_heads() == [M17_REVISION]
     assert revision is not None
     assert revision.down_revision == M14_REVISION
 
@@ -110,5 +111,5 @@ def test_all_m15_downgrade_guards_run_before_ddl() -> None:
 def test_ci_verifies_exact_m15_head() -> None:
     workflow = (PROJECT_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
-    assert "Verify Alembic M16 head" in workflow
-    assert f'test "$current_revision" = "{M16_REVISION}"' in workflow
+    assert "Verify Alembic M17 head" in workflow
+    assert f'test "$current_revision" = "{M17_REVISION}"' in workflow

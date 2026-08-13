@@ -14,8 +14,9 @@ revision = "d8e9f0a1b2c3"
 down_revision = "c7d8e9f0a1b2"
 ```
 
-The planned revision does not exist. M17 adds zero tables and no Payment,
-ShopCustomer, Customer, or DisclosureViewLog business column.
+The planned revision does not exist at the M17.14 plan-verification boundary.
+It must be the sole child/head. M17 adds zero tables and no Payment,
+ShopCustomer, Customer, User, or DisclosureViewLog business column.
 
 ## Debt schema delta
 
@@ -43,13 +44,36 @@ ck_debts_written_off_revision_not_after_revision
 ck_debts_written_off_settled_metadata_pair
 ck_debts_written_off_settled_revision_positive
 ck_debts_written_off_settled_revision_not_after_revision
+ck_debts_written_off_revision_chain
+ck_debts_written_off_settled_revision_chain
 ```
 
-The checks enforce four-field write-off evidence, closed reason, settlement
-pair, positive revisions, overdue < write-off < settlement revisions, settlement
-revision equal to current revision, nondecreasing timestamps, and all-six-NULL
-outside M17 statuses. Written-off statuses retain accepted/overdue evidence and
-`paid_at IS NULL`.
+The exact predicates are:
+
+- `ck_debts_written_off_metadata_complete`: all four write-off fields are NULL
+  or all four are non-NULL;
+- `ck_debts_written_off_reason_allowed`: NULL or one of the exact five frozen
+  reason values;
+- `ck_debts_written_off_revision_positive`: NULL or `> 0`;
+- `ck_debts_written_off_revision_not_after_revision`: NULL or `<= revision`;
+- `ck_debts_written_off_settled_metadata_pair`: settlement fields are both NULL
+  or both non-NULL;
+- `ck_debts_written_off_settled_revision_positive`: NULL or `> 0`;
+- `ck_debts_written_off_settled_revision_not_after_revision`: NULL or
+  `<= revision`.
+- `ck_debts_written_off_revision_chain`: write-off requires an earlier overdue
+  revision;
+- `ck_debts_written_off_settled_revision_chain`: settlement requires an earlier
+  write-off revision.
+
+The extended lifecycle check requires all six fields NULL for every M16 status.
+`written_off` requires accepted/overdue evidence, all four write-off fields,
+NULL settlement pair and `paid_at`; `written_off_settled` additionally requires
+the settlement pair and `written_off_settled_revision = revision`. Revisions are
+strict `overdue_revision < written_off_revision < settled_revision`; timestamps
+are nondecreasing `accepted_at <= overdue_at <= written_off_at <=
+written_off_settled_at <= updated_at`. The queue index has exact ascending
+columns `(status, overdue_at, id)` and no predicate.
 
 ## Closed registry extensions
 
@@ -62,6 +86,8 @@ written_off          / -40 / live
 written_off_settled  / +10 / live
 ```
 
+The recording-source predicate is pair-aware: `historical_reconciliation` is
+legal only for `on_time_paid|overdue`; both M17 event types require `live`.
 Keep `uq_rating_events_debt_id_event_type`,
 `fk_rating_events_debt_shop_customer`, and the positive partial unique
 unchanged. Extend `audit_log` event, actor, object, and exact JSON checks for
@@ -71,13 +97,14 @@ unchanged. Extend `audit_log` event, actor, object, and exact JSON checks for
 
 ## Upgrade and preservation
 
-This is schema-only. Current `ck_debts_status_allowed` excludes written-off
+This is schema-only and has no backfill. Current `ck_debts_status_allowed` excludes written-off
 statuses and M16 rating checks exclude `-40/+10`; no lawful historical M17
 source exists. Upgrade creates no synthetic event/audit/notification, no
 backfill, and performs no source DML.
 
-Operations require old-writer drain and old-version restart prohibition. First
-source-data action is:
+Operations require old-writer drain before upgrade and old-version restart prohibition
+after it. The migration's first source-data action, before catalog
+replacement or scans, is:
 
 ```sql
 LOCK TABLE debts IN SHARE ROW EXCLUSIVE MODE
@@ -89,14 +116,18 @@ logical equality, not physical tuple-byte identity after `ALTER TABLE`.
 
 ## Guarded downgrade
 
-Before any DDL, one named M17 loss guard rejects a written-off status; any
-non-NULL new Debt metadata; `written_off|written_off_settled` rating events;
-either M17 audit event; `admin.debts.write_off` idempotency rows; or data not
-compatible with predecessor M16 checks. It never deletes, rewrites, or
-compensates data.
+Before any downgrade DDL, `_guard_m17_downgrade_loss()` rejects these
+independently seedable classes: a written-off status or any non-NULL new Debt
+metadata; `written_off|written_off_settled` rating events; either M17 audit
+event; `admin.debts.write_off` idempotency rows; or any row not compatible with
+the predecessor M16 status/rating/audit/idempotency predicates. It never
+deletes, rewrites, or compensates data.
 
-Only an empty compatible database may downgrade. Then registries are restored,
-queue index/FK/check dependencies removed, and child columns dropped safely.
+Only an M17-empty, M16-compatible database may downgrade. Exact DDL order is:
+restore audit/idempotency/rating checks; drop `ix_debts_status_overdue_at_id`;
+drop extended Debt lifecycle/timestamp and nine M17 checks; restore the M16
+Debt lifecycle/timestamp checks; drop
+`fk_debts_written_off_actor_user_id_users_id`; then drop the six child columns.
 M16 tables, parent uniques, and `+5/-15` history remain untouched. Real-PG
 proof covers fresh upgrade/empty downgrade/re-upgrade, mixed-M16 preservation,
 invalid check/FK/registry denial, independently seedable guard classes, exact

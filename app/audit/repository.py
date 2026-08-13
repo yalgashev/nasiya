@@ -9,10 +9,15 @@ from app.audit.contracts import (
     AuditEventType,
     AuditObjectType,
     DebtPaidAuditPayload,
+    DebtWrittenOffAuditPayload,
+    DebtWrittenOffSettledAuditPayload,
     PaymentRecordedAuditPayload,
+    create_debt_written_off_audit_event,
+    create_debt_written_off_settled_audit_event,
 )
 from app.audit.models import AuditLog
 from app.audit.redaction import redact_audit_payload
+from app.debt.values import DebtRevision
 from app.rating.disclosure import RiskBandDisclosureAuditPayload
 
 __all__ = [
@@ -93,6 +98,52 @@ def append_debt_paid_audit(
             object_id=debt_id,
             occurred_at=occurred_at,
             candidate_metadata=payload.as_candidate_metadata(),
+        ),
+    )
+
+
+def append_debt_written_off_audit(
+    session: Session,
+    *,
+    debt_id: UUID,
+    actor_user_id: UUID,
+    occurred_at: datetime,
+    written_off_at: datetime,
+    current_revision: DebtRevision,
+    payload: DebtWrittenOffAuditPayload,
+) -> None:
+    append_audit_event(
+        session,
+        create_debt_written_off_audit_event(
+            actor_user_id=actor_user_id,
+            debt_id=debt_id,
+            occurred_at=occurred_at,
+            written_off_at=written_off_at,
+            current_revision=current_revision,
+            payload=payload,
+        ),
+    )
+
+
+def append_debt_written_off_settled_audit(
+    session: Session,
+    *,
+    debt_id: UUID,
+    actor_user_id: UUID,
+    occurred_at: datetime,
+    written_off_settled_at: datetime,
+    current_revision: DebtRevision,
+    payload: DebtWrittenOffSettledAuditPayload,
+) -> None:
+    append_audit_event(
+        session,
+        create_debt_written_off_settled_audit_event(
+            actor_user_id=actor_user_id,
+            debt_id=debt_id,
+            occurred_at=occurred_at,
+            written_off_settled_at=written_off_settled_at,
+            current_revision=current_revision,
+            payload=payload,
         ),
     )
 

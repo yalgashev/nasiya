@@ -14,6 +14,7 @@ M13_REVISION = "f4a5b6c7d8e"
 M14_REVISION = "a5b6c7d8e9f0"
 M15_REVISION = "b6c7d8e9f0a1"
 M16_REVISION = "c7d8e9f0a1b2"
+M17_REVISION = "d8e9f0a1b2c3"
 
 
 def _config() -> Config:
@@ -24,7 +25,7 @@ def test_m13_is_the_single_linear_child_of_m12() -> None:
     scripts = ScriptDirectory.from_config(_config())
     revision = scripts.get_revision(M13_REVISION)
 
-    assert scripts.get_heads() == [M16_REVISION]
+    assert scripts.get_heads() == [M17_REVISION]
     assert revision is not None
     assert revision.down_revision == M12_REVISION
 

@@ -331,6 +331,57 @@ _AUDIT_PAYLOAD_EXACT_SHAPE_SQL = (
                 ),
             ),
             _exact_payload_clause(
+                AuditEventType.PAYMENT_RECORDED,
+                (
+                    "amount_uzs",
+                    "method",
+                    "from_status",
+                    "to_status",
+                    "debt_revision_after",
+                ),
+                extra_predicate=(
+                    _whole_number_predicate(
+                        "amount_uzs", minimum=1, maximum=1_000_000_000_000
+                    )
+                    + " AND payload ->> 'method' IN "
+                    "('cash', 'card', 'transfer', 'other') "
+                    "AND payload ->> 'from_status' = 'written_off' "
+                    "AND payload ->> 'to_status' IN "
+                    "('written_off', 'written_off_settled') AND "
+                    + _whole_number_predicate("debt_revision_after", minimum=1)
+                ),
+            ),
+            _exact_payload_clause(
+                AuditEventType.DEBT_WRITTEN_OFF,
+                (
+                    "reason_provided",
+                    "from_status",
+                    "to_status",
+                    "written_off_revision",
+                ),
+                extra_predicate=(
+                    "payload -> 'reason_provided' = 'true'::jsonb "
+                    "AND jsonb_typeof(payload -> 'from_status') = 'string' "
+                    "AND payload ->> 'from_status' = 'overdue' "
+                    "AND jsonb_typeof(payload -> 'to_status') = 'string' "
+                    "AND payload ->> 'to_status' = 'written_off' AND "
+                    + _whole_number_predicate("written_off_revision", minimum=1)
+                ),
+            ),
+            _exact_payload_clause(
+                AuditEventType.DEBT_WRITTEN_OFF_SETTLED,
+                ("source", "from_status", "to_status", "debt_revision_after"),
+                extra_predicate=(
+                    "jsonb_typeof(payload -> 'source') = 'string' "
+                    "AND payload ->> 'source' = 'payment' "
+                    "AND jsonb_typeof(payload -> 'from_status') = 'string' "
+                    "AND payload ->> 'from_status' = 'written_off' "
+                    "AND jsonb_typeof(payload -> 'to_status') = 'string' "
+                    "AND payload ->> 'to_status' = 'written_off_settled' AND "
+                    + _whole_number_predicate("debt_revision_after", minimum=1)
+                ),
+            ),
+            _exact_payload_clause(
                 AuditEventType.DISCLOSURE_RISK_BAND_VIEWED,
                 ("purpose", "band"),
                 extra_predicate=(
@@ -448,6 +499,8 @@ class AuditLog(Base):
                 f", '{AuditEventType.PAYMENT_RECORDED.value}'"
                 f", '{AuditEventType.DEBT_PAID.value}'"
                 f", '{AuditEventType.DISCLOSURE_RISK_BAND_VIEWED.value}'"
+                f", '{AuditEventType.DEBT_WRITTEN_OFF.value}'"
+                f", '{AuditEventType.DEBT_WRITTEN_OFF_SETTLED.value}'"
                 ")"
             ),
             name="ck_audit_log_event_type_allowed",
@@ -538,7 +591,9 @@ class AuditLog(Base):
                 f"'{AuditEventType.DEBT_EXPIRED.value}', "
                 f"'{AuditEventType.DEBT_OVERDUE.value}', "
                 f"'{AuditEventType.DEBT_CLAWBACK_APPLIED.value}', "
-                f"'{AuditEventType.DEBT_PAID.value}') "
+                f"'{AuditEventType.DEBT_PAID.value}', "
+                f"'{AuditEventType.DEBT_WRITTEN_OFF.value}', "
+                f"'{AuditEventType.DEBT_WRITTEN_OFF_SETTLED.value}') "
                 f"AND object_type = '{AuditObjectType.DEBT.value}')"
                 f" OR (event_type = '{AuditEventType.PAYMENT_RECORDED.value}' "
                 f"AND object_type = '{AuditObjectType.PAYMENT.value}')"

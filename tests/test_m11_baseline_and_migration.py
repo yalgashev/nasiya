@@ -59,6 +59,7 @@ M13_REVISION = "f4a5b6c7d8e"
 M14_REVISION = "a5b6c7d8e9f0"
 M15_REVISION = "b6c7d8e9f0a1"
 M16_REVISION = "c7d8e9f0a1b2"
+M17_REVISION = "d8e9f0a1b2c3"
 NOW = datetime(2026, 8, 2, 10, 0, tzinfo=UTC)
 GLOBAL_REGISTRATION_LOCK_ORDER = (
     "TelegramLinkToken",
@@ -169,7 +170,7 @@ def _clear_cr_m11_02_state(engine: Engine) -> None:
 
 def test_m11_migrations_remain_a_source_scoped_zero_table_chain() -> None:
     scripts = ScriptDirectory.from_config(_config())
-    assert scripts.get_heads() == [M16_REVISION]
+    assert scripts.get_heads() == [M17_REVISION]
     m12_revision = scripts.get_revision(M12_REVISION)
     recovery_revision = scripts.get_revision(M11_REVISION)
     original_revision = scripts.get_revision(ORIGINAL_M11_REVISION)

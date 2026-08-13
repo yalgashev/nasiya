@@ -26,7 +26,7 @@ def test_m14_is_the_single_linear_child_of_m13() -> None:
     scripts = ScriptDirectory.from_config(Config(str(PROJECT_ROOT / "alembic.ini")))
     revision = scripts.get_revision(M14_REVISION)
 
-    assert scripts.get_heads() == ["c7d8e9f0a1b2"]
+    assert scripts.get_heads() == ["d8e9f0a1b2c3"]
     assert revision is not None
     assert revision.down_revision == M13_REVISION
 

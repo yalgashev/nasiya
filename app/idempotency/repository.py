@@ -19,13 +19,17 @@ from app.idempotency.contracts import (
     IdempotencyKeyDigest,
     IdempotencyOutcome,
     IdempotencyResultType,
+    WriteOffDebtRequestHash,
 )
 from app.idempotency.models import IdempotencyKey
 from app.rating.values import RiskBandDisclosureRequestHash
 
 _UNIQUE = "uq_idempotency_keys_actor_user_id_endpoint_key_digest"
 _RequestHash = (
-    CreateDebtRequestHash | CreatePaymentRequestHash | RiskBandDisclosureRequestHash
+    CreateDebtRequestHash
+    | CreatePaymentRequestHash
+    | RiskBandDisclosureRequestHash
+    | WriteOffDebtRequestHash
 )
 
 
@@ -141,6 +145,12 @@ def _result_type_for_request(
                 "for disclosure creation"
             )
         return IdempotencyResultType.DISCLOSURE_VIEW
+    if endpoint is IdempotencyEndpoint.ADMIN_DEBTS_WRITE_OFF:
+        if not isinstance(request_hash, WriteOffDebtRequestHash):
+            raise TypeError(
+                "request_hash must be a WriteOffDebtRequestHash for write-off"
+            )
+        return IdempotencyResultType.DEBT
     raise ValueError("unsupported idempotency endpoint")
 
 

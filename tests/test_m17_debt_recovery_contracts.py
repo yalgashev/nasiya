@@ -63,7 +63,7 @@ def test_write_off_preserves_source_and_sets_exact_four_evidence_fields() -> Non
     assert result.revision == DebtRevision(4)
     assert result.written_off_revision == result.revision
     assert result.written_off_reason is WriteOffReason.FRAUD_OR_ABUSE
-    assert result.written_off_by_user_id == actor_id
+    assert result.written_off_actor_user_id == actor_id
     assert result.written_off_at == datetime(2026, 1, 6, 1, tzinfo=UTC)
     assert result.accepted_at == source.accepted_at
     assert result.overdue_at == source.overdue_at

@@ -15,6 +15,7 @@ M13_REVISION = "f4a5b6c7d8e"
 M14_REVISION = "a5b6c7d8e9f0"
 M15_REVISION = "b6c7d8e9f0a1"
 M16_REVISION = "c7d8e9f0a1b2"
+M17_REVISION = "d8e9f0a1b2c3"
 M11_CLEANUP_PREFIX = (
     "otp_challenge_events",
     "otp_dispatches",
@@ -85,9 +86,9 @@ M13_INHERITED_CLEANUP_ORDER = (
 def test_code_and_ci_are_wired_to_exact_m14_head() -> None:
     workflow = (PROJECT_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
-    assert get_alembic_head() == M16_REVISION
-    assert "Verify Alembic M16 head" in workflow
-    assert f'test "$current_revision" = "{M16_REVISION}"' in workflow
+    assert get_alembic_head() == M17_REVISION
+    assert "Verify Alembic M17 head" in workflow
+    assert f'test "$current_revision" = "{M17_REVISION}"' in workflow
     assert f'test "$current_revision" = "{M13_REVISION}"' not in workflow
     assert f'test "$current_revision" = "{M11_RECOVERY_REVISION}"' not in workflow
     assert f'test "$current_revision" = "{M11_ORIGINAL_REVISION}"' not in workflow

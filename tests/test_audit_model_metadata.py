@@ -159,7 +159,10 @@ def test_audit_model_matches_current_m14_exact_shape_registry() -> None:
     assert "event_type = 'payment.recorded' AND object_type = 'payment'" in (
         object_mapping_sql
     )
-    assert "'debt.paid') AND object_type = 'debt'" in object_mapping_sql
+    assert "'debt.paid', 'debt.written_off', " in object_mapping_sql
+    assert "'debt.written_off_settled') AND object_type = 'debt'" in (
+        object_mapping_sql
+    )
 
 
 def test_audit_model_has_no_query_update_or_delete_application_api() -> None:

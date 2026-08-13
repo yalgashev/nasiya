@@ -58,7 +58,9 @@ class Debt(Base):
                 f"('{DebtStatus.PENDING.value}', '{DebtStatus.ACTIVE.value}', "
                 f"'{DebtStatus.REJECTED.value}', '{DebtStatus.CANCELLED.value}', "
                 f"'{DebtStatus.EXPIRED.value}', '{DebtStatus.PAID.value}', "
-                f"'{DebtStatus.OVERDUE.value}')"
+                f"'{DebtStatus.OVERDUE.value}', "
+                f"'{DebtStatus.WRITTEN_OFF.value}', "
+                f"'{DebtStatus.WRITTEN_OFF_SETTLED.value}')"
             ),
             name="ck_debts_status_allowed",
         ),
@@ -77,6 +79,53 @@ class Debt(Base):
         CheckConstraint(
             "overdue_revision IS NULL OR overdue_revision <= revision",
             name="ck_debts_overdue_revision_not_after_revision",
+        ),
+        CheckConstraint(
+            "(written_off_at IS NULL AND written_off_revision IS NULL "
+            "AND written_off_reason IS NULL "
+            "AND written_off_actor_user_id IS NULL) OR "
+            "(written_off_at IS NOT NULL AND written_off_revision IS NOT NULL "
+            "AND written_off_reason IS NOT NULL "
+            "AND written_off_actor_user_id IS NOT NULL)",
+            name="ck_debts_written_off_metadata_complete",
+        ),
+        CheckConstraint(
+            "written_off_reason IS NULL OR written_off_reason IN "
+            "('collection_exhausted','customer_unreachable',"
+            "'insolvency_or_deceased','legal_or_compliance','fraud_or_abuse')",
+            name="ck_debts_written_off_reason_allowed",
+        ),
+        CheckConstraint(
+            "written_off_revision IS NULL OR written_off_revision > 0",
+            name="ck_debts_written_off_revision_positive",
+        ),
+        CheckConstraint(
+            "written_off_revision IS NULL OR written_off_revision <= revision",
+            name="ck_debts_written_off_revision_not_after_revision",
+        ),
+        CheckConstraint(
+            "(written_off_settled_at IS NULL) = (written_off_settled_revision IS NULL)",
+            name="ck_debts_written_off_settled_metadata_pair",
+        ),
+        CheckConstraint(
+            "written_off_settled_revision IS NULL OR written_off_settled_revision > 0",
+            name="ck_debts_written_off_settled_revision_positive",
+        ),
+        CheckConstraint(
+            "written_off_settled_revision IS NULL "
+            "OR written_off_settled_revision <= revision",
+            name="ck_debts_written_off_settled_revision_not_after_revision",
+        ),
+        CheckConstraint(
+            "written_off_revision IS NULL OR (overdue_revision IS NOT NULL "
+            "AND overdue_revision < written_off_revision)",
+            name="ck_debts_written_off_revision_chain",
+        ),
+        CheckConstraint(
+            "written_off_settled_revision IS NULL OR "
+            "(written_off_revision IS NOT NULL AND "
+            "written_off_revision < written_off_settled_revision)",
+            name="ck_debts_written_off_settled_revision_chain",
         ),
         CheckConstraint(
             (
@@ -103,36 +152,61 @@ class Debt(Base):
                 "AND cancelled_at IS NULL AND expired_at IS NULL "
                 "AND paid_at IS NULL AND rejection_reason IS NULL "
                 "AND cancellation_reason IS NULL AND overdue_at IS NULL "
-                "AND overdue_revision IS NULL) "
+                "AND overdue_revision IS NULL AND written_off_at IS NULL "
+                "AND written_off_revision IS NULL AND written_off_reason IS NULL "
+                "AND written_off_actor_user_id IS NULL "
+                "AND written_off_settled_at IS NULL "
+                "AND written_off_settled_revision IS NULL) "
                 f"OR (status = '{DebtStatus.ACTIVE.value}' "
                 "AND accepted_at IS NOT NULL AND rejected_at IS NULL "
                 "AND cancelled_at IS NULL AND expired_at IS NULL "
                 "AND paid_at IS NULL AND rejection_reason IS NULL "
                 "AND cancellation_reason IS NULL AND overdue_at IS NULL "
-                "AND overdue_revision IS NULL) "
+                "AND overdue_revision IS NULL AND written_off_at IS NULL "
+                "AND written_off_revision IS NULL AND written_off_reason IS NULL "
+                "AND written_off_actor_user_id IS NULL "
+                "AND written_off_settled_at IS NULL "
+                "AND written_off_settled_revision IS NULL) "
                 f"OR (status = '{DebtStatus.REJECTED.value}' "
                 "AND accepted_at IS NULL AND rejected_at IS NOT NULL "
                 "AND cancelled_at IS NULL AND expired_at IS NULL "
                 "AND paid_at IS NULL AND cancellation_reason IS NULL "
-                "AND overdue_at IS NULL AND overdue_revision IS NULL) "
+                "AND overdue_at IS NULL AND overdue_revision IS NULL "
+                "AND written_off_at IS NULL AND written_off_revision IS NULL "
+                "AND written_off_reason IS NULL "
+                "AND written_off_actor_user_id IS NULL "
+                "AND written_off_settled_at IS NULL "
+                "AND written_off_settled_revision IS NULL) "
                 f"OR (status = '{DebtStatus.CANCELLED.value}' "
                 "AND accepted_at IS NULL AND rejected_at IS NULL "
                 "AND cancelled_at IS NOT NULL AND expired_at IS NULL "
                 "AND paid_at IS NULL AND rejection_reason IS NULL "
                 "AND cancellation_reason IS NOT NULL AND overdue_at IS NULL "
-                "AND overdue_revision IS NULL) "
+                "AND overdue_revision IS NULL AND written_off_at IS NULL "
+                "AND written_off_revision IS NULL AND written_off_reason IS NULL "
+                "AND written_off_actor_user_id IS NULL "
+                "AND written_off_settled_at IS NULL "
+                "AND written_off_settled_revision IS NULL) "
                 f"OR (status = '{DebtStatus.EXPIRED.value}' "
                 "AND accepted_at IS NULL AND rejected_at IS NULL "
                 "AND cancelled_at IS NULL AND expired_at IS NOT NULL "
                 "AND paid_at IS NULL AND rejection_reason IS NULL "
                 "AND cancellation_reason IS NULL AND overdue_at IS NULL "
-                "AND overdue_revision IS NULL) "
+                "AND overdue_revision IS NULL AND written_off_at IS NULL "
+                "AND written_off_revision IS NULL AND written_off_reason IS NULL "
+                "AND written_off_actor_user_id IS NULL "
+                "AND written_off_settled_at IS NULL "
+                "AND written_off_settled_revision IS NULL) "
                 f"OR (status = '{DebtStatus.OVERDUE.value}' "
                 "AND accepted_at IS NOT NULL AND rejected_at IS NULL "
                 "AND cancelled_at IS NULL AND expired_at IS NULL "
                 "AND paid_at IS NULL AND rejection_reason IS NULL "
                 "AND cancellation_reason IS NULL AND overdue_at IS NOT NULL "
-                "AND overdue_revision IS NOT NULL) "
+                "AND overdue_revision IS NOT NULL AND written_off_at IS NULL "
+                "AND written_off_revision IS NULL AND written_off_reason IS NULL "
+                "AND written_off_actor_user_id IS NULL "
+                "AND written_off_settled_at IS NULL "
+                "AND written_off_settled_revision IS NULL) "
                 f"OR (status = '{DebtStatus.PAID.value}' "
                 "AND accepted_at IS NOT NULL AND rejected_at IS NULL "
                 "AND cancelled_at IS NULL AND expired_at IS NULL "
@@ -140,7 +214,33 @@ class Debt(Base):
                 "AND cancellation_reason IS NULL AND "
                 "((overdue_at IS NULL AND overdue_revision IS NULL) OR "
                 "(overdue_at IS NOT NULL AND overdue_revision IS NOT NULL "
-                "AND overdue_revision < revision)))"
+                "AND overdue_revision < revision)) AND written_off_at IS NULL "
+                "AND written_off_revision IS NULL AND written_off_reason IS NULL "
+                "AND written_off_actor_user_id IS NULL "
+                "AND written_off_settled_at IS NULL "
+                "AND written_off_settled_revision IS NULL) "
+                f"OR (status = '{DebtStatus.WRITTEN_OFF.value}' "
+                "AND accepted_at IS NOT NULL AND rejected_at IS NULL "
+                "AND cancelled_at IS NULL AND expired_at IS NULL "
+                "AND paid_at IS NULL AND rejection_reason IS NULL "
+                "AND cancellation_reason IS NULL AND overdue_at IS NOT NULL "
+                "AND overdue_revision IS NOT NULL AND written_off_at IS NOT NULL "
+                "AND written_off_revision IS NOT NULL "
+                "AND written_off_reason IS NOT NULL "
+                "AND written_off_actor_user_id IS NOT NULL "
+                "AND written_off_settled_at IS NULL "
+                "AND written_off_settled_revision IS NULL) "
+                f"OR (status = '{DebtStatus.WRITTEN_OFF_SETTLED.value}' "
+                "AND accepted_at IS NOT NULL AND rejected_at IS NULL "
+                "AND cancelled_at IS NULL AND expired_at IS NULL "
+                "AND paid_at IS NULL AND rejection_reason IS NULL "
+                "AND cancellation_reason IS NULL AND overdue_at IS NOT NULL "
+                "AND overdue_revision IS NOT NULL AND written_off_at IS NOT NULL "
+                "AND written_off_revision IS NOT NULL "
+                "AND written_off_reason IS NOT NULL "
+                "AND written_off_actor_user_id IS NOT NULL "
+                "AND written_off_settled_at IS NOT NULL "
+                "AND written_off_settled_revision = revision)"
             ),
             name="ck_debts_status_metadata_matches_status",
         ),
@@ -160,7 +260,14 @@ class Debt(Base):
                 "AND (overdue_at IS NULL OR (accepted_at IS NOT NULL "
                 "AND overdue_at >= accepted_at AND updated_at >= overdue_at)) "
                 "AND (paid_at IS NULL OR overdue_at IS NULL "
-                "OR paid_at >= overdue_at)"
+                "OR paid_at >= overdue_at) "
+                "AND (written_off_at IS NULL OR (overdue_at IS NOT NULL "
+                "AND written_off_at >= overdue_at "
+                "AND updated_at >= written_off_at)) "
+                "AND (written_off_settled_at IS NULL OR "
+                "(written_off_at IS NOT NULL "
+                "AND written_off_settled_at >= written_off_at "
+                "AND updated_at >= written_off_settled_at))"
             ),
             name="ck_debts_timestamp_order",
         ),
@@ -187,6 +294,12 @@ class Debt(Base):
             "ix_debts_status_due_date_id",
             "status",
             "due_date",
+            "id",
+        ),
+        Index(
+            "ix_debts_status_overdue_at_id",
+            "status",
+            "overdue_at",
             "id",
         ),
     )
@@ -244,6 +357,21 @@ class Debt(Base):
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     overdue_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     overdue_revision: Mapped[int | None] = mapped_column(Integer)
+    written_off_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    written_off_revision: Mapped[int | None] = mapped_column(Integer)
+    written_off_reason: Mapped[str | None] = mapped_column(Text)
+    written_off_actor_user_id: Mapped[UUID | None] = mapped_column(
+        PostgresUUID(as_uuid=True),
+        ForeignKey(
+            "users.id",
+            name="fk_debts_written_off_actor_user_id_users_id",
+            ondelete="RESTRICT",
+        ),
+    )
+    written_off_settled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    written_off_settled_revision: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -268,6 +396,10 @@ class Debt(Base):
             "cancellation_reason=<redacted>, accepted_at=<redacted>, "
             "rejected_at=<redacted>, cancelled_at=<redacted>, expired_at=<redacted>, "
             "paid_at=<redacted>, overdue_at=<redacted>, "
-            "overdue_revision=<redacted>, created_at=<redacted>, "
+            "overdue_revision=<redacted>, written_off_at=<redacted>, "
+            "written_off_revision=<redacted>, written_off_reason=<redacted>, "
+            "written_off_actor_user_id=<redacted>, "
+            "written_off_settled_at=<redacted>, "
+            "written_off_settled_revision=<redacted>, created_at=<redacted>, "
             "updated_at=<redacted>)"
         )

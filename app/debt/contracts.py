@@ -142,7 +142,7 @@ class DebtAggregate:
     written_off_at: datetime | None = None
     written_off_revision: DebtRevision | None = None
     written_off_reason: WriteOffReason | None = field(default=None, repr=False)
-    written_off_by_user_id: UserId | None = field(default=None, repr=False)
+    written_off_actor_user_id: UserId | None = field(default=None, repr=False)
     written_off_settled_at: datetime | None = None
     written_off_settled_revision: DebtRevision | None = None
 
@@ -408,7 +408,7 @@ class DebtAggregate:
             written_off_at=transition_at,
             written_off_revision=revision,
             written_off_reason=reason,
-            written_off_by_user_id=actor_user_id,
+            written_off_actor_user_id=actor_user_id,
         )
 
     def record_written_off_recovery(
@@ -624,7 +624,7 @@ class DebtAggregate:
             self.written_off_at,
             self.written_off_revision,
             self.written_off_reason,
-            self.written_off_by_user_id,
+            self.written_off_actor_user_id,
         )
         if any(value is not None for value in write_off_values) and not all(
             value is not None for value in write_off_values
@@ -652,7 +652,7 @@ class DebtAggregate:
         assert self.written_off_at is not None
         if not isinstance(self.written_off_reason, WriteOffReason):
             raise ValueError("Debt write-off reason is invalid")
-        _require_uuid(self.written_off_by_user_id, field_name="write-off actor")
+        _require_uuid(self.written_off_actor_user_id, field_name="write-off actor")
         if self.written_off_revision.value <= self.overdue_revision.value:
             raise ValueError("Debt write-off revision must follow overdue revision")
         if self.written_off_revision.value > self.revision.value:
@@ -692,7 +692,7 @@ class DebtAggregate:
             f"rejected_at={self.rejected_at!r}, cancelled_at={self.cancelled_at!r}, "
             f"expired_at={self.expired_at!r}, rejection_reason=<redacted>, "
             f"paid_at={self.paid_at!r}, cancellation_reason=<redacted>, "
-            "written_off_reason=<redacted>, written_off_by_user_id=<redacted>)"
+            "written_off_reason=<redacted>, written_off_actor_user_id=<redacted>)"
         )
 
 

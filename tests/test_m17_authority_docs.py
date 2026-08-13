@@ -100,6 +100,6 @@ def test_m17_persistence_plan_is_one_guarded_schema_only_child() -> None:
         "admin.debts.write_off",
         "LOCK TABLE debts IN SHARE ROW EXCLUSIVE MODE",
         "no\nbackfill",
-        "Before any DDL, one named M17 loss guard",
+        "_guard_m17_downgrade_loss()",
     ):
         assert token in plan
