@@ -43,6 +43,7 @@ __all__ = (
     "DebtProjection",
     "DebtReason",
     "PendingPaymentVoidOverdueEffect",
+    "reopen_debt_after_payment_void",
     "WriteOffReason",
 )
 
@@ -895,6 +896,78 @@ class DebtPaymentVoidTransition:
 
     def __repr__(self) -> str:
         return "DebtPaymentVoidTransition(<redacted>)"
+
+
+def reopen_debt_after_payment_void(
+    *,
+    debt: DebtAggregate,
+    expected_revision: DebtRevision,
+    payment_created_at: datetime,
+    voided_at: datetime,
+    remaining_due_uzs: Decimal,
+) -> DebtPaymentVoidTransition:
+    """Purely derive the one-revision Debt state restored by a latest void."""
+
+    if not isinstance(debt, DebtAggregate):
+        raise TypeError("debt must be a DebtAggregate")
+    if expected_revision != debt.revision:
+        raise DebtPaymentVoidTransitionError("Debt revision changed")
+    payment_at = _transition_time(payment_created_at)
+    normalized_voided_at = _transition_time(voided_at)
+    if normalized_voided_at < payment_at or normalized_voided_at < debt.updated_at:
+        raise DebtPaymentVoidTransitionError(
+            "Payment void cannot precede current source facts"
+        )
+    next_revision = DebtRevision(debt.revision.value + 1)
+    changes: dict[str, object] = {
+        "revision": next_revision,
+        "updated_at": normalized_voided_at,
+    }
+    effect = None
+    if debt.status is DebtStatus.PAID:
+        changes["paid_at"] = None
+        if debt.overdue_revision is not None:
+            changes["status"] = DebtStatus.OVERDUE
+        elif is_payment_due_date_payable(
+            payment_created_at=normalized_voided_at,
+            due_date=debt.due_date,
+        ):
+            changes["status"] = DebtStatus.ACTIVE
+        else:
+            changes.update(
+                status=DebtStatus.OVERDUE,
+                overdue_at=normalized_voided_at,
+                overdue_revision=next_revision,
+            )
+            effect = PendingPaymentVoidOverdueEffect(
+                source=DebtOverdueSource.PAYMENT_VOID,
+                from_status=DebtStatus.PAID,
+                overdue_revision=next_revision,
+                occurred_at=normalized_voided_at,
+            )
+    elif debt.status is DebtStatus.WRITTEN_OFF_SETTLED:
+        changes.update(
+            status=DebtStatus.WRITTEN_OFF,
+            written_off_settled_at=None,
+            written_off_settled_revision=None,
+        )
+    elif debt.status not in {
+        DebtStatus.ACTIVE,
+        DebtStatus.OVERDUE,
+        DebtStatus.WRITTEN_OFF,
+    }:
+        raise DebtPaymentVoidTransitionError(
+            "Debt status cannot be reopened by Payment void"
+        )
+    after = replace(debt, **changes)
+    return DebtPaymentVoidTransition(
+        before=debt,
+        debt=after,
+        expected_revision=expected_revision,
+        voided_at=normalized_voided_at,
+        remaining_due_uzs=remaining_due_uzs,
+        overdue_effect=effect,
+    )
 
 
 def _require_uuid(value: object, *, field_name: str) -> None:

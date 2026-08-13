@@ -118,28 +118,20 @@ def derive_current_rating_state(
 
     score = _INITIAL_SCORE
     previous_key: tuple[datetime, int, str, int] | None = None
-    by_debt: dict[UUID, list[RatingEventType]] = {}
+    by_debt: dict[UUID, list[tuple[RatingEventType, int]]] = {}
     for row in received:
-        occurred_at, debt_id, event_type, delta = _validate_scalar_event_row(row)
-        order_key = (occurred_at, debt_id.int, event_type.value, delta)
+        occurred_at, debt_id, event_type, source_revision, delta = (
+            _validate_scalar_event_row(row)
+        )
+        order_key = (occurred_at, debt_id.int, event_type.value, source_revision)
         if previous_key is not None and order_key <= previous_key:
             raise IncoherentScalarRatingHistoryError("Rating history is incoherent")
-        by_debt.setdefault(debt_id, []).append(event_type)
+        by_debt.setdefault(debt_id, []).append((event_type, source_revision))
         previous_key = order_key
         score = min(_MAX_SCORE, max(_MIN_SCORE, score + delta))
 
-    allowed_chains = {
-        (RatingEventType.ON_TIME_PAID,),
-        (RatingEventType.OVERDUE,),
-        (RatingEventType.OVERDUE, RatingEventType.WRITTEN_OFF),
-        (
-            RatingEventType.OVERDUE,
-            RatingEventType.WRITTEN_OFF,
-            RatingEventType.WRITTEN_OFF_SETTLED,
-        ),
-    }
-    if any(tuple(chain) not in allowed_chains for chain in by_debt.values()):
-        raise IncoherentScalarRatingHistoryError("Rating history is incoherent")
+    for chain in by_debt.values():
+        _validate_scalar_debt_cycles(chain)
 
     has_history = bool(received)
     if global_hard_block:
@@ -221,16 +213,19 @@ def read_locked_current_risk_band(
 
 def _validate_scalar_event_row(
     row: object,
-) -> tuple[datetime, UUID, RatingEventType, int]:
-    if not isinstance(row, tuple) or len(row) != 4:
+) -> tuple[datetime, UUID, RatingEventType, int, int]:
+    if not isinstance(row, tuple) or len(row) != 5:
         raise IncoherentScalarRatingHistoryError("Rating history is incoherent")
-    occurred_at, debt_id, event_type_value, delta = row
+    occurred_at, debt_id, event_type_value, source_revision, delta = row
     if (
         not isinstance(occurred_at, datetime)
         or occurred_at.tzinfo is None
         or occurred_at.utcoffset() is None
         or not isinstance(debt_id, UUID)
         or not isinstance(event_type_value, str)
+        or not isinstance(source_revision, int)
+        or isinstance(source_revision, bool)
+        or source_revision <= 0
         or not isinstance(delta, int)
         or isinstance(delta, bool)
     ):
@@ -243,4 +238,48 @@ def _validate_scalar_event_row(
         ) from None
     if delta != rating_event_delta(event_type):
         raise IncoherentScalarRatingHistoryError("Rating history is incoherent")
-    return occurred_at.astimezone(UTC), debt_id, event_type, delta
+    return occurred_at.astimezone(UTC), debt_id, event_type, source_revision, delta
+
+
+def _validate_scalar_debt_cycles(
+    events: list[tuple[RatingEventType, int]],
+) -> None:
+    positives: dict[int, bool] = {}
+    overdue_seen = False
+    written_off_seen = False
+    open_settlement_revision: int | None = None
+    settlement_revisions: set[int] = set()
+    for event_type, revision in events:
+        if event_type is RatingEventType.ON_TIME_PAID:
+            if overdue_seen or revision in positives:
+                raise IncoherentScalarRatingHistoryError("Rating history is incoherent")
+            positives[revision] = False
+        elif event_type is RatingEventType.ON_TIME_PAID_VOIDED:
+            if overdue_seen or revision not in positives or positives[revision]:
+                raise IncoherentScalarRatingHistoryError("Rating history is incoherent")
+            positives[revision] = True
+        elif event_type is RatingEventType.OVERDUE:
+            if overdue_seen or any(
+                not compensated for compensated in positives.values()
+            ):
+                raise IncoherentScalarRatingHistoryError("Rating history is incoherent")
+            overdue_seen = True
+        elif event_type is RatingEventType.WRITTEN_OFF:
+            if not overdue_seen or written_off_seen:
+                raise IncoherentScalarRatingHistoryError("Rating history is incoherent")
+            written_off_seen = True
+        elif event_type is RatingEventType.WRITTEN_OFF_SETTLED:
+            if (
+                not written_off_seen
+                or open_settlement_revision is not None
+                or revision in settlement_revisions
+            ):
+                raise IncoherentScalarRatingHistoryError("Rating history is incoherent")
+            open_settlement_revision = revision
+            settlement_revisions.add(revision)
+        elif event_type is RatingEventType.WRITTEN_OFF_SETTLED_VOIDED:
+            if open_settlement_revision != revision:
+                raise IncoherentScalarRatingHistoryError("Rating history is incoherent")
+            open_settlement_revision = None
+        else:
+            raise IncoherentScalarRatingHistoryError("Rating history is incoherent")

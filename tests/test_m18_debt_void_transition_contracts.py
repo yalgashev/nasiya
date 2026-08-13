@@ -12,6 +12,7 @@ from app.debt.contracts import (
     DebtPaymentVoidTransitionError,
     PendingPaymentVoidOverdueEffect,
     WriteOffReason,
+    reopen_debt_after_payment_void,
 )
 from app.debt.enums import DebtOverdueSource, DebtStatus
 from app.debt.values import (
@@ -266,6 +267,52 @@ def test_settlement_void_reopens_written_off_and_clears_only_settlement_pair() -
     assert result.debt.written_off_revision == before.written_off_revision
     assert result.debt.written_off_reason == before.written_off_reason
     assert result.debt.written_off_actor_user_id == before.written_off_actor_user_id
+
+
+@pytest.mark.parametrize(
+    ("source", "voided_at", "expected_status", "has_effect"),
+    (
+        (_active_partial, AFTER_DUE_DATE, DebtStatus.ACTIVE, False),
+        (_overdue_partial, AFTER_DUE_DATE, DebtStatus.OVERDUE, False),
+        (_written_off_partial, AFTER_DUE_DATE, DebtStatus.WRITTEN_OFF, False),
+        (_paid_without_overdue_marker, ON_DUE_DATE, DebtStatus.ACTIVE, False),
+        (_paid_without_overdue_marker, AFTER_DUE_DATE, DebtStatus.OVERDUE, True),
+        (_paid_with_overdue_marker, AFTER_DUE_DATE, DebtStatus.OVERDUE, False),
+        (_settled, AFTER_DUE_DATE, DebtStatus.WRITTEN_OFF, False),
+    ),
+)
+def test_pure_void_transition_derives_exact_boundary_matrix(
+    source: object,
+    voided_at: datetime,
+    expected_status: DebtStatus,
+    has_effect: bool,
+) -> None:
+    before = source()  # type: ignore[operator]
+
+    result = reopen_debt_after_payment_void(
+        debt=before,
+        expected_revision=before.revision,
+        payment_created_at=before.updated_at,
+        voided_at=voided_at,
+        remaining_due_uzs=Decimal("1"),
+    )
+
+    assert result.debt.status is expected_status
+    assert result.debt.revision == DebtRevision(before.revision.value + 1)
+    assert result.debt.updated_at == voided_at
+    assert (result.overdue_effect is not None) is has_effect
+
+
+def test_pure_void_transition_rejects_time_before_payment_or_debt_marker() -> None:
+    before = _active_partial()
+    with pytest.raises(DebtPaymentVoidTransitionError, match="precede"):
+        reopen_debt_after_payment_void(
+            debt=before,
+            expected_revision=before.revision,
+            payment_created_at=before.updated_at,
+            voided_at=CREATED_AT,
+            remaining_due_uzs=Decimal("1"),
+        )
 
 
 def test_generic_overdue_transition_cannot_use_payment_void_source() -> None:

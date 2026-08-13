@@ -139,6 +139,7 @@ class PaymentMutationRejected(RuntimeError):
             ErrorCode.PAYMENT_AMOUNT_EXCEEDS_BALANCE,
             ErrorCode.IDEMPOTENCY_CONFLICT,
             ErrorCode.PAYMENT_UNAVAILABLE,
+            ErrorCode.PAYMENT_NOT_VOIDABLE,
             ErrorCode.FORBIDDEN,
             ErrorCode.SHOP_SUSPENDED,
             ErrorCode.VALIDATION_ERROR,

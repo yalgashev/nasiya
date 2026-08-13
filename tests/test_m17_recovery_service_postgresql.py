@@ -82,6 +82,7 @@ def _seed_written_off_source(
                     occurred_at=OVERDUE_AT,
                     business_date=tashkent_business_date(OVERDUE_AT),
                     recording_source="live",
+                    source_revision=3,
                 ),
                 RatingEvent(
                     id=uuid4(),
@@ -92,6 +93,7 @@ def _seed_written_off_source(
                     occurred_at=WRITTEN_OFF_AT,
                     business_date=tashkent_business_date(WRITTEN_OFF_AT),
                     recording_source="live",
+                    source_revision=4,
                 ),
                 AuditLog(
                     event_type="debt.written_off",

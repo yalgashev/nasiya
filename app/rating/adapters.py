@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -17,12 +18,18 @@ from app.debt.rating_ports import (
     validate_locked_overdue_rating_source,
 )
 from app.debt.values import DebtId, DebtRevision
+from app.payment.models import Payment
 from app.payment.rating_ports import (
     PaymentRatingAppendOutcome,
     PaymentRatingEligibility,
     PaymentRatingEligibilityFacts,
+    PaymentRatingPositiveSource,
+    PaymentVoidCompensationAppendOutcome,
+    PaymentVoidRatingAppendPort,
+    PaymentVoidRatingSourceReadPort,
     PendingOnTimePaidRatingEffect,
     PendingWrittenOffSettledRatingEffect,
+    PreTransitionRatingSourceToken,
     WrittenOffSettledRatingAppendOutcome,
 )
 from app.payment.targeting import (
@@ -30,10 +37,15 @@ from app.payment.targeting import (
     validate_locked_tenant_payment_debt,
 )
 from app.rating.contracts import (
+    RatingCompensationSourceProof,
     create_on_time_paid_rating_event,
     create_overdue_rating_event,
+    create_rating_compensation_event,
     create_written_off_rating_event,
     create_written_off_settled_rating_event,
+)
+from app.rating.contracts import (
+    RatingEvent as RatingEventContract,
 )
 from app.rating.eligibility import (
     OnTimePaidEligibilityFacts,
@@ -50,10 +62,13 @@ from app.rating.ports import LockedRatingSourceScope
 from app.rating.repository import positive_cap_used_locked
 from app.rating.service import append_locked_source_event
 from app.rating.values import RatingEventId
+from app.shop_customer.models import ShopCustomer
 from app.shop_customer.values import CustomerId, ShopCustomerId
 
 
-class SqlAlchemyLockedRatingAppendAdapter:
+class SqlAlchemyLockedRatingAppendAdapter(
+    PaymentVoidRatingSourceReadPort, PaymentVoidRatingAppendPort
+):
     """Stateless adapter; validates inherited tokens and never acquires locks."""
 
     def evaluate_on_time_paid(
@@ -296,6 +311,189 @@ class SqlAlchemyLockedRatingAppendAdapter:
         if result.outcome is RatingEventAppendOutcome.SOURCE_ALREADY_EXISTS:
             return WrittenOffSettledRatingAppendOutcome.SOURCE_ALREADY_EXISTS
         raise RuntimeError("Rating event append failed")
+
+    def read_pre_transition_source(
+        self,
+        session: Session,
+        *,
+        payment_id,
+        debt_id: DebtId,
+        shop_customer_id: ShopCustomerId,
+        terminal_status,
+        source_revision: DebtRevision,
+        source_occurred_at: datetime,
+    ) -> PreTransitionRatingSourceToken | None:
+        """Read one exact positive source without acquiring another lock."""
+
+        positive_source, event_type, audit_type = {
+            "paid": (
+                PaymentRatingPositiveSource.ON_TIME_PAID,
+                RatingEventType.ON_TIME_PAID,
+                "debt.paid",
+            ),
+            "written_off_settled": (
+                PaymentRatingPositiveSource.WRITTEN_OFF_SETTLED,
+                RatingEventType.WRITTEN_OFF_SETTLED,
+                "debt.written_off_settled",
+            ),
+        }.get(getattr(terminal_status, "value", None), (None, None, None))
+        if positive_source is None:
+            return None
+        payment = session.execute(
+            select(Payment.recorded_by_user_id).where(
+                Payment.id == payment_id.as_uuid(),
+                Payment.debt_id == debt_id.as_uuid(),
+                Payment.debt_revision_after == source_revision.value,
+                Payment.created_at == source_occurred_at,
+            )
+        ).one_or_none()
+        event = session.execute(
+            select(RatingEvent.id).where(
+                RatingEvent.shop_customer_id == shop_customer_id.as_uuid(),
+                RatingEvent.debt_id == debt_id.as_uuid(),
+                RatingEvent.event_type == event_type.value,
+                RatingEvent.source_revision == source_revision.value,
+                RatingEvent.occurred_at == source_occurred_at,
+            )
+        ).one_or_none()
+        audits = tuple(
+            session.execute(
+                select(AuditLog.id).where(
+                    AuditLog.event_type == audit_type,
+                    AuditLog.object_type == "debt",
+                    AuditLog.object_id == debt_id.as_uuid(),
+                    AuditLog.actor_kind == "USER",
+                    AuditLog.actor_user_id
+                    == (None if payment is None else payment.recorded_by_user_id),
+                    AuditLog.occurred_at == source_occurred_at,
+                    AuditLog.payload["debt_revision_after"].as_integer()
+                    == source_revision.value,
+                )
+            )
+        )
+        counts = (payment is not None, event is not None, len(audits))
+        if counts == (True, False, 1) and event_type is RatingEventType.ON_TIME_PAID:
+            return None
+        if counts != (True, True, 1):
+            raise RuntimeError("Payment rating source is inconsistent")
+        return PreTransitionRatingSourceToken(
+            payment_id=payment_id,
+            debt_id=debt_id,
+            shop_customer_id=shop_customer_id,
+            positive_source=positive_source,
+            terminal_status=terminal_status,
+            source_revision=source_revision,
+            source_occurred_at=source_occurred_at,
+        )
+
+    def append_source_compensation(
+        self,
+        session: Session,
+        *,
+        source: PreTransitionRatingSourceToken,
+        voided_at: datetime,
+        completed_replay: bool,
+    ) -> PaymentVoidCompensationAppendOutcome:
+        """Append one source-paired negative event under inherited locks."""
+
+        if not isinstance(source, PreTransitionRatingSourceToken):
+            raise TypeError("source must be a PreTransitionRatingSourceToken")
+        customer_id = session.scalar(
+            select(ShopCustomer.customer_id).where(
+                ShopCustomer.id == source.shop_customer_id.as_uuid()
+            )
+        )
+        positive_type = {
+            PaymentRatingPositiveSource.ON_TIME_PAID: RatingEventType.ON_TIME_PAID,
+            PaymentRatingPositiveSource.WRITTEN_OFF_SETTLED: (
+                RatingEventType.WRITTEN_OFF_SETTLED
+            ),
+        }[source.positive_source]
+        positive_row = session.execute(
+            select(RatingEvent).where(
+                RatingEvent.shop_customer_id == source.shop_customer_id.as_uuid(),
+                RatingEvent.debt_id == source.debt_id.as_uuid(),
+                RatingEvent.event_type == positive_type.value,
+                RatingEvent.source_revision == source.source_revision.value,
+                RatingEvent.occurred_at == source.source_occurred_at,
+            )
+        ).scalar_one_or_none()
+        payment_row = session.execute(
+            select(Payment.recorded_by_user_id).where(
+                Payment.id == source.payment_id.as_uuid(),
+                Payment.debt_id == source.debt_id.as_uuid(),
+                Payment.debt_revision_after == source.source_revision.value,
+                Payment.created_at == source.source_occurred_at,
+            )
+        ).one_or_none()
+        audit_type = {
+            PaymentRatingPositiveSource.ON_TIME_PAID: "debt.paid",
+            PaymentRatingPositiveSource.WRITTEN_OFF_SETTLED: (
+                "debt.written_off_settled"
+            ),
+        }[source.positive_source]
+        audits = tuple(
+            session.execute(
+                select(AuditLog.id).where(
+                    AuditLog.event_type == audit_type,
+                    AuditLog.object_type == "debt",
+                    AuditLog.object_id == source.debt_id.as_uuid(),
+                    AuditLog.actor_kind == "USER",
+                    AuditLog.actor_user_id
+                    == (
+                        None if payment_row is None else payment_row.recorded_by_user_id
+                    ),
+                    AuditLog.occurred_at == source.source_occurred_at,
+                    AuditLog.payload["debt_revision_after"].as_integer()
+                    == source.source_revision.value,
+                )
+            )
+        )
+        if customer_id is None or positive_row is None or len(audits) != 1:
+            raise RuntimeError("Payment rating source is inconsistent")
+        positive = RatingEventContract(
+            id=RatingEventId(positive_row.id),
+            shop_customer_id=ShopCustomerId(positive_row.shop_customer_id),
+            debt_id=DebtId(positive_row.debt_id),
+            event_type=RatingEventType(positive_row.event_type),
+            delta=positive_row.delta,
+            occurred_at=positive_row.occurred_at,
+            business_date=positive_row.business_date,
+            recording_source=RatingRecordingSource(positive_row.recording_source),
+            source_revision=DebtRevision(positive_row.source_revision),
+        )
+        result = append_locked_source_event(
+            session,
+            locked_source=LockedRatingSourceScope(
+                customer_id=CustomerId(customer_id),
+                shop_customer_id=source.shop_customer_id,
+                debt_id=source.debt_id,
+                _session=session,
+            ),
+            event=create_rating_compensation_event(
+                event_id=RatingEventId(uuid4()),
+                source=RatingCompensationSourceProof(
+                    payment_id=source.payment_id.as_uuid(),
+                    payment_debt_id=source.debt_id,
+                    payment_shop_customer_id=source.shop_customer_id,
+                    payment_revision=source.source_revision,
+                    payment_created_at=source.source_occurred_at,
+                    positive_event=positive,
+                    audit_event_type=audit_type,
+                    audit_debt_id=source.debt_id,
+                    audit_revision=source.source_revision,
+                    audit_occurred_at=source.source_occurred_at,
+                ),
+                voided_at=voided_at,
+            ),
+        )
+        if result.outcome is RatingEventAppendOutcome.APPENDED:
+            return PaymentVoidCompensationAppendOutcome.APPENDED
+        if result.outcome is RatingEventAppendOutcome.SOURCE_ALREADY_EXISTS:
+            if completed_replay:
+                return PaymentVoidCompensationAppendOutcome.SOURCE_ALREADY_EXISTS
+            raise RuntimeError("Payment rating compensation already exists")
+        raise RuntimeError("Payment rating compensation append failed")
 
     @staticmethod
     def _payment_scope(

@@ -247,6 +247,7 @@ class PaymentVoidRatingAppendPort(Protocol):
         *,
         source: PreTransitionRatingSourceToken,
         voided_at: datetime,
+        completed_replay: bool,
     ) -> PaymentVoidCompensationAppendOutcome: ...
 
 

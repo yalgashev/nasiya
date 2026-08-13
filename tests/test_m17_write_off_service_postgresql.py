@@ -103,6 +103,7 @@ def _seed_source(session: Session) -> tuple[User, Debt]:
             occurred_at=OVERDUE,
             business_date=tashkent_business_date(OVERDUE),
             recording_source="live",
+            source_revision=3,
         )
     )
     session.add_all(

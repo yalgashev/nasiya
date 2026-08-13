@@ -17,11 +17,12 @@ def _row(
     *,
     event_type: str,
     occurred_at: datetime | None = None,
-) -> tuple[datetime, UUID, str, int]:
+) -> tuple[datetime, UUID, str, int, int]:
     return (
         occurred_at or datetime(2026, 8, number, tzinfo=UTC),
         UUID(int=number),
         event_type,
+        number,
         {
             "on_time_paid": 5,
             "overdue": -15,
@@ -74,7 +75,7 @@ def test_scalar_history_is_sequential_and_corruption_fails_closed() -> None:
     for corrupt in (
         (_row(1, event_type="overdue"), _row(1, event_type="on_time_paid")),
         (_row(2, event_type="overdue"), _row(1, event_type="on_time_paid")),
-        ((datetime(2026, 8, 1, tzinfo=UTC), UUID(int=1), "overdue", 5),),
+        ((datetime(2026, 8, 1, tzinfo=UTC), UUID(int=1), "overdue", 1, 5),),
     ):
         with pytest.raises(
             IncoherentScalarRatingHistoryError,
@@ -96,8 +97,8 @@ def test_safe_current_projection_carries_band_only() -> None:
 def test_written_off_chain_folds_sequentially_and_remains_hard_blocked() -> None:
     debt_id = UUID(int=17)
     rows = (
-        (datetime(2026, 8, 1, tzinfo=UTC), debt_id, "overdue", -15),
-        (datetime(2026, 8, 2, tzinfo=UTC), debt_id, "written_off", -40),
+        (datetime(2026, 8, 1, tzinfo=UTC), debt_id, "overdue", 3, -15),
+        (datetime(2026, 8, 2, tzinfo=UTC), debt_id, "written_off", 4, -40),
     )
     numeric = derive_current_rating_state(rows, global_hard_block=False)
     blocked = derive_current_rating_state(rows, global_hard_block=True)
@@ -115,9 +116,15 @@ def test_written_off_chain_folds_sequentially_and_remains_hard_blocked() -> None
 def test_settlement_history_unblocks_to_numeric_without_becoming_new() -> None:
     debt_id = UUID(int=18)
     rows = (
-        (datetime(2026, 8, 1, tzinfo=UTC), debt_id, "overdue", -15),
-        (datetime(2026, 8, 2, tzinfo=UTC), debt_id, "written_off", -40),
-        (datetime(2026, 8, 3, tzinfo=UTC), debt_id, "written_off_settled", 10),
+        (datetime(2026, 8, 1, tzinfo=UTC), debt_id, "overdue", 3, -15),
+        (datetime(2026, 8, 2, tzinfo=UTC), debt_id, "written_off", 4, -40),
+        (
+            datetime(2026, 8, 3, tzinfo=UTC),
+            debt_id,
+            "written_off_settled",
+            5,
+            10,
+        ),
     )
     result = derive_current_rating_state(rows, global_hard_block=False)
 
