@@ -116,8 +116,14 @@ def shop_debt_payment_list(
             "balance_basis_label": _basis_label(
                 actor.language, progress.balance_basis.value
             ),
+            "target_amount_label": _target_amount_label(
+                actor.language, progress.balance_basis.value
+            ),
             "late_terms_message": _late_terms_message(
                 actor.language, progress.is_effectively_overdue
+            ),
+            "recovery_terms_message": _recovery_terms_message(
+                actor.language, view.debt.status
             ),
             "read_only_message": _shop_read_only_message(
                 actor.language,
@@ -191,6 +197,9 @@ def new_shop_debt_payment_page(
                 ),
                 "late_terms_message": _late_terms_message(
                     language, detail.payment_progress.is_effectively_overdue
+                ),
+                "recovery_terms_message": _recovery_terms_message(
+                    language, detail.status
                 ),
                 "methods": tuple(PaymentMethod),
                 "error_message": _payment_error_message(language, error),
@@ -308,6 +317,9 @@ def shop_payment_receipt(
                 view.receipt.current_debt_status is DebtStatus.PAID
                 and view.receipt.current_balance_basis.value == "original"
             ),
+            "recovery_terms_message": _recovery_terms_message(
+                actor.language, view.receipt.current_debt_status
+            ),
         },
     )
 
@@ -358,8 +370,14 @@ def customer_debt_payment_list(
             "balance_basis_label": _basis_label(
                 language, view.debt.progress.balance_basis.value
             ),
+            "target_amount_label": _target_amount_label(
+                language, view.debt.progress.balance_basis.value
+            ),
             "late_terms_message": _late_terms_message(
                 language, view.debt.progress.is_effectively_overdue
+            ),
+            "recovery_terms_message": _recovery_terms_message(
+                language, view.debt.status
             ),
             "method_labels": _method_labels(language),
         },
@@ -420,6 +438,9 @@ def customer_payment_receipt(
             "paid_late": (
                 view.receipt.current_debt_status is DebtStatus.PAID
                 and view.receipt.current_balance_basis.value == "original"
+            ),
+            "recovery_terms_message": _recovery_terms_message(
+                language, view.receipt.current_debt_status
             ),
         },
     )
@@ -499,7 +520,8 @@ def _shop_payment_form_detail(
         return ErrorCode.DEBT_UNAVAILABLE, None
     progress = detail.payment_progress
     if (
-        detail.status not in {DebtStatus.ACTIVE, DebtStatus.OVERDUE}
+        detail.status
+        not in {DebtStatus.ACTIVE, DebtStatus.OVERDUE, DebtStatus.WRITTEN_OFF}
         or progress is None
         or not progress.is_payable
         or progress.remaining_due_uzs <= 0
@@ -562,6 +584,13 @@ def _basis_label(language: DebtWebLanguage, basis_value: str) -> str:
     return get_payment_web_copy(language)[f"{basis_value}_basis"]
 
 
+def _target_amount_label(language: DebtWebLanguage, basis_value: str) -> str:
+    if basis_value not in {"discounted", "original"}:
+        raise ValueError("Payment target basis is invalid")
+    target = "original_target" if basis_value == "original" else "discounted_target"
+    return get_payment_web_copy(language)[target]
+
+
 def _late_terms_message(
     language: DebtWebLanguage, is_effectively_overdue: bool
 ) -> str | None:
@@ -569,6 +598,18 @@ def _late_terms_message(
         raise ValueError("Payment effective overdue state is invalid")
     return (
         get_payment_web_copy(language)["late_terms"] if is_effectively_overdue else None
+    )
+
+
+def _recovery_terms_message(
+    language: DebtWebLanguage, debt_status: DebtStatus
+) -> str | None:
+    if not isinstance(debt_status, DebtStatus):
+        raise ValueError("Payment recovery status is invalid")
+    return (
+        get_payment_web_copy(language)["recovery_terms"]
+        if debt_status is DebtStatus.WRITTEN_OFF
+        else None
     )
 
 
@@ -583,7 +624,11 @@ def _shop_read_only_message(
         return get_payment_web_copy(language)["read_only_suspended"]
     if debt_status is DebtStatus.ACTIVE and not payable:
         return get_payment_web_copy(language)["read_only_past_due"]
-    if debt_status not in {DebtStatus.ACTIVE, DebtStatus.OVERDUE}:
+    if debt_status not in {
+        DebtStatus.ACTIVE,
+        DebtStatus.OVERDUE,
+        DebtStatus.WRITTEN_OFF,
+    }:
         return get_payment_web_copy(language)["read_only_closed"]
     return None
 

@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block title %}{{ copy.page_title }} — Nasiya{% endblock %}
+
+{% block content %}
+<main class="write-off-admin-page">
+    <nav aria-label="{{ copy.navigation_label }}"><a href="/admin/debts/write-off-candidates">{{ copy.back_link }}</a></nav>
+    {% if error_message %}<p role="alert"><strong>{{ copy.error_heading }}</strong> {{ error_message }}</p>{% endif %}
+    {% if completed %}
+    <section aria-labelledby="write-off-result-heading">
+        <h1 id="write-off-result-heading">{{ copy.completed_heading }}</h1>
+        <dl>
+            <dt>{{ copy.shop_label }}</dt><dd>{{ completed.summary.shop_name }}</dd>
+            <dt>{{ copy.customer_label }}</dt><dd>{{ completed.summary.masked_phone }}</dd>
+            <dt>{{ copy.due_date_label }}</dt><dd><time datetime="{{ completed.summary.due_date.isoformat() }}">{{ completed.summary.due_date.isoformat() }}</time></dd>
+            <dt>{{ copy.overdue_date_label }}</dt><dd><time datetime="{{ completed.summary.overdue_at.isoformat() }}">{{ completed.summary.overdue_at.date().isoformat() }}</time></dd>
+            <dt>{{ copy.remaining_label }}</dt><dd>{{ completed.summary.remaining_original_uzs }} UZS</dd>
+            <dt>{{ copy.status_label }}</dt><dd>{{ copy.status_labels[completed.summary.status] }}</dd>
+            <dt>{{ copy.reason_label }}</dt><dd>{{ copy.reason_labels[completed.reason] }}</dd>
+        </dl>
+    </section>
+    {% else %}
+    <h1>{{ copy.form_heading }}</h1>
+    <dl>
+        <dt>{{ copy.shop_label }}</dt><dd>{{ fresh.summary.shop_name }}</dd>
+        <dt>{{ copy.customer_label }}</dt><dd>{{ fresh.summary.masked_phone }}</dd>
+        <dt>{{ copy.due_date_label }}</dt><dd><time datetime="{{ fresh.summary.due_date.isoformat() }}">{{ fresh.summary.due_date.isoformat() }}</time></dd>
+        <dt>{{ copy.overdue_date_label }}</dt><dd><time datetime="{{ fresh.summary.overdue_at.isoformat() }}">{{ fresh.summary.overdue_at.date().isoformat() }}</time></dd>
+        <dt>{{ copy.remaining_label }}</dt><dd>{{ fresh.summary.remaining_original_uzs }} UZS</dd>
+        <dt>{{ copy.status_label }}</dt><dd>{{ copy.status_labels[fresh.summary.status] }}</dd>
+    </dl>
+    <form method="post" action="{{ post_action }}" autocomplete="off">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
+        <input type="hidden" name="expected_revision" value="{{ expected_revision }}">
+        <label for="reason">{{ copy.reason_label }}</label>
+        <select id="reason" name="reason" required>
+            {% for reason, label in copy.reason_labels.items() %}<option value="{{ reason.value }}">{{ label }}</option>{% endfor %}
+        </select>
+        <div class="write-off-confirmation">
+            <input id="confirmed" name="confirmed" type="checkbox" value="yes" required>
+            <label for="confirmed">{{ copy.confirmation_label }}</label>
+        </div>
+        <button class="button-danger" type="submit">{{ copy.submit_label }}</button>
+    </form>
+    {% endif %}
+</main>
+{% endblock %}

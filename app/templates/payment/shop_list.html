@@ -6,13 +6,14 @@
   <article class="payment-summary">
     <h2>{{ status_label }}</h2>
     <dl>
-      <dt>{{ copy.discounted_target }}</dt><dd>{{ debt.discounted_amount_uzs }}</dd>
+      <dt>{{ target_amount_label }}</dt><dd>{{ debt.original_amount.value if debt.payment_progress.balance_basis.value == "original" else debt.discounted_amount_uzs }}</dd>
       <dt>{{ copy.posted_total }}</dt><dd>{{ debt.payment_progress.posted_total_uzs }}</dd>
       <dt>{{ copy.remaining }} ({{ balance_basis_label }})</dt><dd>{{ debt.payment_progress.remaining_due_uzs }}</dd>
       <dt>{{ copy.payable }}</dt><dd>{{ copy.yes if debt.payment_progress.is_payable else copy.no }}</dd>
     </dl>
   </article>
   {% if late_terms_message %}<p role="status">{{ late_terms_message }}</p>{% endif %}
+  {% if recovery_terms_message %}<p role="status">{{ recovery_terms_message }}</p>{% endif %}
   {% if read_only_message %}<p role="status">{{ read_only_message }}</p>{% endif %}
   {% if history %}
   <ol aria-label="{{ copy.history }}">

@@ -269,7 +269,12 @@ def shop_debt_detail_page(
                     and shop.status is ShopStatus.ACTIVE
                 ),
                 "can_record_payment": (
-                    detail.status in {DebtStatus.ACTIVE, DebtStatus.OVERDUE}
+                    detail.status
+                    in {
+                        DebtStatus.ACTIVE,
+                        DebtStatus.OVERDUE,
+                        DebtStatus.WRITTEN_OFF,
+                    }
                     and shop.status is ShopStatus.ACTIVE
                     and detail.payment_progress is not None
                     and detail.payment_progress.is_payable

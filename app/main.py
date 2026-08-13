@@ -17,6 +17,7 @@ from app.db import (
     create_database_session_dependency,
     create_database_session_factory,
 )
+from app.debt.admin_write_off_router import router as admin_write_off_router
 from app.debt.payment_progress import DebtWebPaymentProgressReader
 from app.debt.repository import locked_customer_global_hard_block_reader_factory
 from app.debt.router import router as debt_router
@@ -85,12 +86,14 @@ def create_app(
         get_customer_debt_web_detail=get_customer_debt_web_detail_with_payment_progress,
     )
     application.state.rating_append_port = SqlAlchemyLockedRatingAppendAdapter()
+    application.state.write_off_clock = lambda: datetime.now(UTC)
     application.state.risk_band_disclosure_clock = lambda: datetime.now(UTC)
     application.state.get_database_session = create_database_session_dependency(
         database_session_factory
     )
     application.include_router(auth_router)
     application.include_router(offers_router)
+    application.include_router(admin_write_off_router)
     application.include_router(customer_router)
     application.include_router(customer_activation_router)
     application.include_router(customer_identity_router)

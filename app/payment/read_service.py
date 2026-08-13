@@ -214,6 +214,7 @@ class CustomerPaymentDebtProjection:
 
     shop_name: str = field(repr=False)
     status: DebtStatus
+    original_amount: OriginalAmountUZS
     discounted_amount: DiscountedAmountUZS
     progress: DebtPaymentProgressProjection
 
@@ -222,6 +223,8 @@ class CustomerPaymentDebtProjection:
             raise ValueError("Payment history shop name is invalid")
         if not isinstance(self.status, DebtStatus):
             raise ValueError("Payment history debt status is invalid")
+        if not isinstance(self.original_amount, OriginalAmountUZS):
+            raise ValueError("Payment history original target is invalid")
         if not isinstance(self.discounted_amount, DiscountedAmountUZS):
             raise ValueError("Payment history discounted target is invalid")
         if not isinstance(self.progress, DebtPaymentProgressProjection):
@@ -468,6 +471,7 @@ def get_own_customer_payment_history_view(
         debt=CustomerPaymentDebtProjection(
             shop_name=row.shop_name,
             status=DebtStatus(row.debt.status),
+            original_amount=OriginalAmountUZS(row.debt.original_amount_uzs),
             discounted_amount=DiscountedAmountUZS(row.debt.discounted_amount_uzs),
             progress=progress,
         ),

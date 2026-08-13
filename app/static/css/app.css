@@ -121,6 +121,45 @@ a:focus-visible {
     font-weight: 700;
 }
 
+.write-off-admin-page {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+
+.write-off-admin-page [role="alert"]::before {
+    content: "";
+}
+
+.write-off-candidate-list {
+    display: grid;
+    gap: 16px;
+    margin: 24px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.write-off-action-link {
+    display: inline-flex;
+    min-height: 44px;
+    align-items: center;
+    margin-top: 12px;
+}
+
+.write-off-confirmation {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+}
+
+.write-off-confirmation input {
+    margin: 0;
+}
+
+.write-off-confirmation label {
+    margin: 0;
+}
+
 .session-card {
     margin-top: 16px;
     border: 1px solid #cbd5e1;

@@ -13,6 +13,7 @@
     <dt>{{ copy.current_status }}</dt><dd>{{ status_label }}</dd>
   </dl>
   {% if paid_late %}<p role="status">{{ copy.paid_late }}</p>{% endif %}
+  {% if recovery_terms_message %}<p role="status">{{ recovery_terms_message }}</p>{% endif %}
   <nav aria-label="{{ copy.navigation }}"><a href="{{ request.url.path }}">{{ copy.refresh }}</a><a href="/customer/debts/{{ debt_id }}/payments">{{ copy.back_to_history }}</a></nav>
 </main>
 {% endblock %}

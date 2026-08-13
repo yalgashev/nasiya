@@ -42,6 +42,10 @@ PAYMENT_WEB_COPY: Final[Mapping[DebtWebLanguage, Mapping[str, str]]] = MappingPr
                 "late_terms": (
                     "Chegirma bekor qilindi; qoldiq asl summa bo'yicha hisoblanadi."
                 ),
+                "recovery_terms": (
+                    "Undirishdan chiqarilgan qarz qoldig‘i asl summa bo‘yicha "
+                    "qabul qilinadi."
+                ),
                 "paid_late": "Muddatdan keyin to'langan",
                 "refresh": "Holatni yangilash",
                 "navigation": "Sahifa navigatsiyasi",
@@ -70,6 +74,7 @@ PAYMENT_WEB_COPY: Final[Mapping[DebtWebLanguage, Mapping[str, str]]] = MappingPr
                 ),
                 "read_only_closed": ("Bu qarz uchun to'lov qabul qilinmaydi."),
                 "customer_read_only": ("To'lovlar tarixi faqat ko'rish uchun."),
+                "customer_payment_unavailable": "Mijoz to‘lov kiritolmaydi.",
                 "status_pending": "Kutilmoqda",
                 "status_active": "Faol",
                 "status_paid": "To'langan",
@@ -95,6 +100,9 @@ PAYMENT_WEB_COPY: Final[Mapping[DebtWebLanguage, Mapping[str, str]]] = MappingPr
                 "overdue": "Срок оплаты истёк",
                 "late_terms": (
                     "Скидка отменена; остаток рассчитан от первоначальной суммы."
+                ),
+                "recovery_terms": (
+                    "Остаток списанного долга принимается по первоначальной сумме."
                 ),
                 "paid_late": "Оплачен после срока",
                 "refresh": "Обновить данные",
@@ -126,6 +134,7 @@ PAYMENT_WEB_COPY: Final[Mapping[DebtWebLanguage, Mapping[str, str]]] = MappingPr
                 "customer_read_only": (
                     "История платежей доступна только для просмотра."
                 ),
+                "customer_payment_unavailable": "Клиент не может вносить платёж.",
                 "status_pending": "Ожидается",
                 "status_active": "Активен",
                 "status_paid": "Оплачен",

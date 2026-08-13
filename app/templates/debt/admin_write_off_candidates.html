@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+
+{% block title %}{{ copy.page_title }} — Nasiya{% endblock %}
+
+{% block content %}
+<main class="write-off-admin-page">
+    <h1>{{ copy.candidates_heading }}</h1>
+    <nav aria-label="{{ copy.navigation_label }}"><a href="/admin/offers">{{ copy.offers_link }}</a></nav>
+    {% if candidates %}
+    <ul class="write-off-candidate-list">
+        {% for candidate in candidates %}
+        <li class="session-card">
+            <dl>
+                <dt>{{ copy.shop_label }}</dt><dd>{{ candidate.shop_name }}</dd>
+                <dt>{{ copy.customer_label }}</dt><dd>{{ candidate.masked_phone }}</dd>
+                <dt>{{ copy.due_date_label }}</dt><dd><time datetime="{{ candidate.due_date.isoformat() }}">{{ candidate.due_date.isoformat() }}</time></dd>
+                <dt>{{ copy.overdue_date_label }}</dt><dd><time datetime="{{ candidate.overdue_at.isoformat() }}">{{ candidate.overdue_at.date().isoformat() }}</time></dd>
+                <dt>{{ copy.remaining_label }}</dt><dd>{{ candidate.remaining_original_uzs }} UZS</dd>
+                <dt>{{ copy.status_label }}</dt><dd>{{ copy.status_labels[candidate.status] }}</dd>
+            </dl>
+            <a class="write-off-action-link" href="{{ candidate.detail_path }}">{{ copy.view_action }}</a>
+        </li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <p role="status">{{ copy.empty }}</p>
+    {% endif %}
+</main>
+{% endblock %}
