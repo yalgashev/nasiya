@@ -1,4 +1,4 @@
-# M17 result — LOCAL GREEN DRAFT
+# M17 result — REMOTE GREEN — CLOSED
 
 M17 implements controlled written-off Debt and recovery: persisted overdue may
 be directly written off only by an active platform admin; active Shop staff can
@@ -22,6 +22,16 @@ CI-equivalent MinIO/containment gates were GREEN; the full real-PostgreSQL suite
 reported **4371 passed in 290.87s**, with zero failed, skipped, xfailed,
 xpassed, or warning outcomes.
 
-This is local technical evidence only. It does not claim a remote push or
-GitHub Actions result. See [final report](docs/m17_final_report.md) and [known
+The eighth implementation checkpoint is
+`5da0ee8d24e0f68f1597e4c96c66237909f8676c`, tree
+`dbee3dfbe8663a8b1098d932b91325ae9821b35a`. GitHub Actions run
+[`31688853605`](https://github.com/yalgashev/nasiya/actions/runs/31688853605),
+job
+[`94411245048`](https://github.com/yalgashev/nasiya/actions/runs/31688853605/job/94411245048),
+checked out that exact SHA and completed successfully in 5m01s. Alembic was at
+`d8e9f0a1b2c3`; the remote full real-PostgreSQL suite reported **4371 passed in
+226.71s**, with zero failed, skipped, xfailed, xpassed, or pytest warning
+outcomes.
+
+See [final report](docs/m17_final_report.md) and [known
 limitations](docs/m17_known_limitations.md).

@@ -25,9 +25,12 @@ accounting platform. These are intentional boundaries.
 7. Browser surfaces are SSR-only: no local/session/Cache Storage, client money
    or time calculation, JSON/HTMX/API endpoint, or offline recovery operation.
 8. Chrome/PostgreSQL manual acceptance is controlled local synthetic evidence,
-   not production data or remote CI. It retains only sanitized booleans;
+   not production data. It retains only sanitized booleans;
    temporary browser profiles, sessions, fixtures, cookies, screenshots, and
    identifiers are removed after use.
 
-Remote validation and docs-only closeout are deliberately not claimed until a
-later authorized push/CI stage.
+Remote CI validates the repository checkout and synthetic test environment; it
+is not a production deployment or production-data acceptance. The successful
+implementation run had zero pytest warning outcomes. GitHub separately emitted
+a runner-platform annotation that its Node.js 20 action versions were being
+forced onto Node.js 24; this did not alter any application check result.

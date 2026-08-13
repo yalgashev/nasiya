@@ -1,7 +1,6 @@
 # Nasiya M17 Final Report
 
-Status: local implementation draft. This report records local evidence only; it
-does **not** claim remote CI green.
+Status: **M17 REMOTE GREEN — CLOSED**.
 
 ## Capability delivered
 
@@ -86,6 +85,10 @@ deterministic real-PostgreSQL and web matrices.
 5. `8cbf8d53d1c4638dfa65070a74314ed55db388a4` — recovery integration
 6. `8d22238c55cf80cee2b2dd81a89b7ce9b81dc2da` — web flows
 7. `1884092f186d58141b2568d762c577efed724f34` — hardening
+8. `5da0ee8d24e0f68f1597e4c96c66237909f8676c` — implementation completion
+
+The eighth implementation tree is
+`dbee3dfbe8663a8b1098d932b91325ae9821b35a`.
 
 ## M17.44 repeated local validation
 
@@ -102,5 +105,18 @@ the existing pinned local MinIO runtime.
 
 Operational migration prerequisite remains explicit: drain old writers and do
 not restart an old binary while applying the M17 revision; the revision takes
-the documented Debt table barrier before schema work. No remote result has been
-claimed or recorded here.
+the documented Debt table barrier before schema work.
+
+## Remote implementation evidence
+
+GitHub Actions checked out implementation SHA
+`5da0ee8d24e0f68f1597e4c96c66237909f8676c`, whose tree is
+`dbee3dfbe8663a8b1098d932b91325ae9821b35a`. CI run
+[`31688853605`](https://github.com/yalgashev/nasiya/actions/runs/31688853605),
+job
+[`94411245048`](https://github.com/yalgashev/nasiya/actions/runs/31688853605/job/94411245048),
+completed successfully in 5m01s. Frozen sync, the M16 fixture upgrade, Alembic
+current/head `d8e9f0a1b2c3`, zero-backfill/source guards, Ruff,
+containment/MinIO gates, and full real-PostgreSQL pytest were GREEN. The full
+suite reported **4371 passed in 226.71s**, with zero failed, skipped, xfailed,
+xpassed, or pytest warning outcomes.
