@@ -4,15 +4,18 @@ from __future__ import annotations
 
 from datetime import date
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.debt.rating_ports import (
     LockedOverdueRatingSource,
     OverdueRatingAppendOutcome,
     PendingOverdueRatingEffect,
+    PendingWrittenOffRatingEffect,
+    WrittenOffRatingAppendOutcome,
     validate_locked_overdue_rating_source,
 )
-from app.debt.values import DebtId
+from app.debt.values import DebtId, DebtRevision
 from app.payment.rating_ports import (
     PaymentRatingAppendOutcome,
     PaymentRatingEligibility,
@@ -26,6 +29,7 @@ from app.payment.targeting import (
 from app.rating.contracts import (
     create_on_time_paid_rating_event,
     create_overdue_rating_event,
+    create_written_off_rating_event,
 )
 from app.rating.eligibility import (
     OnTimePaidEligibilityFacts,
@@ -34,8 +38,10 @@ from app.rating.eligibility import (
 from app.rating.enums import (
     PositiveRatingDecision,
     RatingEventAppendOutcome,
+    RatingEventType,
     RatingRecordingSource,
 )
+from app.rating.models import RatingEvent
 from app.rating.ports import LockedRatingSourceScope
 from app.rating.repository import positive_cap_used_locked
 from app.rating.service import append_locked_source_event
@@ -143,6 +149,66 @@ class SqlAlchemyLockedRatingAppendAdapter:
         if result.outcome is RatingEventAppendOutcome.SOURCE_ALREADY_EXISTS:
             return OverdueRatingAppendOutcome.SOURCE_ALREADY_EXISTS
         raise RuntimeError("Rating event append failed")
+
+    def append_pending_written_off(
+        self,
+        session: Session,
+        *,
+        locked_source: LockedOverdueRatingSource,
+        effect: PendingWrittenOffRatingEffect,
+    ) -> WrittenOffRatingAppendOutcome:
+        source = validate_locked_overdue_rating_source(session, locked_source)
+        if not isinstance(effect, PendingWrittenOffRatingEffect):
+            raise TypeError("effect must be a PendingWrittenOffRatingEffect")
+        result = append_locked_source_event(
+            session,
+            locked_source=LockedRatingSourceScope(
+                customer_id=CustomerId(source.customer_id),
+                shop_customer_id=source.shop_customer_id,
+                debt_id=source.debt_id,
+                _session=session,
+            ),
+            event=create_written_off_rating_event(
+                event_id=RatingEventId(effect.event_id),
+                shop_customer_id=effect.shop_customer_id,
+                debt_id=effect.debt_id,
+                written_off_at=effect.written_off_at,
+            ),
+        )
+        if result.outcome is RatingEventAppendOutcome.APPENDED:
+            return WrittenOffRatingAppendOutcome.APPENDED
+        if result.outcome is RatingEventAppendOutcome.SOURCE_ALREADY_EXISTS:
+            return WrittenOffRatingAppendOutcome.SOURCE_ALREADY_EXISTS
+        raise RuntimeError("Rating event append failed")
+
+    def has_coherent_overdue_source(
+        self,
+        session: Session,
+        *,
+        locked_source: LockedOverdueRatingSource,
+        overdue_at,
+        overdue_revision: DebtRevision,
+    ) -> bool:
+        source = validate_locked_overdue_rating_source(session, locked_source)
+        if not isinstance(overdue_revision, DebtRevision):
+            raise TypeError("overdue_revision must be a DebtRevision")
+        rows = tuple(
+            session.execute(
+                select(
+                    RatingEvent.shop_customer_id,
+                    RatingEvent.delta,
+                    RatingEvent.occurred_at,
+                ).where(
+                    RatingEvent.debt_id == source.debt_id.as_uuid(),
+                    RatingEvent.event_type == RatingEventType.OVERDUE.value,
+                )
+            )
+        )
+        return len(rows) == 1 and (
+            rows[0].shop_customer_id == source.shop_customer_id.as_uuid()
+            and rows[0].delta == -15
+            and rows[0].occurred_at == overdue_at
+        )
 
     @staticmethod
     def _payment_scope(

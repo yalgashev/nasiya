@@ -11,7 +11,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.debt.business_time import tashkent_business_date
-from app.debt.values import DebtId
+from app.debt.values import DebtId, DebtRevision
 from app.shop_customer.values import ShopCustomerId
 
 __all__ = (
@@ -112,18 +112,27 @@ class LockedOverdueRatingAppendPort(Protocol):
         *,
         locked_source: LockedOverdueRatingSource,
         effect: PendingOverdueRatingEffect,
-    ) -> WrittenOffRatingAppendOutcome: ...
+    ) -> OverdueRatingAppendOutcome: ...
 
 
 @runtime_checkable
 class LockedWrittenOffRatingAppendPort(Protocol):
+    def has_coherent_overdue_source(
+        self,
+        session: Session,
+        *,
+        locked_source: LockedOverdueRatingSource,
+        overdue_at: datetime,
+        overdue_revision: DebtRevision,
+    ) -> bool: ...
+
     def append_pending_written_off(
         self,
         session: Session,
         *,
         locked_source: LockedOverdueRatingSource,
         effect: PendingWrittenOffRatingEffect,
-    ) -> OverdueRatingAppendOutcome: ...
+    ) -> WrittenOffRatingAppendOutcome: ...
 
 
 def mark_locked_overdue_rating_source(

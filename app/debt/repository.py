@@ -288,6 +288,7 @@ class SqlAlchemyLockedCustomerGlobalHardBlockReader:
                 .where(
                     or_(
                         Debt.status == DebtStatus.OVERDUE.value,
+                        Debt.status == DebtStatus.WRITTEN_OFF.value,
                         (
                             (Debt.status == DebtStatus.ACTIVE.value)
                             & (Debt.due_date < business_date)

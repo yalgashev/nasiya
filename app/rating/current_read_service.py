@@ -118,17 +118,23 @@ def derive_current_rating_state(
 
     score = _INITIAL_SCORE
     previous_key: tuple[datetime, int, str, int] | None = None
-    seen_debts: set[UUID] = set()
+    by_debt: dict[UUID, list[RatingEventType]] = {}
     for row in received:
         occurred_at, debt_id, event_type, delta = _validate_scalar_event_row(row)
         order_key = (occurred_at, debt_id.int, event_type.value, delta)
         if previous_key is not None and order_key <= previous_key:
             raise IncoherentScalarRatingHistoryError("Rating history is incoherent")
-        if debt_id in seen_debts:
-            raise IncoherentScalarRatingHistoryError("Rating history is incoherent")
-        seen_debts.add(debt_id)
+        by_debt.setdefault(debt_id, []).append(event_type)
         previous_key = order_key
         score = min(_MAX_SCORE, max(_MIN_SCORE, score + delta))
+
+    allowed_chains = {
+        (RatingEventType.ON_TIME_PAID,),
+        (RatingEventType.OVERDUE,),
+        (RatingEventType.OVERDUE, RatingEventType.WRITTEN_OFF),
+    }
+    if any(tuple(chain) not in allowed_chains for chain in by_debt.values()):
+        raise IncoherentScalarRatingHistoryError("Rating history is incoherent")
 
     has_history = bool(received)
     if global_hard_block:

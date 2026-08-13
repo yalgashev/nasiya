@@ -22,7 +22,11 @@ def _row(
         occurred_at or datetime(2026, 8, number, tzinfo=UTC),
         UUID(int=number),
         event_type,
-        5 if event_type == "on_time_paid" else -15,
+        {
+            "on_time_paid": 5,
+            "overdue": -15,
+            "written_off": -40,
+        }[event_type],
     )
 
 
@@ -86,6 +90,25 @@ def test_safe_current_projection_carries_band_only() -> None:
     assert not hasattr(projection, "current_score")
     assert not hasattr(projection, "has_history")
     assert repr(projection) == "CurrentRiskBandProjection(<safe>)"
+
+
+def test_written_off_chain_folds_sequentially_and_remains_hard_blocked() -> None:
+    debt_id = UUID(int=17)
+    rows = (
+        (datetime(2026, 8, 1, tzinfo=UTC), debt_id, "overdue", -15),
+        (datetime(2026, 8, 2, tzinfo=UTC), debt_id, "written_off", -40),
+    )
+    numeric = derive_current_rating_state(rows, global_hard_block=False)
+    blocked = derive_current_rating_state(rows, global_hard_block=True)
+
+    assert numeric.current_score == 5
+    assert numeric.band is RiskBand.RED
+    assert blocked.current_score == 5
+    assert blocked.band is RiskBand.BLOCKED
+
+    corrupt = (rows[1],)
+    with pytest.raises(IncoherentScalarRatingHistoryError):
+        derive_current_rating_state(corrupt, global_hard_block=True)
 
 
 def test_current_rating_read_uses_no_write_or_cache_surface() -> None:
