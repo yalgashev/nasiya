@@ -22,6 +22,7 @@
       <span>{{ payment.amount.value }}</span>
       <span>{{ method_labels[payment.method.value] }}</span>
       <time datetime="{{ payment.created_at.isoformat() }}">{{ payment.created_at }}</time>
+      {% if payment.is_voided %}<span>{{ copy.voided }}</span><time datetime="{{ payment.voided_at.isoformat() }}">{{ payment.voided_at }}</time>{% endif %}
       <a href="/customer/payments/{{ payment.payment_id.as_uuid() }}">{{ copy.receipt }}</a>
     </li>
     {% endfor %}

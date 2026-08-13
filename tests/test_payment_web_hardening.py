@@ -15,6 +15,7 @@ def test_payment_templates_have_no_client_financial_authority_or_inline_code() -
         "shop_list.html",
         "shop_new.html",
         "shop_receipt.html",
+        "shop_void.html",
     }
     combined = "\n".join(path.read_text(encoding="utf-8") for path in PAYMENT_TEMPLATES)
     folded = combined.casefold()

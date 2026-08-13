@@ -19,7 +19,7 @@ from app.audit.repository import append_audit_event
 from app.auth.error_codes import ErrorCode
 from app.debt.business_time import tashkent_business_date
 from app.debt.contracts import reopen_debt_after_payment_void
-from app.debt.enums import DebtBalanceBasis, DebtOverdueSource
+from app.debt.enums import DebtBalanceBasis, DebtOverdueSource, DebtStatus
 from app.debt.overdue_service import (
     PendingOverdueTransitionEffect,
     append_pending_overdue_audits,
@@ -47,6 +47,7 @@ from app.payment.policy import capture_payment_server_now
 from app.payment.rating_ports import (
     PaymentVoidCompensationAppendOutcome,
     PaymentVoidRatingAppendPort,
+    PaymentVoidRatingSourceFacts,
     PaymentVoidRatingSourceReadPort,
 )
 from app.payment.repository import (
@@ -56,10 +57,7 @@ from app.payment.repository import (
 )
 from app.payment.service import PaymentMutationRejected
 from app.payment.values import calculate_payment_void_money
-from app.payment.void_source import (
-    PaymentVoidSourceClassification,
-    prove_locked_payment_void_source,
-)
+from app.payment.void_source import prove_locked_payment_void_source
 from app.payment.void_targeting import (
     discover_tenant_payment_void_target,
     lock_tenant_payment_void_predecessors,
@@ -156,19 +154,26 @@ def void_payment(
         raise PaymentMutationRejected(ErrorCode.PAYMENT_NOT_VOIDABLE) from exc
 
     debt_before = debt_aggregate_from_row(locked_target.locked_debt.row)
-    source_token = None
-    if source.classification is PaymentVoidSourceClassification.POSITIVE_MATCH:
-        source_token = rating_port.read_pre_transition_source(
-            session,
+    source_token = rating_port.read_pre_transition_source(
+        session,
+        facts=PaymentVoidRatingSourceFacts(
             payment_id=source.payment.id,
             debt_id=source.debt_id,
             shop_customer_id=source.shop_customer_id,
             terminal_status=debt_before.status,
+            payment_amount=source.payment.amount,
+            original_amount=debt_before.original_amount,
+            discounted_amount=debt_before.discounted_amount,
+            as_of_payment_total=source.as_of_payment_total,
+            accepted_at=debt_before.accepted_at,
+            due_date=debt_before.due_date,
+            overdue_revision=debt_before.overdue_revision,
             source_revision=source.source_revision,
             source_occurred_at=source.source_occurred_at,
-        )
-        if source_token is None:
-            raise RuntimeError("Payment rating source is inconsistent")
+        ),
+    )
+    if debt_before.status is DebtStatus.WRITTEN_OFF_SETTLED and source_token is None:
+        raise RuntimeError("Payment rating source is inconsistent")
 
     voided_at = capture_payment_server_now(clock()).value
     provisional_basis = (

@@ -180,6 +180,18 @@ ROUTE_IDOR_CASES = (
         "receipt joins payment_id through Debt and ShopCustomer authority",
     ),
     RouteIdorCase(
+        "GET",
+        "/shop/payments/{payment_id}/void",
+        IdorVector.FOREIGN_PAYMENT_UUID,
+        "void form scopes payment_id through the active current Shop",
+    ),
+    RouteIdorCase(
+        "POST",
+        "/shop/payments/{payment_id}/void",
+        IdorVector.FOREIGN_PAYMENT_UUID,
+        "void mutation locks and rechecks Payment through the tenant chain",
+    ),
+    RouteIdorCase(
         "POST",
         "/shop/customers/{shop_customer_id}/risk-band-disclosures",
         IdorVector.FOREIGN_SHOP_CUSTOMER_UUID,

@@ -140,7 +140,6 @@ def test_migration_and_runtime_keep_m16_out_vocabulary_contained() -> None:
     lowered = source.casefold()
     for forbidden in (
         "void_payment",
-        "compensation",
         "rating_override",
         "system_setting",
         "scheduler",
@@ -162,6 +161,7 @@ def test_migration_and_runtime_keep_m16_out_vocabulary_contained() -> None:
         "occurred_at",
         "business_date",
         "recording_source",
+        "source_revision",
     }
     assert set(DisclosureViewLog.__table__.columns.keys()) == {
         "id",

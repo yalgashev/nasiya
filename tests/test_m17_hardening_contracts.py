@@ -95,11 +95,9 @@ def test_m17_runtime_has_no_out_of_scope_product_wiring() -> None:
     )
     runtime = "\n".join(_source(path) for path in m17_runtime_paths).casefold()
     for forbidden in (
-        "void_payment",
         "refund_payment",
         "reverse_payment",
         "correct_payment",
-        "rating_compensation",
         "debt_forgiveness",
         "scheduler",
         "cron_worker",

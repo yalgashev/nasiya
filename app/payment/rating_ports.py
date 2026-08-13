@@ -12,8 +12,18 @@ from sqlalchemy.orm import Session
 
 from app.debt.business_time import tashkent_business_date
 from app.debt.enums import DebtStatus
-from app.debt.values import DebtId, DebtRevision, OriginalAmountUZS
-from app.payment.values import PaymentAmountUZS, PaymentId, RemainingDueUZS
+from app.debt.values import (
+    DebtId,
+    DebtRevision,
+    DiscountedAmountUZS,
+    OriginalAmountUZS,
+)
+from app.payment.values import (
+    PaymentAmountUZS,
+    PaymentId,
+    PostedPaymentTotalUZS,
+    RemainingDueUZS,
+)
 from app.shop_customer.values import ShopCustomerId
 
 if TYPE_CHECKING:
@@ -27,6 +37,7 @@ __all__ = (
     "PaymentRatingEligibilityFacts",
     "PaymentVoidCompensationAppendOutcome",
     "PaymentVoidRatingAppendPort",
+    "PaymentVoidRatingSourceFacts",
     "PaymentVoidRatingSourceReadPort",
     "PaymentRatingPositiveSource",
     "PreTransitionRatingSourceToken",
@@ -100,6 +111,61 @@ class PreTransitionRatingSourceToken:
 
     def __repr__(self) -> str:
         return "PreTransitionRatingSourceToken(<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class PaymentVoidRatingSourceFacts:
+    """Payment-local scalar proof used by the rating composition adapter."""
+
+    payment_id: PaymentId = field(repr=False)
+    debt_id: DebtId = field(repr=False)
+    shop_customer_id: ShopCustomerId = field(repr=False)
+    terminal_status: DebtStatus
+    payment_amount: PaymentAmountUZS = field(repr=False)
+    original_amount: OriginalAmountUZS = field(repr=False)
+    discounted_amount: DiscountedAmountUZS = field(repr=False)
+    as_of_payment_total: PostedPaymentTotalUZS = field(repr=False)
+    accepted_at: datetime | None = field(repr=False)
+    due_date: date
+    overdue_revision: DebtRevision | None = field(repr=False)
+    source_revision: DebtRevision
+    source_occurred_at: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.payment_id, PaymentId):
+            raise ValueError("Payment void rating source Payment is invalid")
+        if not isinstance(self.debt_id, DebtId):
+            raise ValueError("Payment void rating source Debt is invalid")
+        if not isinstance(self.shop_customer_id, ShopCustomerId):
+            raise ValueError("Payment void rating source ShopCustomer is invalid")
+        if not isinstance(self.terminal_status, DebtStatus):
+            raise ValueError("Payment void rating source status is invalid")
+        if not isinstance(self.payment_amount, PaymentAmountUZS):
+            raise ValueError("Payment void rating source amount is invalid")
+        if not isinstance(self.original_amount, OriginalAmountUZS):
+            raise ValueError("Payment void rating source original amount is invalid")
+        if not isinstance(self.discounted_amount, DiscountedAmountUZS):
+            raise ValueError("Payment void rating source discounted amount is invalid")
+        if not isinstance(self.as_of_payment_total, PostedPaymentTotalUZS):
+            raise ValueError("Payment void rating source total is invalid")
+        if not isinstance(self.due_date, date) or isinstance(self.due_date, datetime):
+            raise ValueError("Payment void rating source due date is invalid")
+        if self.overdue_revision is not None and not isinstance(
+            self.overdue_revision, DebtRevision
+        ):
+            raise ValueError("Payment void rating overdue revision is invalid")
+        if not isinstance(self.source_revision, DebtRevision):
+            raise ValueError("Payment void rating source revision is invalid")
+        if self.accepted_at is not None:
+            object.__setattr__(
+                self, "accepted_at", _normalize_aware_utc(self.accepted_at)
+            )
+        object.__setattr__(
+            self, "source_occurred_at", _normalize_aware_utc(self.source_occurred_at)
+        )
+
+    def __repr__(self) -> str:
+        return "PaymentVoidRatingSourceFacts(<redacted>)"
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -230,12 +296,7 @@ class PaymentVoidRatingSourceReadPort(Protocol):
         self,
         session: Session,
         *,
-        payment_id: PaymentId,
-        debt_id: DebtId,
-        shop_customer_id: ShopCustomerId,
-        terminal_status: DebtStatus,
-        source_revision: DebtRevision,
-        source_occurred_at: datetime,
+        facts: PaymentVoidRatingSourceFacts,
     ) -> PreTransitionRatingSourceToken | None: ...
 
 

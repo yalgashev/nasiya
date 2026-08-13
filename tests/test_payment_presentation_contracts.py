@@ -202,6 +202,12 @@ def test_payment_copy_catalog_is_exact_complete_and_immutable_in_both_locales() 
         "recovery_terms",
         "back_to_debt",
         "back_to_history",
+        "void_payment",
+        "void_reason",
+        "void_confirm",
+        "void_submit",
+        "voided",
+        "voided_at",
         *(f"void_reason_{reason.value}" for reason in PaymentVoidReason),
         *(method.value for method in PaymentMethod),
         *(f"status_{status.value}" for status in M17_PERSISTED_STATUSES),
@@ -224,6 +230,7 @@ def test_every_payment_form_error_has_safe_localized_copy(
 ) -> None:
     payment_web_errors = {
         ErrorCode.PAYMENT_UNAVAILABLE,
+        ErrorCode.PAYMENT_NOT_VOIDABLE,
         ErrorCode.PAYMENT_AMOUNT_EXCEEDS_BALANCE,
         ErrorCode.DEBT_CHANGED,
         ErrorCode.DEBT_UNAVAILABLE,

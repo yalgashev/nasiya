@@ -12,6 +12,12 @@
     <dt>{{ copy.current_balance }}</dt><dd>{{ receipt.current_balance.value }} ({{ current_basis_label }})</dd>
     <dt>{{ copy.current_status }}</dt><dd>{{ status_label }}</dd>
   </dl>
+  {% if void_state.is_voided %}
+  <p role="status">{{ copy.voided }}: {{ void_state.reason_label }}</p>
+  <time datetime="{{ void_state.voided_at.isoformat() }}">{{ void_state.voided_at }}</time>
+  {% elif can_void %}
+  <p><a href="/shop/payments/{{ payment_id }}/void">{{ copy.void_payment }}</a></p>
+  {% endif %}
   {% if paid_late %}<p role="status">{{ copy.paid_late }}</p>{% endif %}
   {% if recovery_terms_message %}<p role="status">{{ recovery_terms_message }}</p>{% endif %}
   <nav aria-label="{{ copy.navigation }}"><a href="{{ request.url.path }}">{{ copy.refresh }}</a><a href="/shop/debts/{{ debt_id }}/payments">{{ copy.back_to_history }}</a></nav>

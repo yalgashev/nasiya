@@ -42,6 +42,7 @@ M14_SHOP_GET_PATHS = (
     "/shop/payments/{payment_id}",
 )
 M16_SHOP_GET_PATHS = ("/shop/risk-band-disclosures/{disclosure_view_id}",)
+M18_SHOP_GET_PATHS = ("/shop/payments/{payment_id}/void",)
 SHOP_TEMPLATE_PATHS = tuple(
     sorted(
         (Path(__file__).resolve().parents[1] / "app" / "templates" / "shop").glob(
@@ -345,6 +346,7 @@ def test_all_shop_get_routes_are_in_the_side_effect_audit() -> None:
         *M13_SHOP_GET_PATHS,
         *M14_SHOP_GET_PATHS,
         *M16_SHOP_GET_PATHS,
+        *M18_SHOP_GET_PATHS,
     }
 
 

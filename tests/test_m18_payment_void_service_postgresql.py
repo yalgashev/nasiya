@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
 
+import app.payment.service as payment_service_module
 import app.payment.void_service as void_service_module
 from app.audit.models import AuditLog
 from app.auth.error_codes import ErrorCode
@@ -18,6 +19,8 @@ from app.idempotency.models import IdempotencyKey
 from app.payment.commands import VoidPaymentRawForm, assemble_void_payment_command
 from app.payment.enums import PaymentVoidOutcome
 from app.payment.models import Payment, PaymentVoid
+from app.payment.read_service import compose_payment_receipt
+from app.payment.repository import get_tenant_payment, posted_payment_total
 from app.payment.service import PaymentMutationRejected
 from app.payment.values import PaymentId
 from app.payment.void_service import void_payment
@@ -25,15 +28,24 @@ from app.rating.adapters import SqlAlchemyLockedRatingAppendAdapter
 from app.rating.models import RatingEvent
 from app.shop.enums import ShopRole
 from app.shop.models import ShopStaff
+from app.shop.values import ShopId
 from tests.rating_support import record_debt_payment
 from tests.test_m16_rating_append_services_postgresql import _make_eligible_debts
+from tests.test_m17_recovery_service_postgresql import _seed_written_off_source
 from tests.test_payment_service_postgresql import _command
 from tests.test_payment_targeting_postgresql import _seed_one
 
 VOIDED_AT = datetime(2026, 8, 11, 12, tzinfo=UTC)
 
 
-def _void_command(*, actor_id: UUID, shop_id: UUID, payment: Payment, key: UUID):
+def _void_command(
+    *,
+    actor_id: UUID,
+    shop_id: UUID,
+    payment: Payment,
+    key: UUID,
+    reason: str = "incorrect_amount",
+):
     payment_id = PaymentId(payment.id)
     assembled = assemble_void_payment_command(
         actor_user_id=actor_id,
@@ -42,7 +54,7 @@ def _void_command(*, actor_id: UUID, shop_id: UUID, payment: Payment, key: UUID)
         server_resolved_debt_id=DebtId(payment.debt_id),
         raw=VoidPaymentRawForm(
             expected_revision=str(payment.debt_revision_after),
-            reason="incorrect_amount",
+            reason=reason,
             idempotency_key=str(key),
             confirmed="yes",
         ),
@@ -94,8 +106,16 @@ def test_void_exact_payoff_appends_compensation_audits_and_zero_write_replay(
         )
     with factory() as session:
         payment = session.get_one(Payment, created.payment_id.as_uuid())
+        void_key = uuid4()
         command = _void_command(
-            actor_id=actor_id, shop_id=shop_id, payment=payment, key=uuid4()
+            actor_id=actor_id, shop_id=shop_id, payment=payment, key=void_key
+        )
+        changed_command = _void_command(
+            actor_id=actor_id,
+            shop_id=shop_id,
+            payment=payment,
+            key=void_key,
+            reason="wrong_debt",
         )
 
     calls = 0
@@ -126,6 +146,17 @@ def test_void_exact_payoff_appends_compensation_audits_and_zero_write_replay(
         )
     assert replay.outcome is PaymentVoidOutcome.REPLAY
     assert _counts(factory) == before_replay
+    with pytest.raises(PaymentMutationRejected) as changed:
+        with factory.begin() as session:
+            void_payment(
+                session,
+                actor=actor,
+                command=changed_command,
+                rating_port=adapter,
+                payment_void_clock=lambda: pytest.fail("conflict captured clock"),
+            )
+    assert changed.value.error is ErrorCode.IDEMPOTENCY_CONFLICT
+    assert _counts(factory) == before_replay
 
     with factory() as session:
         debt = session.get_one(Debt, debt_ids[0])
@@ -149,6 +180,21 @@ def test_void_exact_payoff_appends_compensation_audits_and_zero_write_replay(
         ]
         immutable = session.get_one(Payment, created.payment_id.as_uuid())
         assert immutable.amount_uzs == Decimal("100000")
+        scoped = get_tenant_payment(
+            session,
+            shop_id=ShopId(shop_id),
+            payment_id=created.payment_id,
+        )
+        assert scoped is not None
+        assert scoped.voided_at == VOIDED_AT
+        assert scoped.void_reason is not None
+        receipt = compose_payment_receipt(session, row=scoped, server_now=VOIDED_AT)
+        assert receipt.historical_balance_after.value == 0
+        assert receipt.current_balance.value == Decimal("100000")
+        assert posted_payment_total(
+            session, debt_id=DebtId(debt_ids[0]), through_revision=3
+        ).value == Decimal("100000")
+        assert posted_payment_total(session, debt_id=DebtId(debt_ids[0])).value == 0
 
 
 @pytest.mark.integration
@@ -338,6 +384,33 @@ def _detached_payment(factory, payment_id: UUID) -> Payment:
         return row
 
 
+def _void_existing_payment(
+    factory,
+    *,
+    actor,
+    actor_id: UUID,
+    shop_id: UUID,
+    payment_id: UUID,
+    key: UUID,
+    voided_at: datetime,
+    adapter,
+):
+    command = _void_command(
+        actor_id=actor_id,
+        shop_id=shop_id,
+        payment=_detached_payment(factory, payment_id),
+        key=key,
+    )
+    with factory.begin() as session:
+        return void_payment(
+            session,
+            actor=actor,
+            command=command,
+            rating_port=adapter,
+            payment_void_clock=lambda: voided_at,
+        )
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize("same_key", (True, False))
 def test_two_voids_serialize_to_one_complete_append_family(
@@ -415,7 +488,7 @@ def test_two_voids_serialize_to_one_complete_append_family(
 @pytest.mark.parametrize(
     "fault_stage", ("before_void", "after_void", "after_compensation", "audit")
 )
-def test_each_void_stage_fault_rolls_back_key_debt_and_all_evidence(
+def test_each_void_stage_fault_rolls_back_key_debt_void_rating_and_audits(
     m2_test_database: Engine,
     monkeypatch: pytest.MonkeyPatch,
     fault_stage: str,
@@ -491,3 +564,291 @@ def test_each_void_stage_fault_rolls_back_key_debt_and_all_evidence(
         debt = session.get_one(Debt, debt_ids[0])
         assert debt.status == "paid" and debt.revision == 3
         assert debt.paid_at == datetime(2026, 8, 10, 12, tzinfo=UTC)
+
+
+@pytest.mark.integration
+def test_compensated_daily_slot_remains_consumed_and_later_day_reearns(
+    m2_test_database: Engine,
+) -> None:
+    actor_id, shop_id, _relation_id, debt_ids = _make_eligible_debts(
+        m2_test_database, count=1
+    )
+    debt_id = debt_ids[0]
+    factory = create_database_session_factory(m2_test_database)
+    _promote_owner(factory, shop_id=shop_id)
+    adapter = SqlAlchemyLockedRatingAppendAdapter()
+    actor, first_command = _command(
+        actor_id=actor_id,
+        shop_id=shop_id,
+        debt_id=debt_id,
+        amount="100000",
+        revision=2,
+        key=uuid4(),
+    )
+    with factory.begin() as session:
+        first = record_debt_payment(
+            session,
+            actor=actor,
+            command=first_command,
+            payment_clock=lambda: datetime(2026, 8, 10, 12, tzinfo=UTC),
+        )
+    _void_existing_payment(
+        factory,
+        actor=actor,
+        actor_id=actor_id,
+        shop_id=shop_id,
+        payment_id=first.payment_id.as_uuid(),
+        key=uuid4(),
+        voided_at=datetime(2026, 8, 10, 13, tzinfo=UTC),
+        adapter=adapter,
+    )
+
+    actor, same_day_command = _command(
+        actor_id=actor_id,
+        shop_id=shop_id,
+        debt_id=debt_id,
+        amount="100000",
+        revision=4,
+        key=uuid4(),
+    )
+    with factory.begin() as session:
+        same_day = record_debt_payment(
+            session,
+            actor=actor,
+            command=same_day_command,
+            payment_clock=lambda: datetime(2026, 8, 10, 14, tzinfo=UTC),
+        )
+    _void_existing_payment(
+        factory,
+        actor=actor,
+        actor_id=actor_id,
+        shop_id=shop_id,
+        payment_id=same_day.payment_id.as_uuid(),
+        key=uuid4(),
+        voided_at=datetime(2026, 8, 10, 15, tzinfo=UTC),
+        adapter=adapter,
+    )
+
+    actor, later_command = _command(
+        actor_id=actor_id,
+        shop_id=shop_id,
+        debt_id=debt_id,
+        amount="100000",
+        revision=6,
+        key=uuid4(),
+    )
+    with factory.begin() as session:
+        record_debt_payment(
+            session,
+            actor=actor,
+            command=later_command,
+            payment_clock=lambda: datetime(2026, 8, 11, 12, tzinfo=UTC),
+        )
+
+    with factory() as session:
+        events = tuple(
+            session.execute(
+                select(
+                    RatingEvent.event_type,
+                    RatingEvent.source_revision,
+                    RatingEvent.delta,
+                ).order_by(
+                    RatingEvent.occurred_at,
+                    RatingEvent.debt_id,
+                    RatingEvent.event_type,
+                    RatingEvent.source_revision,
+                )
+            )
+        )
+        assert events == (
+            ("on_time_paid", 3, 5),
+            ("on_time_paid_voided", 3, -5),
+            ("on_time_paid", 7, 5),
+        )
+
+
+@pytest.mark.integration
+def test_settlement_cycle_compensation_cannot_farm_bonus(
+    m2_test_database: Engine,
+) -> None:
+    actor_id, shop_id, debt_id = _seed_written_off_source(m2_test_database)
+    factory = create_database_session_factory(m2_test_database)
+    _promote_owner(factory, shop_id=shop_id)
+    adapter = SqlAlchemyLockedRatingAppendAdapter()
+    actor, first_command = _command(
+        actor_id=actor_id,
+        shop_id=shop_id,
+        debt_id=debt_id,
+        amount="1000",
+        revision=4,
+        key=uuid4(),
+        basis="original",
+    )
+    with factory.begin() as session:
+        first = record_debt_payment(
+            session,
+            actor=actor,
+            command=first_command,
+            payment_clock=lambda: datetime(2026, 8, 15, 12, tzinfo=UTC),
+        )
+    _void_existing_payment(
+        factory,
+        actor=actor,
+        actor_id=actor_id,
+        shop_id=shop_id,
+        payment_id=first.payment_id.as_uuid(),
+        key=uuid4(),
+        voided_at=datetime(2026, 8, 16, 12, tzinfo=UTC),
+        adapter=adapter,
+    )
+    with factory() as session:
+        reopened = session.get_one(Debt, debt_id)
+        assert reopened.status == "written_off" and reopened.revision == 6
+        assert reopened.written_off_settled_at is None
+
+    actor, second_command = _command(
+        actor_id=actor_id,
+        shop_id=shop_id,
+        debt_id=debt_id,
+        amount="1000",
+        revision=6,
+        key=uuid4(),
+        basis="original",
+    )
+    with factory.begin() as session:
+        record_debt_payment(
+            session,
+            actor=actor,
+            command=second_command,
+            payment_clock=lambda: datetime(2026, 8, 17, 12, tzinfo=UTC),
+        )
+
+    with factory() as session:
+        debt = session.get_one(Debt, debt_id)
+        assert debt.status == "written_off_settled" and debt.revision == 7
+        events = tuple(
+            session.execute(
+                select(
+                    RatingEvent.event_type,
+                    RatingEvent.source_revision,
+                    RatingEvent.delta,
+                )
+                .where(
+                    RatingEvent.event_type.in_(
+                        ("written_off_settled", "written_off_settled_voided")
+                    )
+                )
+                .order_by(
+                    RatingEvent.occurred_at,
+                    RatingEvent.event_type,
+                    RatingEvent.source_revision,
+                )
+            )
+        )
+        assert events == (
+            ("written_off_settled", 5, 10),
+            ("written_off_settled_voided", 5, -10),
+            ("written_off_settled", 7, 10),
+        )
+
+
+@pytest.mark.integration
+def test_void_vs_new_payment_preserves_one_linear_latest_stack(
+    m2_test_database: Engine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    actor_id, shop_id, _staff_id, _relation_id, debt_id = _seed_one(
+        m2_test_database, role=ShopRole.OWNER
+    )
+    factory = create_database_session_factory(m2_test_database)
+    adapter = SqlAlchemyLockedRatingAppendAdapter()
+    actor, first_command = _command(
+        actor_id=actor_id,
+        shop_id=shop_id,
+        debt_id=debt_id,
+        amount="400",
+        revision=2,
+        key=uuid4(),
+    )
+    with factory.begin() as session:
+        first = record_debt_payment(
+            session,
+            actor=actor,
+            command=first_command,
+            payment_clock=lambda: datetime(2026, 8, 10, 12, tzinfo=UTC),
+        )
+    void_command = _void_command(
+        actor_id=actor_id,
+        shop_id=shop_id,
+        payment=_detached_payment(factory, first.payment_id.as_uuid()),
+        key=uuid4(),
+    )
+    actor, competing = _command(
+        actor_id=actor_id,
+        shop_id=shop_id,
+        debt_id=debt_id,
+        amount="100",
+        revision=3,
+        key=uuid4(),
+    )
+    void_staged = Barrier(2)
+    payment_attempted = Barrier(2)
+    release_void = Barrier(2)
+    original_update = void_service_module.update_locked_debt
+    original_payment_locks = payment_service_module.lock_tenant_payment_predecessors
+
+    def pause_void(*args, **kwargs):
+        result = original_update(*args, **kwargs)
+        void_staged.wait()
+        release_void.wait()
+        return result
+
+    def observe_payment_attempt(*args, **kwargs):
+        payment_attempted.wait()
+        return original_payment_locks(*args, **kwargs)
+
+    monkeypatch.setattr(void_service_module, "update_locked_debt", pause_void)
+    monkeypatch.setattr(
+        payment_service_module,
+        "lock_tenant_payment_predecessors",
+        observe_payment_attempt,
+    )
+
+    def void_worker():
+        with factory.begin() as session:
+            return void_payment(
+                session,
+                actor=actor,
+                command=void_command,
+                rating_port=adapter,
+                payment_void_clock=lambda: VOIDED_AT,
+            ).outcome.value
+
+    def payment_worker():
+        try:
+            with factory.begin() as session:
+                record_debt_payment(
+                    session,
+                    actor=actor,
+                    command=competing,
+                    payment_clock=lambda: VOIDED_AT,
+                )
+        except PaymentMutationRejected as exc:
+            return exc.error.value
+        raise AssertionError("stale competing Payment unexpectedly committed")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        void_future = executor.submit(void_worker)
+        void_staged.wait()
+        payment_future = executor.submit(payment_worker)
+        payment_attempted.wait()
+        assert not payment_future.done()
+        release_void.wait()
+        assert void_future.result() == "new"
+        assert payment_future.result() == ErrorCode.DEBT_CHANGED.value
+
+    with factory() as session:
+        debt = session.get_one(Debt, debt_id)
+        assert debt.status == "active" and debt.revision == 4
+        assert session.scalar(select(func.count()).select_from(Payment)) == 1
+        assert session.scalar(select(func.count()).select_from(PaymentVoid)) == 1

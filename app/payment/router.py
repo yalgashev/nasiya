@@ -1,4 +1,4 @@
-"""Thin authenticated SSR/PRG adapters for the frozen six Payment routes."""
+"""Thin authenticated SSR/PRG adapters for the frozen eight Payment routes."""
 
 from __future__ import annotations
 
@@ -34,7 +34,9 @@ from app.debt.values import DebtId
 from app.debt.web_presentation import resolve_debt_web_language
 from app.payment.commands import (
     CreatePaymentV2RawForm,
+    VoidPaymentRawForm,
     assemble_create_payment_request,
+    assemble_void_payment_command,
 )
 from app.payment.dependencies import (
     DetachedPaymentActorContext,
@@ -42,8 +44,12 @@ from app.payment.dependencies import (
     get_detached_current_shop_payment_actor_context,
     get_detached_current_shop_payment_read_actor_context,
 )
-from app.payment.enums import PaymentMethod
-from app.payment.presentation import get_payment_web_copy, get_payment_web_error_message
+from app.payment.enums import PaymentMethod, PaymentVoidReason
+from app.payment.presentation import (
+    get_payment_void_reason_label,
+    get_payment_web_copy,
+    get_payment_web_error_message,
+)
 from app.payment.read_service import (
     get_own_customer_payment_history_view,
     get_own_customer_payment_receipt_view,
@@ -51,17 +57,20 @@ from app.payment.read_service import (
     get_tenant_payment_history_view,
     get_tenant_payment_receipt_view,
 )
+from app.payment.repository import get_tenant_payment
 from app.payment.service import (
     PaymentMutationRejected,
     record_debt_payment,
     resolve_completed_m14_payment_replay,
 )
 from app.payment.values import PaymentId
+from app.payment.void_service import void_payment
+from app.payment.void_targeting import discover_tenant_payment_void_target
 from app.security_headers import mark_auth_response_no_store
 from app.settings import Settings
 from app.shop.context import CurrentShopContext
 from app.shop.dependencies import ShopSelectionRequired, require_shop_staff
-from app.shop.enums import ShopStatus
+from app.shop.enums import ShopRole, ShopStatus
 from app.shop.repository import get_shop
 from app.shop.values import ShopId
 
@@ -291,7 +300,11 @@ def shop_payment_receipt(
         )
     if view.error is not None:
         return _redirect("/shop/customers", error=view.error)
-    assert view.receipt is not None and view.debt_id is not None
+    assert (
+        view.receipt is not None
+        and view.debt_id is not None
+        and view.void_state is not None
+    )
     return _template_response(
         request,
         "payment/shop_receipt.html",
@@ -299,6 +312,7 @@ def shop_payment_receipt(
         {
             "receipt": view.receipt,
             "debt_id": view.debt_id.as_uuid(),
+            "payment_id": parsed_payment_id.as_uuid(),
             "method_label": _method_labels(actor.language)[view.receipt.method.value],
             "status_label": _status_label(
                 actor.language,
@@ -320,8 +334,115 @@ def shop_payment_receipt(
             "recovery_terms_message": _recovery_terms_message(
                 actor.language, view.receipt.current_debt_status
             ),
+            "void_state": view.void_state,
+            "can_void": actor.role_hint in {ShopRole.OWNER, ShopRole.MANAGER},
         },
     )
+
+
+@router.get(
+    "/shop/payments/{payment_id}/void",
+    name="shop_payment_void_form",
+    response_class=HTMLResponse,
+    response_model=None,
+)
+def shop_payment_void_form(
+    payment_id: str,
+    request: Request,
+    db: Annotated[DatabaseSession, Depends(get_database_session, scope="function")],
+    settings: Annotated[Settings, Depends(get_settings)],
+    context: Annotated[CurrentSessionContext, Depends(get_current_session_context)],
+    error: str | None = None,
+) -> Response:
+    resolved = _current_shop_or_response(db, context, settings)
+    if isinstance(resolved, Response):
+        return resolved
+    _user, shop = resolved
+    parsed = _parse_payment_path_locator(payment_id)
+    if parsed is None or shop.shop is None or shop.role is None:
+        return _redirect("/shop/customers", error=ErrorCode.PAYMENT_UNAVAILABLE)
+    if shop.status is not ShopStatus.ACTIVE:
+        return _redirect("/shop/customers", error=ErrorCode.SHOP_SUSPENDED)
+    if shop.role not in {ShopRole.OWNER, ShopRole.MANAGER}:
+        return _redirect("/shop/customers", error=ErrorCode.FORBIDDEN)
+    row = get_tenant_payment(db, shop_id=ShopId(shop.shop.id), payment_id=parsed)
+    if row is None or row.voided_at is not None:
+        return _redirect("/shop/customers", error=ErrorCode.PAYMENT_NOT_VOIDABLE)
+    language = resolve_debt_web_language(request.headers.get("accept-language"))
+    response = templates.TemplateResponse(
+        request,
+        "payment/shop_void.html",
+        with_csrf_context(
+            {
+                "page_language": language.value,
+                "copy": get_payment_web_copy(language),
+                "payment_id": parsed.as_uuid(),
+                "expected_revision": row.debt.revision,
+                "idempotency_key": str(uuid4()),
+                "reasons": tuple(
+                    (reason, get_payment_void_reason_label(language, reason))
+                    for reason in PaymentVoidReason
+                ),
+                "error_message": _payment_error_message(language, error),
+            },
+            context.get_session_row(),
+        ),
+    )
+    return mark_auth_response_no_store(response)
+
+
+@router.post(
+    "/shop/payments/{payment_id}/void",
+    name="shop_payment_void",
+    response_model=None,
+)
+def void_shop_payment(
+    payment_id: str,
+    request: Request,
+    authority: Annotated[
+        DetachedPaymentActorContext,
+        Depends(get_detached_current_shop_payment_actor_context),
+    ],
+    reason: Annotated[str, Form()] = "",
+    idempotency_key: Annotated[str | None, Form()] = None,
+    expected_revision: Annotated[str, Form()] = "",
+    confirmation: Annotated[str | None, Form()] = None,
+) -> Response:
+    parsed = _parse_payment_path_locator(payment_id)
+    if parsed is None:
+        return _redirect("/shop/customers", error=ErrorCode.PAYMENT_UNAVAILABLE)
+    form_path = f"/shop/payments/{parsed.as_uuid()}/void"
+    with request.app.state.database_session_factory() as db:
+        candidate = discover_tenant_payment_void_target(
+            db, actor=authority, payment_id=parsed
+        )
+    if candidate is None:
+        return _redirect("/shop/customers", error=ErrorCode.PAYMENT_UNAVAILABLE)
+    assembled = assemble_void_payment_command(
+        actor_user_id=authority.actor_user_id,
+        current_shop_id=authority.current_shop_id,
+        payment_id=parsed,
+        server_resolved_debt_id=candidate.debt_id,
+        raw=VoidPaymentRawForm(
+            expected_revision=expected_revision,
+            reason=reason,
+            idempotency_key=idempotency_key,
+            confirmed=confirmation,
+        ),
+    )
+    if assembled.command is None:
+        return _redirect(form_path, error=ErrorCode.VALIDATION_ERROR)
+    try:
+        with request.app.state.database_session_factory.begin() as db:
+            result = void_payment(
+                db,
+                actor=authority,
+                command=assembled.command,
+                rating_port=request.app.state.rating_append_port,
+            )
+    except PaymentMutationRejected as rejected:
+        return _redirect(form_path, error=rejected.error)
+    return _redirect(f"/shop/payments/{result.payment_id.as_uuid()}")
 
 
 @router.get(
@@ -413,7 +534,11 @@ def customer_payment_receipt(
     language = resolve_debt_web_language(request.headers.get("accept-language"))
     if view.error is not None:
         return _redirect("/customer/debts", error=view.error)
-    assert view.receipt is not None and view.debt_id is not None
+    assert (
+        view.receipt is not None
+        and view.debt_id is not None
+        and view.void_state is not None
+    )
     return _template_response(
         request,
         "payment/customer_receipt.html",
@@ -442,6 +567,7 @@ def customer_payment_receipt(
             "recovery_terms_message": _recovery_terms_message(
                 language, view.receipt.current_debt_status
             ),
+            "void_state": view.void_state,
         },
     )
 

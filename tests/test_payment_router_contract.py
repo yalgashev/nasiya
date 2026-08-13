@@ -10,7 +10,10 @@ from app.payment.dependencies import (
     get_detached_current_shop_payment_actor_context,
     get_detached_current_shop_payment_read_actor_context,
 )
-from app.payment.presentation import PAYMENT_ROUTE_CONTRACTS
+from app.payment.presentation import (
+    M18_PAYMENT_VOID_ROUTE_CONTRACTS,
+    PAYMENT_ROUTE_CONTRACTS,
+)
 from app.payment.router import router
 from app.settings import Settings
 
@@ -30,7 +33,7 @@ def _application() -> FastAPI:
     )
 
 
-def test_six_frozen_payment_routes_are_registered_once_with_exact_names() -> None:
+def test_eight_frozen_payment_routes_are_registered_once_with_exact_names() -> None:
     observed = {
         (route.name, method, route.path_format)
         for route in router.routes
@@ -39,7 +42,7 @@ def test_six_frozen_payment_routes_are_registered_once_with_exact_names() -> Non
     }
     expected = {
         (contract.name, contract.method, contract.path)
-        for contract in PAYMENT_ROUTE_CONTRACTS
+        for contract in (*PAYMENT_ROUTE_CONTRACTS, *M18_PAYMENT_VOID_ROUTE_CONTRACTS)
     }
 
     assert observed == expected
@@ -56,13 +59,13 @@ def test_payment_router_has_mode_specific_authority_and_one_coordinator_path() -
     source = getsource(__import__("app.payment.router", fromlist=["router"]))
 
     assert source.count("get_detached_current_shop_payment_read_actor_context") == 3
-    assert source.count("get_detached_current_shop_payment_actor_context") == 2
+    assert source.count("get_detached_current_shop_payment_actor_context") == 3
     assert "get_current_session_context" in source
     assert "get_own_customer_payment_history_view" in source
     assert "get_own_customer_payment_receipt_view" in source
     assert source.count("record_debt_payment(") == 1
-    assert source.count("database_session_factory.begin()") == 1
-    assert "void" not in source.casefold()
+    assert source.count("database_session_factory.begin()") == 2
+    assert source.count("void_payment(") == 1
     assert '"/admin' not in source
     assert '"/api' not in source
 

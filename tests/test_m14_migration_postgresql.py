@@ -28,7 +28,7 @@ M13_REVISION = "f4a5b6c7d8e"
 M14_REVISION = "a5b6c7d8e9f0"
 M15_REVISION = "b6c7d8e9f0a1"
 M16_REVISION = "c7d8e9f0a1b2"
-M17_REVISION = "d8e9f0a1b2c3"
+M17_REVISION = "e9f0a1b2c3d4"
 NOW = datetime(2026, 8, 9, 8, tzinfo=UTC)
 
 
@@ -198,7 +198,8 @@ def test_m14_live_schema_matches_payment_debt_idempotency_and_audit_metadata(
         "ck_payments_debt_revision_after_positive",
     }
     assert {item["name"] for item in inspector.get_unique_constraints("payments")} == {
-        "uq_payments_debt_id_debt_revision_after"
+        "uq_payments_debt_id_debt_revision_after",
+        "uq_payments_id_debt_id_debt_revision_after",
     }
     assert inspector.get_indexes("payments") == [
         {
@@ -208,7 +209,15 @@ def test_m14_live_schema_matches_payment_debt_idempotency_and_audit_metadata(
             "include_columns": [],
             "duplicates_constraint": "uq_payments_debt_id_debt_revision_after",
             "dialect_options": {"postgresql_include": []},
-        }
+        },
+        {
+            "name": "uq_payments_id_debt_id_debt_revision_after",
+            "unique": True,
+            "column_names": ["id", "debt_id", "debt_revision_after"],
+            "include_columns": [],
+            "duplicates_constraint": "uq_payments_id_debt_id_debt_revision_after",
+            "dialect_options": {"postgresql_include": []},
+        },
     ]
     assert "paid_at" in {column["name"] for column in inspector.get_columns("debts")}
     assert "ck_idempotency_keys_endpoint_result_pair_allowed" in _check_names(

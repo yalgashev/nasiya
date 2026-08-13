@@ -687,6 +687,7 @@ def test_cross_shop_hard_block_then_paid_negative_history_is_numeric(
             occurred_at=overdue_at,
             business_date=date(2026, 8, 12),
             recording_source="live",
+            source_revision=3,
         )
     )
     db_session.flush()

@@ -61,6 +61,11 @@ from app.payment.contracts import (
 )
 from app.payment.dependencies import DetachedPaymentReadActorContext
 from app.payment.models import Payment
+from app.payment.presentation import (
+    CustomerPaymentVoidPresentation,
+    ShopPaymentVoidPresentation,
+    get_payment_void_reason_label,
+)
 from app.payment.repository import (
     ScopedPaymentRow,
     get_customer_owned_payment,
@@ -154,14 +159,21 @@ class TenantPaymentReceiptView:
     error: ErrorCode | None
     receipt: PaymentReceiptProjection | None = field(default=None, repr=False)
     debt_id: DebtId | None = field(default=None, repr=False)
+    void_state: ShopPaymentVoidPresentation | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.error is None:
-            if not isinstance(self.receipt, PaymentReceiptProjection) or not isinstance(
-                self.debt_id, DebtId
+            if (
+                not isinstance(self.receipt, PaymentReceiptProjection)
+                or not isinstance(self.debt_id, DebtId)
+                or not isinstance(self.void_state, ShopPaymentVoidPresentation)
             ):
                 raise ValueError("Tenant payment receipt view is invalid")
-        elif self.receipt is not None or self.debt_id is not None:
+        elif (
+            self.receipt is not None
+            or self.debt_id is not None
+            or self.void_state is not None
+        ):
             raise ValueError("Failed tenant payment receipt view must carry no data")
 
     def __repr__(self) -> str:
@@ -256,14 +268,21 @@ class CustomerPaymentReceiptView:
     error: ErrorCode | None
     receipt: PaymentReceiptProjection | None = field(default=None, repr=False)
     debt_id: DebtId | None = field(default=None, repr=False)
+    void_state: CustomerPaymentVoidPresentation | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.error is None:
-            if not isinstance(self.receipt, PaymentReceiptProjection) or not isinstance(
-                self.debt_id, DebtId
+            if (
+                not isinstance(self.receipt, PaymentReceiptProjection)
+                or not isinstance(self.debt_id, DebtId)
+                or not isinstance(self.void_state, CustomerPaymentVoidPresentation)
             ):
                 raise ValueError("Customer payment receipt view is invalid")
-        elif self.receipt is not None or self.debt_id is not None:
+        elif (
+            self.receipt is not None
+            or self.debt_id is not None
+            or self.void_state is not None
+        ):
             raise ValueError("Failed customer payment receipt view must carry no data")
 
     def __repr__(self) -> str:
@@ -396,6 +415,15 @@ def get_tenant_payment_receipt_view(
         error=None,
         receipt=compose_payment_receipt(session, row=row, server_now=server_now),
         debt_id=DebtId(row.debt.id),
+        void_state=ShopPaymentVoidPresentation(
+            is_voided=row.voided_at is not None,
+            voided_at=row.voided_at,
+            reason_label=(
+                None
+                if row.void_reason is None
+                else get_payment_void_reason_label(actor.language, row.void_reason)
+            ),
+        ),
     )
 
 
@@ -529,6 +557,10 @@ def get_own_customer_payment_receipt_view(
         error=None,
         receipt=compose_payment_receipt(session, row=row, server_now=server_now),
         debt_id=DebtId(row.debt.id),
+        void_state=CustomerPaymentVoidPresentation(
+            is_voided=row.voided_at is not None,
+            voided_at=row.voided_at,
+        ),
     )
 
 
@@ -820,15 +852,25 @@ def _current_progress_basis(
 
 
 def _history(rows: Iterable[ScopedPaymentRow]) -> tuple[PaymentHistoryItem, ...]:
-    items = tuple(
-        payment_aggregate_from_row(row.payment).to_history_item() for row in rows
-    )
+    items = tuple(_history_item(row) for row in rows)
     revisions = tuple(item.debt_revision_after.value for item in items)
     if any(
         right <= left for left, right in zip(revisions, revisions[1:], strict=False)
     ):
         raise RuntimeError("Payment history revisions are not strictly increasing")
     return items
+
+
+def _history_item(row: ScopedPaymentRow) -> PaymentHistoryItem:
+    payment = payment_aggregate_from_row(row.payment)
+    return PaymentHistoryItem(
+        payment_id=payment.id,
+        amount=payment.amount,
+        method=payment.method,
+        debt_revision_after=payment.debt_revision_after,
+        created_at=payment.created_at,
+        voided_at=row.voided_at,
+    )
 
 
 def _resolve_own_customer_id(

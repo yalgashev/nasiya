@@ -92,6 +92,12 @@ PAYMENT_WEB_COPY: Final[Mapping[DebtWebLanguage, Mapping[str, str]]] = MappingPr
                 "status_written_off_settled": "Undirish qarzi yopilgan",
                 "back_to_debt": "Qarzga qaytish",
                 "back_to_history": "To'lovlar tarixiga qaytish",
+                "void_payment": "To'lovni bekor qilish",
+                "void_reason": "Bekor qilish sababi",
+                "void_confirm": "To'lovni bekor qilishni tasdiqlayman",
+                "void_submit": "To'lovni bekor qilish",
+                "voided": "Bekor qilingan",
+                "voided_at": "Bekor qilingan vaqt",
                 "void_reason_duplicate_payment": "Takroriy to'lov",
                 "void_reason_incorrect_amount": "Noto'g'ri summa",
                 "void_reason_incorrect_method": "Noto'g'ri usul",
@@ -157,6 +163,12 @@ PAYMENT_WEB_COPY: Final[Mapping[DebtWebLanguage, Mapping[str, str]]] = MappingPr
                 "status_written_off_settled": "Списанный долг погашен",
                 "back_to_debt": "Вернуться к долгу",
                 "back_to_history": "Вернуться к истории платежей",
+                "void_payment": "Аннулировать платёж",
+                "void_reason": "Причина аннулирования",
+                "void_confirm": "Подтверждаю аннулирование платежа",
+                "void_submit": "Аннулировать платёж",
+                "voided": "Аннулирован",
+                "voided_at": "Время аннулирования",
                 "void_reason_duplicate_payment": "Повторный платёж",
                 "void_reason_incorrect_amount": "Неверная сумма",
                 "void_reason_incorrect_method": "Неверный способ",
@@ -199,6 +211,7 @@ _UZ_LATN_ERRORS: Final[Mapping[ErrorCode, str]] = MappingProxyType(
         ErrorCode.SHOP_SUSPENDED: "Do'kon vaqtincha faqat ko'rish rejimida.",
         ErrorCode.VALIDATION_ERROR: "Kiritilgan ma'lumotlarni tekshiring.",
         ErrorCode.CSRF_FAILED: "Forma muddati tugagan. Sahifani yangilang.",
+        ErrorCode.PAYMENT_NOT_VOIDABLE: "To'lovni bekor qilib bo'lmaydi.",
     }
 )
 _RU_ERRORS: Final[Mapping[ErrorCode, str]] = MappingProxyType(
@@ -218,6 +231,7 @@ _RU_ERRORS: Final[Mapping[ErrorCode, str]] = MappingProxyType(
         ErrorCode.SHOP_SUSPENDED: "Магазин временно доступен только для чтения.",
         ErrorCode.VALIDATION_ERROR: "Проверьте введённые данные.",
         ErrorCode.CSRF_FAILED: "Срок формы истёк. Обновите страницу.",
+        ErrorCode.PAYMENT_NOT_VOIDABLE: "Платёж нельзя аннулировать.",
     }
 )
 

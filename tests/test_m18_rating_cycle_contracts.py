@@ -270,14 +270,18 @@ def test_local_structural_ports_have_no_inverse_import_or_lock_default() -> None
 
     assert isinstance(Reader(), PaymentVoidRatingSourceReadPort)
     assert isinstance(Writer(), PaymentVoidRatingAppendPort)
-    local_source = (ROOT / "app/payment/rating_ports.py").read_text(encoding="utf-8")
+    local_sources = (
+        (ROOT / "app/payment/rating_ports.py").read_text(encoding="utf-8"),
+        (ROOT / "app/payment/void_source.py").read_text(encoding="utf-8"),
+    )
     for forbidden in (
         "app.rating.models",
         "app.rating.repository",
+        "app.audit.models",
         "NoOp",
         "lock_customer",
         "commit(",
         "rollback(",
         "close(",
     ):
-        assert forbidden not in local_source
+        assert all(forbidden not in source for source in local_sources)

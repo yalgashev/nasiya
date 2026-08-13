@@ -54,6 +54,7 @@ def _append_event(
             occurred_at=occurred_at,
             business_date=tashkent_business_date(occurred_at),
             recording_source=RatingRecordingSource.LIVE.value,
+            source_revision=3,
         )
     )
     session.flush()

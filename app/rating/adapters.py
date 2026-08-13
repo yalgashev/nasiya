@@ -5,10 +5,11 @@ from __future__ import annotations
 from datetime import date, datetime
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
 from app.audit.models import AuditLog
+from app.debt.business_time import tashkent_business_date
 from app.debt.rating_ports import (
     LockedOverdueRatingSource,
     OverdueRatingAppendOutcome,
@@ -26,6 +27,7 @@ from app.payment.rating_ports import (
     PaymentRatingPositiveSource,
     PaymentVoidCompensationAppendOutcome,
     PaymentVoidRatingAppendPort,
+    PaymentVoidRatingSourceFacts,
     PaymentVoidRatingSourceReadPort,
     PendingOnTimePaidRatingEffect,
     PendingWrittenOffSettledRatingEffect,
@@ -316,14 +318,12 @@ class SqlAlchemyLockedRatingAppendAdapter(
         self,
         session: Session,
         *,
-        payment_id,
-        debt_id: DebtId,
-        shop_customer_id: ShopCustomerId,
-        terminal_status,
-        source_revision: DebtRevision,
-        source_occurred_at: datetime,
+        facts: PaymentVoidRatingSourceFacts,
     ) -> PreTransitionRatingSourceToken | None:
         """Read one exact positive source without acquiring another lock."""
+
+        if not isinstance(facts, PaymentVoidRatingSourceFacts):
+            raise TypeError("facts must be PaymentVoidRatingSourceFacts")
 
         positive_source, event_type, audit_type = {
             "paid": (
@@ -336,54 +336,104 @@ class SqlAlchemyLockedRatingAppendAdapter(
                 RatingEventType.WRITTEN_OFF_SETTLED,
                 "debt.written_off_settled",
             ),
-        }.get(getattr(terminal_status, "value", None), (None, None, None))
+        }.get(facts.terminal_status.value, (None, None, None))
         if positive_source is None:
             return None
         payment = session.execute(
             select(Payment.recorded_by_user_id).where(
-                Payment.id == payment_id.as_uuid(),
-                Payment.debt_id == debt_id.as_uuid(),
-                Payment.debt_revision_after == source_revision.value,
-                Payment.created_at == source_occurred_at,
+                Payment.id == facts.payment_id.as_uuid(),
+                Payment.debt_id == facts.debt_id.as_uuid(),
+                Payment.amount_uzs == facts.payment_amount.value,
+                Payment.debt_revision_after == facts.source_revision.value,
+                Payment.created_at == facts.source_occurred_at,
             )
         ).one_or_none()
-        event = session.execute(
-            select(RatingEvent.id).where(
-                RatingEvent.shop_customer_id == shop_customer_id.as_uuid(),
-                RatingEvent.debt_id == debt_id.as_uuid(),
-                RatingEvent.event_type == event_type.value,
-                RatingEvent.source_revision == source_revision.value,
-                RatingEvent.occurred_at == source_occurred_at,
+        events = tuple(
+            session.execute(
+                select(RatingEvent.id).where(
+                    RatingEvent.shop_customer_id == facts.shop_customer_id.as_uuid(),
+                    RatingEvent.debt_id == facts.debt_id.as_uuid(),
+                    RatingEvent.event_type == event_type.value,
+                    RatingEvent.source_revision == facts.source_revision.value,
+                    RatingEvent.occurred_at == facts.source_occurred_at,
+                )
             )
-        ).one_or_none()
-        audits = tuple(
+        )
+        payment_audits = tuple(
+            session.execute(
+                select(AuditLog.id).where(
+                    AuditLog.event_type == "payment.recorded",
+                    AuditLog.object_type == "payment",
+                    AuditLog.object_id == facts.payment_id.as_uuid(),
+                    AuditLog.actor_kind == "USER",
+                    AuditLog.actor_user_id
+                    == (None if payment is None else payment.recorded_by_user_id),
+                    AuditLog.occurred_at == facts.source_occurred_at,
+                    AuditLog.payload["debt_revision_after"].as_integer()
+                    == facts.source_revision.value,
+                )
+            )
+        )
+        debt_audits = tuple(
             session.execute(
                 select(AuditLog.id).where(
                     AuditLog.event_type == audit_type,
                     AuditLog.object_type == "debt",
-                    AuditLog.object_id == debt_id.as_uuid(),
+                    AuditLog.object_id == facts.debt_id.as_uuid(),
                     AuditLog.actor_kind == "USER",
                     AuditLog.actor_user_id
                     == (None if payment is None else payment.recorded_by_user_id),
-                    AuditLog.occurred_at == source_occurred_at,
+                    AuditLog.occurred_at == facts.source_occurred_at,
                     AuditLog.payload["debt_revision_after"].as_integer()
-                    == source_revision.value,
+                    == facts.source_revision.value,
                 )
             )
         )
-        counts = (payment is not None, event is not None, len(audits))
-        if counts == (True, False, 1) and event_type is RatingEventType.ON_TIME_PAID:
+        counts = (
+            payment is not None,
+            len(events),
+            len(payment_audits),
+            len(debt_audits),
+        )
+        if counts == (True, 0, 1, 1) and event_type is RatingEventType.ON_TIME_PAID:
+            accepted_at = facts.accepted_at
+            eligible_without_cap = (
+                facts.overdue_revision is None
+                and accepted_at is not None
+                and facts.original_amount.value >= 100_000
+                and tashkent_business_date(accepted_at)
+                < tashkent_business_date(facts.source_occurred_at)
+                <= facts.due_date
+                and facts.as_of_payment_total.value == facts.discounted_amount.value
+            )
+            if eligible_without_cap:
+                cap_used = bool(
+                    session.scalar(
+                        select(
+                            exists().where(
+                                RatingEvent.shop_customer_id
+                                == facts.shop_customer_id.as_uuid(),
+                                RatingEvent.event_type
+                                == RatingEventType.ON_TIME_PAID.value,
+                                RatingEvent.business_date
+                                == tashkent_business_date(facts.source_occurred_at),
+                            )
+                        )
+                    )
+                )
+                if not cap_used:
+                    raise RuntimeError("Payment rating source is inconsistent")
             return None
-        if counts != (True, True, 1):
+        if counts != (True, 1, 1, 1):
             raise RuntimeError("Payment rating source is inconsistent")
         return PreTransitionRatingSourceToken(
-            payment_id=payment_id,
-            debt_id=debt_id,
-            shop_customer_id=shop_customer_id,
+            payment_id=facts.payment_id,
+            debt_id=facts.debt_id,
+            shop_customer_id=facts.shop_customer_id,
             positive_source=positive_source,
-            terminal_status=terminal_status,
-            source_revision=source_revision,
-            source_occurred_at=source_occurred_at,
+            terminal_status=facts.terminal_status,
+            source_revision=facts.source_revision,
+            source_occurred_at=facts.source_occurred_at,
         )
 
     def append_source_compensation(

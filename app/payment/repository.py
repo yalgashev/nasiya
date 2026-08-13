@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
@@ -24,7 +25,7 @@ from app.debt.values import (
     ShopCustomerId,
 )
 from app.payment.contracts import PaymentAggregate, PaymentVoidAggregate
-from app.payment.enums import PaymentMethod
+from app.payment.enums import PaymentMethod, PaymentVoidReason
 from app.payment.models import Payment, PaymentVoid
 from app.payment.values import (
     PaymentAmountUZS,
@@ -68,6 +69,12 @@ class ScopedPaymentRow:
     payment: Payment
     debt: Debt
     shop_name: str
+    voided_at: datetime | None = None
+    void_reason: PaymentVoidReason | None = None
+
+    def __post_init__(self) -> None:
+        if (self.voided_at is None) != (self.void_reason is None):
+            raise ValueError("Scoped Payment void facts are incoherent")
 
     def __repr__(self) -> str:
         return "ScopedPaymentRow(<redacted>)"
@@ -333,8 +340,13 @@ def get_customer_owned_payment(
 def posted_payment_total(
     session: Session, *, debt_id: DebtId, through_revision: int | None = None
 ) -> PostedPaymentTotalUZS:
+    void_predicates = (
+        PaymentVoid.payment_id == Payment.id,
+        PaymentVoid.debt_id == Payment.debt_id,
+    )
     statement = select(func.coalesce(func.sum(Payment.amount_uzs), Decimal("0"))).where(
-        Payment.debt_id == debt_id.as_uuid()
+        Payment.debt_id == debt_id.as_uuid(),
+        ~exists().where(*void_predicates),
     )
     if through_revision is not None:
         if (
@@ -343,7 +355,16 @@ def posted_payment_total(
             or through_revision < 1
         ):
             raise ValueError("Payment history revision must be positive")
-        statement = statement.where(Payment.debt_revision_after <= through_revision)
+        statement = select(
+            func.coalesce(func.sum(Payment.amount_uzs), Decimal("0"))
+        ).where(
+            Payment.debt_id == debt_id.as_uuid(),
+            Payment.debt_revision_after <= through_revision,
+            ~exists().where(
+                *void_predicates,
+                PaymentVoid.debt_revision_after <= through_revision,
+            ),
+        )
     return PostedPaymentTotalUZS(Decimal(session.scalar(statement)))
 
 
@@ -439,7 +460,15 @@ class SqlAlchemyPaymentOpenSetReader:
                 Debt,
                 func.coalesce(func.sum(Payment.amount_uzs), Decimal("0")),
             )
-            .outerjoin(Payment, Payment.debt_id == Debt.id)
+            .outerjoin(
+                Payment,
+                (Payment.debt_id == Debt.id)
+                & ~exists().where(
+                    PaymentVoid.payment_id == Payment.id,
+                    PaymentVoid.debt_id == Debt.id,
+                    PaymentVoid.shop_customer_id == Debt.shop_customer_id,
+                ),
+            )
             .where(
                 Debt.shop_customer_id == shop_customer_id,
                 Debt.status.in_(
@@ -478,10 +507,22 @@ def payment_open_set_reader_factory(
 
 def _scoped_payment_statement():
     return (
-        select(Payment, Debt, ShopCustomer.shop_id)
+        select(
+            Payment,
+            Debt,
+            ShopCustomer.shop_id,
+            PaymentVoid.voided_at,
+            PaymentVoid.reason,
+        )
         .select_from(Payment)
         .join(Debt, Debt.id == Payment.debt_id)
         .join(ShopCustomer, ShopCustomer.id == Debt.shop_customer_id)
+        .outerjoin(
+            PaymentVoid,
+            (PaymentVoid.payment_id == Payment.id)
+            & (PaymentVoid.debt_id == Debt.id)
+            & (PaymentVoid.shop_customer_id == ShopCustomer.id),
+        )
     )
 
 
@@ -489,7 +530,10 @@ def _scoped_rows(session: Session, rows) -> tuple[ScopedPaymentRow, ...]:
     materialized = tuple(rows)
     shops = list_shops_by_ids(
         session,
-        shop_ids={ShopId(shop_id) for _payment, _debt, shop_id in materialized},
+        shop_ids={
+            ShopId(shop_id)
+            for _payment, _debt, shop_id, _voided_at, _reason in materialized
+        },
     )
     shop_names = {shop.id: shop.name for shop in shops}
     return tuple(
@@ -497,8 +541,10 @@ def _scoped_rows(session: Session, rows) -> tuple[ScopedPaymentRow, ...]:
             payment=payment,
             debt=debt,
             shop_name=shop_names[shop_id],
+            voided_at=voided_at,
+            void_reason=None if reason is None else PaymentVoidReason(reason),
         )
-        for payment, debt, shop_id in materialized
+        for payment, debt, shop_id, voided_at, reason in materialized
     )
 
 

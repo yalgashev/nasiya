@@ -133,6 +133,85 @@ def test_settlement_history_unblocks_to_numeric_without_becoming_new() -> None:
     assert result.band is RiskBand.RED
 
 
+def test_m18_multi_cycle_compensations_fold_by_exact_source_revision() -> None:
+    debt_id = UUID(int=19)
+    rows = (
+        (datetime(2026, 8, 1, 10, tzinfo=UTC), debt_id, "on_time_paid", 3, 5),
+        (
+            datetime(2026, 8, 1, 11, tzinfo=UTC),
+            debt_id,
+            "on_time_paid_voided",
+            3,
+            -5,
+        ),
+        (datetime(2026, 8, 2, 10, tzinfo=UTC), debt_id, "on_time_paid", 5, 5),
+        (
+            datetime(2026, 8, 2, 11, tzinfo=UTC),
+            debt_id,
+            "on_time_paid_voided",
+            5,
+            -5,
+        ),
+        (datetime(2026, 8, 3, tzinfo=UTC), debt_id, "overdue", 7, -15),
+        (datetime(2026, 8, 4, tzinfo=UTC), debt_id, "written_off", 8, -40),
+        (
+            datetime(2026, 8, 5, tzinfo=UTC),
+            debt_id,
+            "written_off_settled",
+            9,
+            10,
+        ),
+        (
+            datetime(2026, 8, 6, tzinfo=UTC),
+            debt_id,
+            "written_off_settled_voided",
+            9,
+            -10,
+        ),
+        (
+            datetime(2026, 8, 7, tzinfo=UTC),
+            debt_id,
+            "written_off_settled",
+            11,
+            10,
+        ),
+    )
+
+    state = derive_current_rating_state(rows, global_hard_block=False)
+
+    assert state.current_score == 15
+    assert state.band is RiskBand.RED
+
+
+@pytest.mark.parametrize(
+    "rows",
+    (
+        (
+            (
+                datetime(2026, 8, 1, tzinfo=UTC),
+                UUID(int=20),
+                "on_time_paid_voided",
+                3,
+                -5,
+            ),
+        ),
+        (
+            (datetime(2026, 8, 1, tzinfo=UTC), UUID(int=21), "on_time_paid", 3, 5),
+            (
+                datetime(2026, 8, 2, tzinfo=UTC),
+                UUID(int=21),
+                "on_time_paid_voided",
+                4,
+                -5,
+            ),
+        ),
+    ),
+)
+def test_m18_compensation_before_or_without_exact_positive_fails_closed(rows) -> None:
+    with pytest.raises(IncoherentScalarRatingHistoryError):
+        derive_current_rating_state(rows, global_hard_block=False)
+
+
 def test_current_rating_read_uses_no_write_or_cache_surface() -> None:
     from app.rating import current_read_service, repository
 

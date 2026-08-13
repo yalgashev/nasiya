@@ -107,6 +107,16 @@ ROUTE_POLICIES = (
         RouteClass.TENANT_LOCATOR_READ,
     ),
     RoutePolicy(
+        "GET",
+        "/shop/payments/{payment_id}/void",
+        RouteClass.TENANT_ACTIVE_FORM,
+    ),
+    RoutePolicy(
+        "POST",
+        "/shop/payments/{payment_id}/void",
+        RouteClass.TENANT_BUSINESS_MUTATION,
+    ),
+    RoutePolicy(
         "POST",
         "/shop/customers/{shop_customer_id}/risk-band-disclosures",
         RouteClass.TENANT_BUSINESS_MUTATION,

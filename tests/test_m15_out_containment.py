@@ -61,6 +61,7 @@ def test_m17_written_off_extension_is_exact_but_absent_from_m15_revision() -> No
         "app/payment/router.py",
         "app/payment/service.py",
         "app/payment/values.py",
+        "app/payment/void_service.py",
         "app/rating/adapters.py",
         "app/rating/contracts.py",
         "app/rating/current_read_service.py",
@@ -102,7 +103,6 @@ def test_future_integrations_are_absent_from_new_m15_runtime_surfaces() -> None:
         "import app.scheduler",
         "scheduler.",
         "job_run",
-        "void_payment",
         "reverse_payment",
         "clawback_reversal",
         "clawback_reversed",
@@ -114,8 +114,8 @@ def test_future_integrations_are_absent_from_new_m15_runtime_surfaces() -> None:
 
 def test_payment_route_surface_has_no_new_trigger_admin_or_api_endpoint() -> None:
     router = _source("app/payment/router.py")
-    assert router.count("@router.get(") == 5
-    assert router.count("@router.post(") == 1
+    assert router.count("@router.get(") == 6
+    assert router.count("@router.post(") == 2
     assert "@router.put(" not in router
     assert "@router.patch(" not in router
     assert "@router.delete(" not in router

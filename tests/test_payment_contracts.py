@@ -88,6 +88,7 @@ def test_payment_projection_and_history_keep_identifiers_safe_and_ordered() -> N
         "method",
         "debt_revision_after",
         "created_at",
+        "voided_at",
     )
     assert isinstance(history, PaymentHistoryItem)
     assert history.debt_revision_after == DebtRevision(3)

@@ -241,7 +241,7 @@ def test_m9_m10_m9_m10_walk_preserves_inherited_data(
             m2_test_database
         )
         _remove_compensation_race_rows(m2_test_database)
-        assert _current_revision(m2_test_database) == "d8e9f0a1b2c3"
+        assert _current_revision(m2_test_database) == "e9f0a1b2c3d4"
         with m2_test_database.connect() as connection:
             assert (
                 connection.scalar(

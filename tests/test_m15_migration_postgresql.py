@@ -26,7 +26,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 M14_REVISION = "a5b6c7d8e9f0"
 M15_REVISION = "b6c7d8e9f0a1"
 M16_REVISION = "c7d8e9f0a1b2"
-M17_REVISION = "d8e9f0a1b2c3"
+M17_REVISION = "e9f0a1b2c3d4"
 NOW = datetime(2026, 8, 9, 8, tzinfo=UTC)
 
 

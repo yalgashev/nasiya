@@ -68,6 +68,7 @@ M12_AUTHORIZED_TABLES = {"shop_customers"}
 M13_AUTHORIZED_TABLES = {"debts", "idempotency_keys"}
 M14_AUTHORIZED_TABLES = {"payments"}
 M16_AUTHORIZED_TABLES = {"rating_events", "disclosure_view_logs"}
+M18_AUTHORIZED_TABLES = {"payment_voids"}
 M8_M9_AND_M10_MIGRATIONS = (
     PROJECT_ROOT / "alembic/versions/f8a9b0c1d2e3_create_object_files.py",
     PROJECT_ROOT / "alembic/versions/a9b0c1d2e3f4_create_legal_offer_foundation.py",
@@ -134,6 +135,7 @@ def test_current_metadata_has_exact_m14_authorized_table_extension() -> None:
         | M13_AUTHORIZED_TABLES
         | M14_AUTHORIZED_TABLES
         | M16_AUTHORIZED_TABLES
+        | M18_AUTHORIZED_TABLES
     )
 
     assert all_tables - PRE_M8_TABLES == expected_new_tables

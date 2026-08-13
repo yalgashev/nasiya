@@ -226,6 +226,7 @@ class PaymentHistoryItem:
     method: PaymentMethod
     debt_revision_after: DebtRevision
     created_at: datetime
+    voided_at: datetime | None = None
 
     def __post_init__(self) -> None:
         _require_payment_id(self.payment_id)
@@ -237,6 +238,15 @@ class PaymentHistoryItem:
             "created_at",
             normalize_payment_created_at(self.created_at),
         )
+        if self.voided_at is not None:
+            voided_at = normalize_payment_created_at(self.voided_at)
+            if voided_at < self.created_at:
+                raise ValueError("Payment void cannot precede Payment")
+            object.__setattr__(self, "voided_at", voided_at)
+
+    @property
+    def is_voided(self) -> bool:
+        return self.voided_at is not None
 
     def __repr__(self) -> str:
         return "PaymentHistoryItem(<safe>)"
