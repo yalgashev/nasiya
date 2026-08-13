@@ -18,7 +18,7 @@ from app.idempotency.contracts import (
     CreatePaymentRequestHash,
     IdempotencyResultType,
 )
-from app.payment.enums import PaymentMethod
+from app.payment.enums import PaymentMethod, PaymentVoidReason
 from app.payment.values import (
     PaymentAmountUZS,
     PaymentId,
@@ -26,6 +26,7 @@ from app.payment.values import (
     RemainingDueUZS,
 )
 from app.shop.values import ShopId
+from app.shop_customer.values import ShopCustomerId
 
 __all__ = (
     "PaymentAggregate",
@@ -33,6 +34,7 @@ __all__ = (
     "PaymentLedgerFact",
     "PaymentLedgerInvariantError",
     "PaymentNotVoidableError",
+    "PaymentVoidAggregate",
     "PaymentProjection",
     "PaymentReceiptProjection",
     "IncoherentPaymentHistoryError",
@@ -148,6 +150,44 @@ class PaymentAggregate:
 
     def __repr__(self) -> str:
         return "PaymentAggregate(<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class PaymentVoidAggregate:
+    """Trusted immutable PaymentVoid row without a public locator."""
+
+    id: UUID = field(repr=False)
+    payment_id: PaymentId = field(repr=False)
+    debt_id: DebtId = field(repr=False)
+    shop_customer_id: ShopCustomerId = field(repr=False)
+    source_payment_revision: DebtRevision
+    debt_revision_after: DebtRevision
+    voided_by_user_id: UserId = field(repr=False)
+    reason: PaymentVoidReason = field(repr=False)
+    voided_at: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, UUID):
+            raise ValueError("PaymentVoid identity is invalid")
+        _require_payment_id(self.payment_id)
+        _require_debt_id(self.debt_id)
+        if not isinstance(self.shop_customer_id, ShopCustomerId):
+            raise ValueError("PaymentVoid ShopCustomer is invalid")
+        _require_revision(self.source_payment_revision)
+        _require_revision(self.debt_revision_after)
+        if self.source_payment_revision.value >= self.debt_revision_after.value:
+            raise ValueError("PaymentVoid revision chain is invalid")
+        _require_user_id(self.voided_by_user_id)
+        if not isinstance(self.reason, PaymentVoidReason):
+            raise ValueError("PaymentVoid reason is invalid")
+        object.__setattr__(
+            self,
+            "voided_at",
+            normalize_payment_created_at(self.voided_at),
+        )
+
+    def __repr__(self) -> str:
+        return "PaymentVoidAggregate(<redacted>)"
 
 
 @dataclass(frozen=True, slots=True, repr=False)

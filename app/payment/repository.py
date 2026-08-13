@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 
 from app.debt.enums import DebtStatus
@@ -23,9 +23,9 @@ from app.debt.values import (
     OriginalAmountUZS,
     ShopCustomerId,
 )
-from app.payment.contracts import PaymentAggregate
+from app.payment.contracts import PaymentAggregate, PaymentVoidAggregate
 from app.payment.enums import PaymentMethod
-from app.payment.models import Payment
+from app.payment.models import Payment, PaymentVoid
 from app.payment.values import (
     PaymentAmountUZS,
     PaymentId,
@@ -47,11 +47,15 @@ __all__ = (
     "get_customer_owned_payment",
     "get_tenant_payment",
     "historical_balance_after",
+    "insert_payment_void",
     "insert_payment",
+    "latest_non_voided_payment_for_tenant_debt",
     "list_customer_owned_debt_payments",
     "list_tenant_debt_payments",
     "payment_aggregate_from_row",
     "payment_open_set_reader_factory",
+    "payment_void_exists_for_tenant_debt",
+    "non_voided_posted_payment_total",
     "posted_payment_total",
     "remaining_due",
 )
@@ -121,6 +125,155 @@ def insert_payment(
     session.add(row)
     session.flush()
     return row
+
+
+def insert_payment_void(
+    session: Session,
+    *,
+    locked_debt: Debt,
+    payment_void: PaymentVoidAggregate,
+) -> UUID:
+    """Append one void fact; the caller owns the transaction and Debt lock."""
+
+    _require_attached_debt(session, locked_debt)
+    if not isinstance(payment_void, PaymentVoidAggregate):
+        raise TypeError("payment_void must be a PaymentVoidAggregate")
+    if (
+        payment_void.debt_id.as_uuid() != locked_debt.id
+        or payment_void.shop_customer_id.as_uuid() != locked_debt.shop_customer_id
+    ):
+        raise ValueError("PaymentVoid does not belong to locked Debt")
+    row = PaymentVoid(
+        id=payment_void.id,
+        payment_id=payment_void.payment_id.as_uuid(),
+        debt_id=payment_void.debt_id.as_uuid(),
+        shop_customer_id=payment_void.shop_customer_id.as_uuid(),
+        source_payment_revision=payment_void.source_payment_revision.value,
+        debt_revision_after=payment_void.debt_revision_after.value,
+        voided_by_user_id=payment_void.voided_by_user_id,
+        reason=payment_void.reason.value,
+        voided_at=payment_void.voided_at,
+    )
+    session.add(row)
+    session.flush()
+    return payment_void.id
+
+
+def non_voided_posted_payment_total(
+    session: Session,
+    *,
+    shop_id: ShopId,
+    shop_customer_id: ShopCustomerId,
+    debt_id: DebtId,
+    as_of_revision: DebtRevision | None = None,
+) -> PostedPaymentTotalUZS:
+    """Return the tenant-bound current total or the exact revision-as-of total."""
+
+    void_predicates = (
+        PaymentVoid.payment_id == Payment.id,
+        PaymentVoid.debt_id == Debt.id,
+        PaymentVoid.shop_customer_id == ShopCustomer.id,
+    )
+    statement = (
+        select(func.coalesce(func.sum(Payment.amount_uzs), Decimal("0")))
+        .select_from(Payment)
+        .join(Debt, Debt.id == Payment.debt_id)
+        .join(ShopCustomer, ShopCustomer.id == Debt.shop_customer_id)
+        .where(
+            ShopCustomer.shop_id == shop_id,
+            ShopCustomer.id == shop_customer_id.as_uuid(),
+            Debt.id == debt_id.as_uuid(),
+        )
+    )
+    if as_of_revision is None:
+        statement = statement.where(~exists().where(*void_predicates))
+    else:
+        if not isinstance(as_of_revision, DebtRevision):
+            raise TypeError("as_of_revision must be a DebtRevision")
+        statement = statement.where(
+            Payment.debt_revision_after <= as_of_revision.value,
+            ~exists().where(
+                *void_predicates,
+                PaymentVoid.debt_revision_after <= as_of_revision.value,
+            ),
+        )
+    return PostedPaymentTotalUZS(Decimal(session.scalar(statement)))
+
+
+def latest_non_voided_payment_for_tenant_debt(
+    session: Session,
+    *,
+    shop_id: ShopId,
+    shop_customer_id: ShopCustomerId,
+    debt_id: DebtId,
+) -> PaymentAggregate | None:
+    """Read detached scalar fields for the maximum non-voided Payment revision."""
+
+    row = session.execute(
+        select(
+            Payment.id,
+            Payment.debt_id,
+            Payment.recorded_by_user_id,
+            Payment.amount_uzs,
+            Payment.method,
+            Payment.debt_revision_after,
+            Payment.created_at,
+        )
+        .join(Debt, Debt.id == Payment.debt_id)
+        .join(ShopCustomer, ShopCustomer.id == Debt.shop_customer_id)
+        .where(
+            ShopCustomer.shop_id == shop_id,
+            ShopCustomer.id == shop_customer_id.as_uuid(),
+            Debt.id == debt_id.as_uuid(),
+            ~exists().where(
+                PaymentVoid.payment_id == Payment.id,
+                PaymentVoid.debt_id == Debt.id,
+                PaymentVoid.shop_customer_id == ShopCustomer.id,
+            ),
+        )
+        .order_by(Payment.debt_revision_after.desc(), Payment.id.desc())
+        .limit(1)
+    ).one_or_none()
+    if row is None:
+        return None
+    return PaymentAggregate(
+        id=PaymentId(row.id),
+        debt_id=DebtId(row.debt_id),
+        recorded_by_user_id=row.recorded_by_user_id,
+        amount=PaymentAmountUZS(row.amount_uzs),
+        method=PaymentMethod(row.method),
+        debt_revision_after=DebtRevision(row.debt_revision_after),
+        created_at=row.created_at,
+    )
+
+
+def payment_void_exists_for_tenant_debt(
+    session: Session,
+    *,
+    shop_id: ShopId,
+    shop_customer_id: ShopCustomerId,
+    debt_id: DebtId,
+    payment_id: PaymentId,
+) -> bool:
+    return (
+        session.scalar(
+            select(PaymentVoid.id)
+            .join(
+                Debt,
+                (Debt.id == PaymentVoid.debt_id)
+                & (Debt.shop_customer_id == PaymentVoid.shop_customer_id),
+            )
+            .join(ShopCustomer, ShopCustomer.id == Debt.shop_customer_id)
+            .where(
+                PaymentVoid.payment_id == payment_id.as_uuid(),
+                PaymentVoid.debt_id == debt_id.as_uuid(),
+                PaymentVoid.shop_customer_id == shop_customer_id.as_uuid(),
+                ShopCustomer.shop_id == shop_id,
+            )
+            .limit(1)
+        )
+        is not None
+    )
 
 
 def list_tenant_debt_payments(

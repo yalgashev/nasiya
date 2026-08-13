@@ -159,8 +159,16 @@ def test_audit_model_matches_current_m14_exact_shape_registry() -> None:
     assert "event_type = 'payment.recorded' AND object_type = 'payment'" in (
         object_mapping_sql
     )
+    assert "event_type = 'payment.voided' AND object_type = 'payment'" in (
+        object_mapping_sql
+    )
+    assert "debt.reopened_after_payment_void" in object_mapping_sql
+    assert "event_type = 'payment.voided'" in payload_sql
+    assert "event_type = 'debt.reopened_after_payment_void'" in payload_sql
+    assert "payload ->> 'source' = 'payment_void'" in payload_sql
     assert "'debt.paid', 'debt.written_off', " in object_mapping_sql
-    assert "'debt.written_off_settled') AND object_type = 'debt'" in (
+    assert "'debt.written_off_settled', " in object_mapping_sql
+    assert "'debt.reopened_after_payment_void') AND object_type = 'debt'" in (
         object_mapping_sql
     )
 

@@ -13,7 +13,7 @@ from app.debt.enums import DebtOverdueSource
 from app.debt.models import Debt
 from app.debt.overdue_service import materialize_overdue_candidate
 from app.debt.rating_ports import PendingOverdueRatingEffect
-from app.debt.values import DebtId
+from app.debt.values import DebtId, DebtRevision
 from app.idempotency.models import IdempotencyKey
 from app.payment.models import Payment
 from app.payment.rating_ports import PendingOnTimePaidRatingEffect
@@ -212,6 +212,7 @@ def test_locked_source_append_treats_only_exact_source_as_no_op(
         debt_id=DebtId(debt_ids[0]),
         payment_created_at=occurred_at,
         recording_source=RatingRecordingSource.LIVE,
+        source_revision=DebtRevision(3),
     )
 
     with factory.begin() as session:
@@ -235,6 +236,7 @@ def test_locked_source_append_treats_only_exact_source_as_no_op(
             debt_id=event.debt_id,
             payment_created_at=occurred_at,
             recording_source=RatingRecordingSource.LIVE,
+            source_revision=event.source_revision,
         )
         second = append_locked_source_event(
             session,

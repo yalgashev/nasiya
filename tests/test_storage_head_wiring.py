@@ -16,6 +16,7 @@ M14_REVISION = "a5b6c7d8e9f0"
 M15_REVISION = "b6c7d8e9f0a1"
 M16_REVISION = "c7d8e9f0a1b2"
 M17_REVISION = "d8e9f0a1b2c3"
+M18_REVISION = "e9f0a1b2c3d4"
 M11_CLEANUP_PREFIX = (
     "otp_challenge_events",
     "otp_dispatches",
@@ -51,6 +52,7 @@ M16_CLEANUP_PREFIX = (
     "disclosure_view_logs",
     "rating_events",
 )
+M18_CLEANUP_PREFIX = ("payment_voids",)
 INHERITED_CLEANUP_ORDER = (
     "otp_dispatcher_state",
     "telegram_update_failures",
@@ -86,9 +88,9 @@ M13_INHERITED_CLEANUP_ORDER = (
 def test_code_and_ci_are_wired_to_exact_m14_head() -> None:
     workflow = (PROJECT_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
-    assert get_alembic_head() == M17_REVISION
-    assert "Verify Alembic M17 head" in workflow
-    assert f'test "$current_revision" = "{M17_REVISION}"' in workflow
+    assert get_alembic_head() == M18_REVISION
+    assert "Verify Alembic M18 head" in workflow
+    assert f'test "$current_revision" = "{M18_REVISION}"' in workflow
     assert f'test "$current_revision" = "{M13_REVISION}"' not in workflow
     assert f'test "$current_revision" = "{M11_RECOVERY_REVISION}"' not in workflow
     assert f'test "$current_revision" = "{M11_ORIGINAL_REVISION}"' not in workflow
@@ -114,7 +116,10 @@ def test_alembic_metadata_has_minimal_storage_model_import() -> None:
 
 def test_cleanup_extends_current_head_with_m16_children_first_order() -> None:
     assert M2_CLEANUP_TABLE_NAMES == (
-        M16_CLEANUP_PREFIX + M14_CLEANUP_PREFIX + M13_INHERITED_CLEANUP_ORDER
+        M16_CLEANUP_PREFIX
+        + M18_CLEANUP_PREFIX
+        + M14_CLEANUP_PREFIX
+        + M13_INHERITED_CLEANUP_ORDER
     )
     assert M2_CLEANUP_TABLE_NAMES.index("rating_events") < (
         M2_CLEANUP_TABLE_NAMES.index("debts")

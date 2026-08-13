@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    Integer,
     PrimaryKeyConstraint,
     SmallInteger,
     String,
@@ -29,26 +30,34 @@ class RatingEvent(Base):
     __table_args__ = (
         CheckConstraint(
             "event_type IN "
-            "('on_time_paid','overdue','written_off','written_off_settled')",
+            "('on_time_paid','on_time_paid_voided','overdue','written_off',"
+            "'written_off_settled','written_off_settled_voided')",
             name="ck_rating_events_event_type_allowed",
         ),
         CheckConstraint(
             "(event_type = 'on_time_paid' AND delta = 5) OR "
+            "(event_type = 'on_time_paid_voided' AND delta = -5) OR "
             "(event_type = 'overdue' AND delta = -15) OR "
             "(event_type = 'written_off' AND delta = -40) OR "
-            "(event_type = 'written_off_settled' AND delta = 10)",
+            "(event_type = 'written_off_settled' AND delta = 10) OR "
+            "(event_type = 'written_off_settled_voided' AND delta = -10)",
             name="ck_rating_events_delta_matches_event",
         ),
         CheckConstraint(
             "(event_type IN ('on_time_paid','overdue') "
             "AND recording_source IN ('live','historical_reconciliation')) OR "
-            "(event_type IN ('written_off','written_off_settled') "
+            "(event_type IN ('on_time_paid_voided','written_off',"
+            "'written_off_settled','written_off_settled_voided') "
             "AND recording_source = 'live')",
             name="ck_rating_events_recording_source_allowed",
         ),
         CheckConstraint(
             "business_date = (occurred_at AT TIME ZONE 'Asia/Tashkent')::date",
             name="ck_rating_events_business_date_matches_occurred_at",
+        ),
+        CheckConstraint(
+            "source_revision > 0",
+            name="ck_rating_events_source_revision_positive",
         ),
         ForeignKeyConstraint(
             ("debt_id", "shop_customer_id"),
@@ -60,7 +69,8 @@ class RatingEvent(Base):
         UniqueConstraint(
             "debt_id",
             "event_type",
-            name="uq_rating_events_debt_id_event_type",
+            "source_revision",
+            name="uq_rating_events_debt_event_source_revision",
         ),
         Index(
             "ux_rating_events_positive_shop_customer_business_date",
@@ -70,11 +80,19 @@ class RatingEvent(Base):
             postgresql_where=text("event_type = 'on_time_paid'"),
         ),
         Index(
-            "ix_rating_events_shop_customer_occurred_debt_event",
+            "ux_rating_events_single_debt_negative_source",
+            "debt_id",
+            "event_type",
+            unique=True,
+            postgresql_where=text("event_type IN ('overdue','written_off')"),
+        ),
+        Index(
+            "ix_rating_events_shop_customer_occurred_debt_event_src_rev",
             "shop_customer_id",
             "occurred_at",
             "debt_id",
             "event_type",
+            "source_revision",
         ),
     )
 
@@ -90,6 +108,7 @@ class RatingEvent(Base):
     )
     business_date: Mapped[date] = mapped_column(Date, nullable=False)
     recording_source: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_revision: Mapped[int] = mapped_column(Integer, nullable=False)
 
     def __repr__(self) -> str:
         return "RatingEvent(<redacted>)"

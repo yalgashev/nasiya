@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.db import create_database_session_factory
 from app.debt.models import Debt
-from app.debt.values import DebtId
+from app.debt.values import DebtId, DebtRevision
 from app.rating.contracts import create_on_time_paid_rating_event
 from app.rating.enums import (
     RatingEventAppendOutcome,
@@ -80,6 +80,7 @@ def test_locked_repository_append_order_source_and_daily_cap(
         debt_id=DebtId(first_debt.id),
         payment_created_at=datetime(2026, 8, 12, 8, tzinfo=UTC),
         recording_source=RatingRecordingSource.LIVE,
+        source_revision=DebtRevision(3),
     )
     second = create_on_time_paid_rating_event(
         event_id=RatingEventId(uuid4()),
@@ -87,6 +88,7 @@ def test_locked_repository_append_order_source_and_daily_cap(
         debt_id=DebtId(second_debt.id),
         payment_created_at=datetime(2026, 8, 12, 9, tzinfo=UTC),
         recording_source=RatingRecordingSource.LIVE,
+        source_revision=DebtRevision(3),
     )
 
     assert (
@@ -103,6 +105,7 @@ def test_locked_repository_append_order_source_and_daily_cap(
         debt_id=DebtId(first_debt.id),
         payment_created_at=datetime(2026, 8, 12, 8, 1, tzinfo=UTC),
         recording_source=RatingRecordingSource.LIVE,
+        source_revision=DebtRevision(3),
     )
     with pytest.raises(RatingEventAppendError, match="Rating event append failed"):
         append_locked_event(
@@ -197,9 +200,10 @@ def test_composite_parent_chain_rejects_mismatched_rating_insert(
                 text(
                     "INSERT INTO rating_events "
                     "(id,shop_customer_id,debt_id,event_type,delta,"
-                    "occurred_at,business_date,recording_source) VALUES "
+                    "occurred_at,business_date,recording_source,"
+                    "source_revision) VALUES "
                     "(:id,:shop_customer_id,:debt_id,'overdue',-15,"
-                    ":occurred_at,:business_date,'live')"
+                    ":occurred_at,:business_date,'live',3)"
                 ),
                 {
                     "id": uuid4(),

@@ -23,6 +23,7 @@ from tests.postgresql import cleanup_m2_tables
 ROOT = Path(__file__).resolve().parents[1]
 M16 = "c7d8e9f0a1b2"
 M17 = "d8e9f0a1b2c3"
+M18 = "e9f0a1b2c3d4"
 CREATED = datetime(2026, 8, 1, tzinfo=UTC)
 ACCEPTED = datetime(2026, 8, 2, tzinfo=UTC)
 OVERDUE = datetime(2026, 8, 6, tzinfo=UTC)
@@ -47,7 +48,7 @@ def m16_database(m2_test_database: Engine) -> Generator[Engine, None, None]:
             cleanup_m2_tables(m2_test_database)
             command.downgrade(_config(), M16)
         cleanup_m2_tables(m2_test_database)
-        command.upgrade(_config(), M17)
+        command.upgrade(_config(), M18)
 
 
 def _seed_m16_overdue(engine: Engine) -> dict[str, object]:
@@ -251,6 +252,9 @@ def test_db_rejects_invalid_debt_rating_audit_and_idempotency_rows(
 def test_each_independent_m17_loss_class_denies_downgrade(
     m2_test_database: Engine, loss_class: str
 ) -> None:
+    cleanup_m2_tables(m2_test_database)
+    if _revision(m2_test_database) == M18:
+        command.downgrade(_config(), M17)
     ids = _seed_m16_overdue(m2_test_database)
     actor_id = ids["actor_id"]
     debt_id = ids["debt_id"]
@@ -306,3 +310,5 @@ def test_each_independent_m17_loss_class_denies_downgrade(
     with pytest.raises(Exception, match="M17 downgrade blocked"):
         command.downgrade(_config(), M16)
     assert _revision(m2_test_database) == M17
+    cleanup_m2_tables(m2_test_database)
+    command.upgrade(_config(), M18)

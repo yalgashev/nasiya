@@ -12,7 +12,7 @@ from app.shop_customer.models import ShopCustomer
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REVISION = "c7d8e9f0a1b2"
-HEAD = "d8e9f0a1b2c3"
+HEAD = "e9f0a1b2c3d4"
 PARENT = "b6c7d8e9f0a1"
 MIGRATION = (
     PROJECT_ROOT
@@ -35,7 +35,7 @@ def test_m16_is_exact_single_linear_child_and_ci_head() -> None:
 
     assert scripts.get_heads() == [HEAD]
     assert child is not None and child.down_revision == PARENT
-    assert "Verify Alembic M17 head" in workflow
+    assert "Verify Alembic M18 head" in workflow
     assert f'test "$current_revision" = "{HEAD}"' in workflow
 
 
@@ -70,23 +70,26 @@ def test_rating_metadata_matches_exact_chain_checks_and_indexes() -> None:
         "occurred_at",
         "business_date",
         "recording_source",
+        "source_revision",
     )
     assert _named_constraints(table, CheckConstraint) == {
         "ck_rating_events_event_type_allowed",
         "ck_rating_events_delta_matches_event",
         "ck_rating_events_recording_source_allowed",
         "ck_rating_events_business_date_matches_occurred_at",
+        "ck_rating_events_source_revision_positive",
     }
     assert "fk_rating_events_debt_shop_customer" in _named_constraints(
         table, ForeignKeyConstraint
     )
-    assert "uq_rating_events_debt_id_event_type" in _named_constraints(
+    assert "uq_rating_events_debt_event_source_revision" in _named_constraints(
         table, UniqueConstraint
     )
     indexes = {index.name: index for index in table.indexes}
     assert set(indexes) == {
         "ux_rating_events_positive_shop_customer_business_date",
-        "ix_rating_events_shop_customer_occurred_debt_event",
+        "ux_rating_events_single_debt_negative_source",
+        "ix_rating_events_shop_customer_occurred_debt_event_src_rev",
     }
     assert indexes["ux_rating_events_positive_shop_customer_business_date"].unique
     assert (

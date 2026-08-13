@@ -111,5 +111,27 @@ def test_m18_persistence_plan_is_one_source_complete_loss_guarded_child() -> Non
         "IN SHARE ROW EXCLUSIVE MODE",
         "explicit metadata backfill",
         "_guard_m18_downgrade_loss()",
+        "COUNT(*) = 1",
+        "ux_rating_events_positive_shop_customer_business_date",
+        "ix_rating_events_shop_customer_occurred_debt_event` is replaced",
+        "uq_rating_events_debt_id_event_type",
+        "drop `source_revision`",
+        "uq_payments_id_debt_id_debt_revision_after` last",
     ):
         assert token in plan
+
+    for source_type, source_marker, audit_type in (
+        ("`on_time_paid`", "`Payment.debt_revision_after`", "`debt.paid`"),
+        ("`overdue`", "`Debt.overdue_revision`", "`debt.clawback_applied`"),
+        ("`written_off`", "`Debt.written_off_revision`", "`debt.written_off`"),
+        (
+            "`written_off_settled`",
+            "`Debt.written_off_settled_revision`",
+            "`debt.written_off_settled`",
+        ),
+    ):
+        row = next(
+            line for line in plan.splitlines() if line.startswith(f"| {source_type}")
+        )
+        assert source_marker in row
+        assert audit_type in row

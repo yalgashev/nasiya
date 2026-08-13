@@ -12,6 +12,7 @@ from app.rating.models import RatingEvent
 
 ROOT = Path(__file__).resolve().parents[1]
 REVISION = "d8e9f0a1b2c3"
+CURRENT_HEAD = "e9f0a1b2c3d4"
 PARENT = "c7d8e9f0a1b2"
 MIGRATION = ROOT / "alembic/versions/d8e9f0a1b2c3_add_written_off_debt_persistence.py"
 
@@ -39,7 +40,7 @@ def test_m17_is_exact_single_linear_schema_only_child() -> None:
     upgrade = source.split("def upgrade() -> None:", 1)[1].split(
         "def _guard_m17_downgrade_loss", 1
     )[0]
-    assert scripts.get_heads() == [REVISION]
+    assert scripts.get_heads() == [CURRENT_HEAD]
     assert child is not None and child.down_revision == PARENT
     assert source.count("op.add_column(") == 6
     assert "op.create_table(" not in source
@@ -138,7 +139,7 @@ def test_all_m17_downgrade_guards_precede_ddl_and_no_rows_are_rewritten() -> Non
     assert module.down_revision == PARENT
 
 
-def test_ci_hardcodes_exact_m17_head() -> None:
+def test_ci_preserves_m17_revision_under_exact_m18_head() -> None:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    assert "Verify Alembic M17 head" in workflow
-    assert f'test "$current_revision" = "{REVISION}"' in workflow
+    assert "Verify Alembic M18 head" in workflow
+    assert f'test "$current_revision" = "{CURRENT_HEAD}"' in workflow

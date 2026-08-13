@@ -8,6 +8,7 @@ from sqlalchemy.engine import URL, Engine, make_url
 M2_CLEANUP_TABLE_NAMES = (
     "disclosure_view_logs",
     "rating_events",
+    "payment_voids",
     "otp_challenge_events",
     "otp_dispatches",
     "otp_challenges",

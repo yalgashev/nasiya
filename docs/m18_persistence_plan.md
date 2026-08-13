@@ -89,6 +89,17 @@ Extend `ck_audit_log_event_type_allowed`, `ck_audit_log_object_type_allowed`,
 `ck_idempotency_keys_endpoint_result_pair_allowed` with
 `shop.payments.void` and existing result type `payment`.
 
+The predecessor order index
+`ix_rating_events_shop_customer_occurred_debt_event` is replaced, not retained
+in parallel. The post-upgrade rating index/unique facts are the cycle unique
+`uq_rating_events_debt_event_source_revision`, the partial single-negative
+unique `ux_rating_events_single_debt_negative_source`, the unchanged daily-cap
+unique `ux_rating_events_positive_shop_customer_business_date`, and the exact
+five-column order index
+`ix_rating_events_shop_customer_occurred_debt_event_src_rev` (in addition to
+the primary key). No score, balance, cap-slot, or cycle state is stored
+elsewhere.
+
 ## Explicit metadata backfill and preservation
 
 This is an **explicit metadata backfill**, not a no-backfill migration. Its
@@ -104,14 +115,16 @@ new `rating_events.source_revision`; no PaymentVoid or compensation is
 synthesized. Existing RatingEvent business columns and every Debt, Payment,
 AuditLog, and IdempotencyKey value remain unchanged.
 
-Each existing event needs exactly one coherent source:
+Each existing event needs exactly one coherent source. Candidate selection is
+performed while all four source tables are locked, and `COUNT(*) = 1` is
+required per RatingEvent before any row is updated:
 
 | Event | Required source revision and facts |
 | --- | --- |
-| `on_time_paid` | Terminal Payment `debt_revision_after`, matching instant/Debt/ShopCustomer plus canonical payment-recorded and debt-paid audits. |
-| `overdue` | `Debt.overdue_revision`, matching overdue marker and both SYSTEM overdue/clawback audits. |
-| `written_off` | `Debt.written_off_revision`, matching marker and USER/Debt write-off audit. |
-| `written_off_settled` | Terminal recovery Payment revision, matching settlement marker plus payment-recorded and settlement audits. |
+| `on_time_paid` | `Payment.debt_revision_after` from the one Payment whose `id` is the object of a same-instant `payment.recorded` audit, whose Debt is the event Debt, whose revision equals the audit `debt_revision_after`, and whose same-instant Debt audit is `debt.paid` with the same revision. The Payment and Debt both resolve to the event ShopCustomer. |
+| `overdue` | `Debt.overdue_revision` where event time equals `Debt.overdue_at`, with same-instant SYSTEM/DEBT `debt.overdue` and `debt.clawback_applied` audits whose `overdue_revision` equals that marker. Both audits use the same predecessor source (`inline_payment` or `batch`) and the Debt resolves to the event ShopCustomer. |
+| `written_off` | `Debt.written_off_revision` where event time equals `Debt.written_off_at`, with a same-instant USER/DEBT `debt.written_off` audit whose `written_off_revision` equals that marker and whose Debt resolves to the event ShopCustomer. |
+| `written_off_settled` | `Payment.debt_revision_after` from the one terminal recovery Payment whose revision equals `Debt.written_off_settled_revision`, whose `created_at` equals both event time and `Debt.written_off_settled_at`, and which has same-instant `payment.recorded` (object Payment) and `debt.written_off_settled` (object Debt) audits with that revision. The Payment and Debt both resolve to the event ShopCustomer. |
 
 No candidate, multiple candidates, wrong time/revision/Debt/ShopCustomer/audit,
 or forbidden recording source aborts upgrade.
@@ -127,8 +140,11 @@ payload; or any `source_revision` inconsistent with reconstructible M17 facts.
 It deletes, rewrites, and compensates nothing.
 
 Only an M18-empty, M17-compatible database may downgrade. Then drop child
-indexes/FKs/table, restore M17 rating checks/unique/order index and audit/key
-checks, drop `source_revision`, and drop
-`uq_payments_id_debt_id_debt_revision_after` last. Real-PostgreSQL proof covers
+indexes/FKs/table first; restore M17 rating checks, the
+`uq_rating_events_debt_id_event_type` unique, and
+`ix_rating_events_shop_customer_occurred_debt_event`; restore audit/key checks;
+drop `source_revision`; and drop
+`uq_payments_id_debt_id_debt_revision_after` last. The independent guards run
+before every one of those destructive steps. Real-PostgreSQL proof covers
 fresh upgrade/empty downgrade/re-upgrade, mixed M17 deterministic mapping,
 independent guard classes, schema constraints, source preservation, and one head.

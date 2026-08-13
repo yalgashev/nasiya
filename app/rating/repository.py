@@ -10,7 +10,7 @@ from sqlalchemy import Select, exists, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.debt.values import DebtId
+from app.debt.values import DebtId, DebtRevision
 from app.rating.contracts import (
     RatingEvent as RatingEventContract,
 )
@@ -36,11 +36,11 @@ from app.shop.values import ShopId, UserId
 from app.shop_customer.models import ShopCustomer
 from app.shop_customer.values import ShopCustomerId
 
-_SOURCE_UNIQUE = "uq_rating_events_debt_id_event_type"
+_SOURCE_UNIQUE = "uq_rating_events_debt_event_source_revision"
 _PRIMARY_KEY = "pk_rating_events"
 _POSITIVE_CAP_UNIQUE = "ux_rating_events_positive_shop_customer_business_date"
 
-type OrderedRatingEventTuple = tuple[datetime, UUID, str, int]
+type OrderedRatingEventTuple = tuple[datetime, UUID, str, int, int]
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -77,6 +77,7 @@ def read_ordered_locked_events(
             RatingEvent.occurred_at,
             RatingEvent.business_date,
             RatingEvent.recording_source,
+            RatingEvent.source_revision,
         )
         .join(ShopCustomer, ShopCustomer.id == RatingEvent.shop_customer_id)
         .where(ShopCustomer.customer_id == locked.customer_id)
@@ -84,6 +85,7 @@ def read_ordered_locked_events(
             RatingEvent.occurred_at,
             RatingEvent.debt_id,
             RatingEvent.event_type,
+            RatingEvent.source_revision,
         )
     ).all()
     return tuple(
@@ -96,6 +98,7 @@ def read_ordered_locked_events(
             occurred_at=row.occurred_at,
             business_date=row.business_date,
             recording_source=RatingRecordingSource(row.recording_source),
+            source_revision=DebtRevision(row.source_revision),
         )
         for row in rows
     )
@@ -114,6 +117,7 @@ def read_ordered_locked_event_tuples(
             RatingEvent.occurred_at,
             RatingEvent.debt_id,
             RatingEvent.event_type,
+            RatingEvent.source_revision,
             RatingEvent.delta,
         )
         .join(ShopCustomer, ShopCustomer.id == RatingEvent.shop_customer_id)
@@ -122,7 +126,7 @@ def read_ordered_locked_event_tuples(
             RatingEvent.occurred_at,
             RatingEvent.debt_id,
             RatingEvent.event_type,
-            RatingEvent.delta,
+            RatingEvent.source_revision,
         )
     ).tuples()
     return tuple(tuple(row) for row in rows)
@@ -134,23 +138,23 @@ def source_event_exists_locked(
     locked_customer: LockedRatingCustomerScope,
     debt_id: DebtId,
     event_type: RatingEventType,
+    source_revision: DebtRevision | None = None,
 ) -> bool:
     locked = validate_locked_rating_customer_scope(session, locked_customer)
-    return bool(
-        session.scalar(
-            select(
-                exists().where(
-                    RatingEvent.debt_id == debt_id.as_uuid(),
-                    RatingEvent.event_type == event_type.value,
-                    RatingEvent.shop_customer_id.in_(
-                        select(ShopCustomer.id).where(
-                            ShopCustomer.customer_id == locked.customer_id
-                        )
-                    ),
-                )
+    predicates = (
+        RatingEvent.debt_id == debt_id.as_uuid(),
+        RatingEvent.event_type == event_type.value,
+        RatingEvent.shop_customer_id.in_(
+            select(ShopCustomer.id).where(
+                ShopCustomer.customer_id == locked.customer_id
             )
-        )
+        ),
     )
+    if source_revision is not None:
+        if not isinstance(source_revision, DebtRevision):
+            raise TypeError("source_revision must be a DebtRevision")
+        predicates += (RatingEvent.source_revision == source_revision.value,)
+    return bool(session.scalar(select(exists().where(*predicates))))
 
 
 def _exact_source_event_exists_locked(
@@ -166,12 +170,14 @@ def _exact_source_event_exists_locked(
             RatingEvent.occurred_at,
             RatingEvent.business_date,
             RatingEvent.recording_source,
+            RatingEvent.source_revision,
         )
         .join(ShopCustomer, ShopCustomer.id == RatingEvent.shop_customer_id)
         .where(
             ShopCustomer.customer_id == locked_customer.customer_id,
             RatingEvent.debt_id == event.debt_id.as_uuid(),
             RatingEvent.event_type == event.event_type.value,
+            RatingEvent.source_revision == event.source_revision.value,
         )
     ).one_or_none()
     return row is not None and (
@@ -180,6 +186,7 @@ def _exact_source_event_exists_locked(
         and row.occurred_at == event.occurred_at
         and row.business_date == event.business_date
         and row.recording_source == event.recording_source.value
+        and row.source_revision == event.source_revision.value
     )
 
 
@@ -238,6 +245,7 @@ def append_locked_event(
         occurred_at=event.occurred_at,
         business_date=event.business_date,
         recording_source=event.recording_source.value,
+        source_revision=event.source_revision.value,
     )
     try:
         with session.begin_nested():
@@ -256,6 +264,22 @@ def append_locked_event(
                 )
             raise RatingEventAppendError() from None
         if constraint == _POSITIVE_CAP_UNIQUE:
+            if _exact_source_event_exists_locked(
+                session,
+                locked_customer=locked,
+                event=event,
+            ):
+                return RatingEventAppendResult(
+                    RatingEventAppendOutcome.SOURCE_ALREADY_EXISTS
+                )
+            if source_event_exists_locked(
+                session,
+                locked_customer=locked,
+                debt_id=event.debt_id,
+                event_type=event.event_type,
+                source_revision=event.source_revision,
+            ):
+                raise RatingEventAppendError() from None
             return RatingEventAppendResult(
                 RatingEventAppendOutcome.POSITIVE_DAILY_CAP_ALREADY_USED
             )

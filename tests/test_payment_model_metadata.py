@@ -3,12 +3,19 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import UUID
 
-from sqlalchemy import CheckConstraint, Integer, Numeric, PrimaryKeyConstraint, Text
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKeyConstraint,
+    Integer,
+    Numeric,
+    PrimaryKeyConstraint,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 from sqlalchemy.schema import UniqueConstraint
 
 from app.db import Base
-from app.payment.models import Payment
+from app.payment.models import Payment, PaymentVoid
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -99,7 +106,12 @@ def test_payment_constraints_foreign_keys_and_index_policy_are_exact() -> None:
         "uq_payments_debt_id_debt_revision_after": (
             "debt_id",
             "debt_revision_after",
-        )
+        ),
+        "uq_payments_id_debt_id_debt_revision_after": (
+            "id",
+            "debt_id",
+            "debt_revision_after",
+        ),
     }
     assert primary_key.name == "pk_payments"
     assert foreign_keys == {
@@ -133,3 +145,60 @@ def test_payment_repr_redacts_all_persisted_values() -> None:
     ):
         assert value not in rendered
     assert rendered == "Payment(<redacted>)"
+
+
+def test_payment_void_mapping_matches_exact_m18_child_and_redacts() -> None:
+    table = PaymentVoid.__table__
+    assert Base.metadata.tables["payment_voids"] is table
+    assert tuple(table.columns) == tuple(
+        table.c[name]
+        for name in (
+            "id",
+            "payment_id",
+            "debt_id",
+            "shop_customer_id",
+            "source_payment_revision",
+            "debt_revision_after",
+            "voided_by_user_id",
+            "reason",
+            "voided_at",
+        )
+    )
+    uniques = {
+        constraint.name: tuple(column.name for column in constraint.columns)
+        for constraint in table.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    assert uniques == {
+        "uq_payment_voids_payment_id": ("payment_id",),
+        "uq_payment_voids_debt_id_debt_revision_after": (
+            "debt_id",
+            "debt_revision_after",
+        ),
+    }
+    foreign_keys = {
+        constraint.name: (
+            tuple(element.target_fullname for element in constraint.elements),
+            constraint.ondelete,
+        )
+        for constraint in table.constraints
+        if isinstance(constraint, ForeignKeyConstraint)
+    }
+    assert foreign_keys == {
+        "fk_payment_voids_payment_debt_revision": (
+            ("payments.id", "payments.debt_id", "payments.debt_revision_after"),
+            "RESTRICT",
+        ),
+        "fk_payment_voids_debt_shop_customer": (
+            ("debts.id", "debts.shop_customer_id"),
+            "RESTRICT",
+        ),
+        "fk_payment_voids_voided_by_user_id_users_id": (
+            ("users.id",),
+            "RESTRICT",
+        ),
+    }
+    assert {index.name for index in table.indexes} == {
+        "ix_payment_voids_shop_customer_voided_at_id"
+    }
+    assert repr(PaymentVoid()) == "PaymentVoid(<redacted>)"

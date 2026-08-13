@@ -11,6 +11,7 @@ from app.rating.models import RatingEvent
 
 ROOT = Path(__file__).resolve().parents[1]
 M17_HEAD = "d8e9f0a1b2c3"
+CURRENT_HEAD = "e9f0a1b2c3d4"
 
 
 def _source(relative_path: str) -> str:
@@ -19,7 +20,8 @@ def _source(relative_path: str) -> str:
 
 def test_m17_migration_compatibility_and_loss_evidence_remain_complete() -> None:
     scripts = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
-    assert scripts.get_heads() == [M17_HEAD]
+    assert scripts.get_heads() == [CURRENT_HEAD]
+    assert scripts.get_revision(CURRENT_HEAD).down_revision == M17_HEAD
     migration_tests = _source("tests/test_m17_migration_postgresql.py")
     for evidence in (
         "test_fresh_upgrade_empty_downgrade_and_reupgrade",

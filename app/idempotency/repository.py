@@ -19,6 +19,7 @@ from app.idempotency.contracts import (
     IdempotencyKeyDigest,
     IdempotencyOutcome,
     IdempotencyResultType,
+    VoidPaymentRequestHash,
     WriteOffDebtRequestHash,
 )
 from app.idempotency.models import IdempotencyKey
@@ -29,6 +30,7 @@ _RequestHash = (
     CreateDebtRequestHash
     | CreatePaymentRequestHash
     | RiskBandDisclosureRequestHash
+    | VoidPaymentRequestHash
     | WriteOffDebtRequestHash
 )
 
@@ -151,6 +153,12 @@ def _result_type_for_request(
                 "request_hash must be a WriteOffDebtRequestHash for write-off"
             )
         return IdempotencyResultType.DEBT
+    if endpoint is IdempotencyEndpoint.SHOP_PAYMENTS_VOID:
+        if not isinstance(request_hash, VoidPaymentRequestHash):
+            raise TypeError(
+                "request_hash must be a VoidPaymentRequestHash for payment void"
+            )
+        return IdempotencyResultType.PAYMENT
     raise ValueError("unsupported idempotency endpoint")
 
 

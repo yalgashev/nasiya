@@ -331,6 +331,26 @@ _AUDIT_PAYLOAD_EXACT_SHAPE_SQL = (
                 ),
             ),
             _exact_payload_clause(
+                AuditEventType.PAYMENT_VOIDED,
+                ("reason", "from_status", "to_status", "debt_revision_after"),
+                extra_predicate=(
+                    "payload ->> 'reason' IN "
+                    "('duplicate_payment','incorrect_amount','incorrect_method',"
+                    "'payment_not_received','wrong_debt') AND "
+                    "((payload ->> 'from_status' = 'active' AND "
+                    "payload ->> 'to_status' = 'active') OR "
+                    "(payload ->> 'from_status' = 'overdue' AND "
+                    "payload ->> 'to_status' = 'overdue') OR "
+                    "(payload ->> 'from_status' = 'written_off' AND "
+                    "payload ->> 'to_status' = 'written_off') OR "
+                    "(payload ->> 'from_status' = 'paid' AND "
+                    "payload ->> 'to_status' IN ('active','overdue')) OR "
+                    "(payload ->> 'from_status' = 'written_off_settled' AND "
+                    "payload ->> 'to_status' = 'written_off')) AND "
+                    + _whole_number_predicate("debt_revision_after", minimum=1)
+                ),
+            ),
+            _exact_payload_clause(
                 AuditEventType.PAYMENT_RECORDED,
                 (
                     "amount_uzs",
@@ -403,6 +423,18 @@ _AUDIT_PAYLOAD_EXACT_SHAPE_SQL = (
                 ),
             ),
             _exact_payload_clause(
+                AuditEventType.DEBT_REOPENED_AFTER_PAYMENT_VOID,
+                ("source", "from_status", "to_status", "debt_revision_after"),
+                extra_predicate=(
+                    "payload ->> 'source' = 'payment_void' AND "
+                    "((payload ->> 'from_status' = 'paid' AND "
+                    "payload ->> 'to_status' IN ('active','overdue')) OR "
+                    "(payload ->> 'from_status' = 'written_off_settled' AND "
+                    "payload ->> 'to_status' = 'written_off')) AND "
+                    + _whole_number_predicate("debt_revision_after", minimum=1)
+                ),
+            ),
+            _exact_payload_clause(
                 AuditEventType.DEBT_OVERDUE,
                 (
                     "source",
@@ -412,8 +444,10 @@ _AUDIT_PAYLOAD_EXACT_SHAPE_SQL = (
                     "business_date",
                 ),
                 extra_predicate=(
-                    "payload ->> 'source' IN ('inline_payment', 'batch') "
-                    "AND payload ->> 'from_status' = 'active' "
+                    "((payload ->> 'source' IN ('inline_payment', 'batch') "
+                    "AND payload ->> 'from_status' = 'active') OR "
+                    "(payload ->> 'source' = 'payment_void' "
+                    "AND payload ->> 'from_status' = 'paid')) "
                     "AND payload ->> 'to_status' = 'overdue' AND "
                     + _whole_number_predicate("overdue_revision", minimum=1)
                     + " AND payload ->> 'business_date' "
@@ -430,7 +464,8 @@ _AUDIT_PAYLOAD_EXACT_SHAPE_SQL = (
                     "overdue_revision",
                 ),
                 extra_predicate=(
-                    "payload ->> 'source' IN ('inline_payment', 'batch') "
+                    "payload ->> 'source' IN "
+                    "('inline_payment', 'batch', 'payment_void') "
                     "AND payload ->> 'from_basis' = 'discounted' "
                     "AND payload ->> 'to_basis' = 'original' AND "
                     + _whole_number_predicate(
@@ -501,6 +536,8 @@ class AuditLog(Base):
                 f", '{AuditEventType.DISCLOSURE_RISK_BAND_VIEWED.value}'"
                 f", '{AuditEventType.DEBT_WRITTEN_OFF.value}'"
                 f", '{AuditEventType.DEBT_WRITTEN_OFF_SETTLED.value}'"
+                f", '{AuditEventType.PAYMENT_VOIDED.value}'"
+                f", '{AuditEventType.DEBT_REOPENED_AFTER_PAYMENT_VOID.value}'"
                 ")"
             ),
             name="ck_audit_log_event_type_allowed",
@@ -593,9 +630,12 @@ class AuditLog(Base):
                 f"'{AuditEventType.DEBT_CLAWBACK_APPLIED.value}', "
                 f"'{AuditEventType.DEBT_PAID.value}', "
                 f"'{AuditEventType.DEBT_WRITTEN_OFF.value}', "
-                f"'{AuditEventType.DEBT_WRITTEN_OFF_SETTLED.value}') "
+                f"'{AuditEventType.DEBT_WRITTEN_OFF_SETTLED.value}', "
+                f"'{AuditEventType.DEBT_REOPENED_AFTER_PAYMENT_VOID.value}') "
                 f"AND object_type = '{AuditObjectType.DEBT.value}')"
                 f" OR (event_type = '{AuditEventType.PAYMENT_RECORDED.value}' "
+                f"AND object_type = '{AuditObjectType.PAYMENT.value}')"
+                f" OR (event_type = '{AuditEventType.PAYMENT_VOIDED.value}' "
                 f"AND object_type = '{AuditObjectType.PAYMENT.value}')"
                 f" OR (event_type = "
                 f"'{AuditEventType.DISCLOSURE_RISK_BAND_VIEWED.value}' "

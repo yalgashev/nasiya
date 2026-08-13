@@ -75,7 +75,9 @@ def test_idempotency_key_identity_checks_and_actor_foreign_key_are_exact() -> No
             "OR (endpoint = 'shop.risk_band_disclosures.create' "
             "AND result_object_type = 'disclosure_view') "
             "OR (endpoint = 'admin.debts.write_off' "
-            "AND result_object_type = 'debt')"
+            "AND result_object_type = 'debt') "
+            "OR (endpoint = 'shop.payments.void' "
+            "AND result_object_type = 'payment')"
         ),
         "ck_idempotency_keys_key_digest_sha256_hex": ("key_digest ~ '^[0-9a-f]{64}$'"),
         "ck_idempotency_keys_request_hash_sha256_hex": (
