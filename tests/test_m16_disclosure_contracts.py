@@ -268,13 +268,15 @@ def test_uz_ru_labels_cover_only_closed_band_and_purpose_vocabulary() -> None:
         assert forbidden not in presentation_source
 
 
-def test_route_checkpoint_has_one_product_router_and_one_migration_child() -> None:
+def test_route_checkpoint_keeps_m16_router_and_exact_linear_m17_child() -> None:
     assert (PROJECT_ROOT / "app/rating/models.py").is_file()
     assert (PROJECT_ROOT / "app/rating/router.py").is_file()
-    assert (
-        sum(
-            "c7d8e9f0a1b2" in path.read_text(encoding="utf-8")
-            for path in (PROJECT_ROOT / "alembic/versions").glob("*.py")
-        )
-        == 1
-    )
+    matching = {
+        path.name
+        for path in (PROJECT_ROOT / "alembic/versions").glob("*.py")
+        if "c7d8e9f0a1b2" in path.read_text(encoding="utf-8")
+    }
+    assert matching == {
+        "c7d8e9f0a1b2_add_rating_and_disclosure_persistence.py",
+        "d8e9f0a1b2c3_add_written_off_debt_persistence.py",
+    }

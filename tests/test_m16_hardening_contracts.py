@@ -123,16 +123,22 @@ def test_migration_and_runtime_keep_m16_out_vocabulary_contained() -> None:
         for path in runtime_paths
         if "written_off" in path.read_text(encoding="utf-8").casefold()
     }
-    assert written_off_paths == {"contracts.py", "service.py"}
+    assert written_off_paths == {
+        "adapters.py",
+        "contracts.py",
+        "current_read_service.py",
+        "models.py",
+        "service.py",
+    }
 
     source = "\n".join(path.read_text(encoding="utf-8") for path in runtime_paths)
-    source += _source(
+    m16_migration = _source(
         "alembic/versions/c7d8e9f0a1b2_add_rating_and_disclosure_persistence.py"
     )
+    assert "-40" not in m16_migration and "+10" not in m16_migration
+    source += m16_migration
     lowered = source.casefold()
     for forbidden in (
-        "-40",
-        "+10",
         "void_payment",
         "compensation",
         "rating_override",

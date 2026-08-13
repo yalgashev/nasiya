@@ -10,7 +10,7 @@ from types import MappingProxyType
 from typing import Final
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth.models import User
@@ -19,6 +19,7 @@ from app.customer.models import Customer
 from app.debt.contracts import WriteOffReason
 from app.debt.enums import DebtStatus
 from app.debt.models import Debt
+from app.debt.payment_progress import DebtWebPaymentProgressReader
 from app.debt.presentation import DebtWebLanguage
 from app.debt.repository import WrittenOffCandidateLocator
 from app.debt.values import DebtId, DebtRevision
@@ -28,8 +29,8 @@ from app.debt.write_off_targeting import (
     read_admin_completed_write_off,
 )
 from app.offers.authorization import PlatformAdminActor
-from app.payment.models import Payment
-from app.shop.models import Shop
+from app.shop.repository import list_shops_by_ids
+from app.shop.values import ShopId
 from app.shop_customer.models import ShopCustomer
 
 __all__ = (
@@ -223,13 +224,19 @@ class AdminWriteOffCompletedView:
 
 
 def present_admin_write_off_candidates(
-    session: Session, *, actor: PlatformAdminActor
+    session: Session,
+    *,
+    actor: PlatformAdminActor,
+    progress_reader: DebtWebPaymentProgressReader,
+    server_now: datetime,
 ) -> tuple[AdminWriteOffSummary, ...]:
     candidates = list_admin_write_off_candidates(session, actor=actor)
     summaries = _read_summaries(
         session,
         debt_ids=tuple(candidate.debt_id for candidate in candidates),
         statuses=(DebtStatus.OVERDUE,),
+        progress_reader=progress_reader,
+        server_now=server_now,
     )
     return tuple(
         summaries[candidate.debt_id.as_uuid()]
@@ -244,6 +251,8 @@ def present_admin_write_off_fresh(
     *,
     actor: PlatformAdminActor,
     debt_id: DebtId,
+    progress_reader: DebtWebPaymentProgressReader,
+    server_now: datetime,
 ) -> AdminWriteOffFreshView | None:
     target = discover_admin_write_off_target(session, actor=actor, debt_id=debt_id)
     if target is None:
@@ -252,6 +261,8 @@ def present_admin_write_off_fresh(
         session,
         debt_ids=(debt_id,),
         statuses=(DebtStatus.OVERDUE,),
+        progress_reader=progress_reader,
+        server_now=server_now,
     ).get(debt_id.as_uuid())
     if summary is None:
         return None
@@ -266,6 +277,8 @@ def present_admin_write_off_completed(
     *,
     actor: PlatformAdminActor,
     debt_id: DebtId,
+    progress_reader: DebtWebPaymentProgressReader,
+    server_now: datetime,
 ) -> AdminWriteOffCompletedView | None:
     completed = read_admin_completed_write_off(session, actor=actor, debt_id=debt_id)
     if completed is None:
@@ -275,6 +288,8 @@ def present_admin_write_off_completed(
         debt_ids=(debt_id,),
         statuses=(DebtStatus.WRITTEN_OFF, DebtStatus.WRITTEN_OFF_SETTLED),
         actor_user_id=actor.user_id,
+        progress_reader=progress_reader,
+        server_now=server_now,
     ).get(debt_id.as_uuid())
     if summary is None or summary.status is not completed.status:
         return None
@@ -290,34 +305,20 @@ def _read_summaries(
     debt_ids: Sequence[DebtId],
     statuses: tuple[DebtStatus, ...],
     actor_user_id: UUID | None = None,
+    progress_reader: DebtWebPaymentProgressReader,
+    server_now: datetime,
 ) -> dict[UUID, AdminWriteOffSummary]:
     if not debt_ids:
         return {}
-    posted = (
-        select(
-            Payment.debt_id.label("debt_id"),
-            func.coalesce(func.sum(Payment.amount_uzs), 0).label("posted_total"),
-        )
-        .group_by(Payment.debt_id)
-        .subquery()
-    )
     statement = (
         select(
-            Debt.id,
-            Shop.name.label("shop_name"),
+            Debt,
+            ShopCustomer.shop_id,
             User.phone.label("customer_phone"),
-            Debt.due_date,
-            Debt.overdue_at,
-            (Debt.original_amount_uzs - func.coalesce(posted.c.posted_total, 0)).label(
-                "remaining_original_uzs"
-            ),
-            Debt.status,
         )
         .join(ShopCustomer, ShopCustomer.id == Debt.shop_customer_id)
-        .join(Shop, Shop.id == ShopCustomer.shop_id)
         .join(Customer, Customer.id == ShopCustomer.customer_id)
         .join(User, User.id == Customer.user_id)
-        .outerjoin(posted, posted.c.debt_id == Debt.id)
         .where(
             Debt.id.in_(tuple(debt_id.as_uuid() for debt_id in debt_ids)),
             Debt.status.in_(tuple(status.value for status in statuses)),
@@ -327,19 +328,35 @@ def _read_summaries(
     if actor_user_id is not None:
         statement = statement.where(Debt.written_off_actor_user_id == actor_user_id)
     rows = session.execute(statement).all()
+    debts = tuple(row[0] for row in rows)
+    progress_by_debt_id = progress_reader.list_payment_progress_for_debts(
+        session,
+        debts=debts,
+        server_now=server_now,
+    )
+    shops = {
+        shop.id: shop.name
+        for shop in list_shops_by_ids(
+            session,
+            shop_ids={ShopId(row.shop_id) for row in rows},
+        )
+    }
     result: dict[UUID, AdminWriteOffSummary] = {}
     for row in rows:
-        if row.overdue_at is None:
+        debt = row[0]
+        progress = progress_by_debt_id.get(debt.id)
+        shop_name = shops.get(row.shop_id)
+        if debt.overdue_at is None or progress is None or shop_name is None:
             continue
         try:
-            result[row.id] = AdminWriteOffSummary(
-                debt_id=DebtId(row.id),
-                shop_name=row.shop_name,
+            result[debt.id] = AdminWriteOffSummary(
+                debt_id=DebtId(debt.id),
+                shop_name=shop_name,
                 masked_phone=mask_phone_for_display(row.customer_phone),
-                due_date=row.due_date,
-                overdue_at=row.overdue_at,
-                remaining_original_uzs=Decimal(row.remaining_original_uzs),
-                status=DebtStatus(row.status),
+                due_date=debt.due_date,
+                overdue_at=debt.overdue_at,
+                remaining_original_uzs=Decimal(progress.remaining_due_uzs),
+                status=DebtStatus(debt.status),
             )
         except (TypeError, ValueError):
             continue

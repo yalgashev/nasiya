@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -138,3 +138,73 @@ def test_local_ports_do_not_import_concrete_rating_implementation() -> None:
         assert "SqlAlchemyLockedRatingAppendAdapter" not in source
         assert "NoOp" not in source
         assert "lock_customer" not in source
+
+
+def test_tashkent_midnight_and_equal_instant_chain_use_authoritative_order() -> None:
+    before_midnight = datetime(2026, 8, 13, 18, 59, 59, 999999, tzinfo=UTC)
+    at_midnight = before_midnight + timedelta(microseconds=1)
+    first_debt = DebtId(uuid4())
+    relation = ShopCustomerId(uuid4())
+    before = create_written_off_rating_event(
+        event_id=RatingEventId(uuid4()),
+        shop_customer_id=relation,
+        debt_id=first_debt,
+        written_off_at=before_midnight,
+    )
+    after = create_written_off_settled_rating_event(
+        event_id=RatingEventId(uuid4()),
+        shop_customer_id=relation,
+        debt_id=first_debt,
+        written_off_settled_at=at_midnight,
+    )
+    assert before.business_date == date(2026, 8, 13)
+    assert after.business_date == date(2026, 8, 14)
+
+    prefix = tuple(
+        create_on_time_paid_rating_event(
+            event_id=RatingEventId(uuid4()),
+            shop_customer_id=ShopCustomerId(uuid4()),
+            debt_id=DebtId(uuid4()),
+            payment_created_at=datetime(2025, 12, day, tzinfo=UTC),
+            recording_source=RatingRecordingSource.LIVE,
+        )
+        for day in range(1, 9)
+    )
+    tied_chain = _chain(
+        RatingEventType.OVERDUE,
+        RatingEventType.WRITTEN_OFF,
+        RatingEventType.WRITTEN_OFF_SETTLED,
+    )
+    snapshot = derive_rating_snapshot(
+        (*reversed(tied_chain), *reversed(prefix)),
+        global_hard_block=False,
+    )
+    assert snapshot.current_score == 55
+
+
+def test_m17_deltas_clamp_after_each_event_not_only_after_final_sum() -> None:
+    first = _chain(RatingEventType.OVERDUE, RatingEventType.WRITTEN_OFF)
+    second = _chain(
+        RatingEventType.OVERDUE,
+        RatingEventType.WRITTEN_OFF,
+        RatingEventType.WRITTEN_OFF_SETTLED,
+    )
+    shifted_second = tuple(
+        type(event)(
+            id=event.id,
+            shop_customer_id=event.shop_customer_id,
+            debt_id=event.debt_id,
+            event_type=event.event_type,
+            delta=event.delta,
+            occurred_at=event.occurred_at + timedelta(days=1),
+            business_date=event.business_date + timedelta(days=1),
+            recording_source=event.recording_source,
+        )
+        for event in second
+    )
+    sequential = derive_rating_snapshot(
+        (*first, *shifted_second),
+        global_hard_block=False,
+    )
+    assert sequential.current_score == 10
+    assert max(0, min(100, 60 - 15 - 40 - 15 - 40 + 10)) == 0

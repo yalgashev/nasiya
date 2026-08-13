@@ -190,6 +190,8 @@ def test_payment_copy_catalog_is_exact_complete_and_immutable_in_both_locales() 
         "read_only_past_due",
         "read_only_closed",
         "customer_read_only",
+        "customer_payment_unavailable",
+        "recovery_terms",
         "back_to_debt",
         "back_to_history",
         *(method.value for method in PaymentMethod),

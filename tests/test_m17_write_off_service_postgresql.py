@@ -23,6 +23,7 @@ from app.idempotency.contracts import (
 )
 from app.idempotency.models import IdempotencyKey
 from app.offers.authorization import require_platform_admin_actor
+from app.payment.repository import SqlAlchemyLockedDebtPostedTotalReader
 from app.rating.adapters import SqlAlchemyLockedRatingAppendAdapter
 from app.rating.models import RatingEvent
 from app.shop.models import Shop
@@ -176,6 +177,7 @@ def test_atomic_write_off_appends_exact_source_audit_and_replays_without_clock(
             session,
             command=command,
             rating_append_port=SqlAlchemyLockedRatingAppendAdapter(),
+            posted_total_reader=SqlAlchemyLockedDebtPostedTotalReader(session),
             clock=lambda: WRITTEN_OFF,
         )
         assert result.outcome is IdempotencyOutcome.NEW
@@ -222,6 +224,7 @@ def test_atomic_write_off_appends_exact_source_audit_and_replays_without_clock(
             session,
             command=_command(admin, debt, key=key),
             rating_append_port=SqlAlchemyLockedRatingAppendAdapter(),
+            posted_total_reader=SqlAlchemyLockedDebtPostedTotalReader(session),
             clock=lambda: (_ for _ in ()).throw(AssertionError("clock called")),
         )
         assert replay.outcome is IdempotencyOutcome.REPLAY
@@ -246,11 +249,67 @@ def test_write_off_fault_rolls_back_entire_unit(m2_test_database: Engine) -> Non
                 session,
                 command=_command(admin, debt),
                 rating_append_port=FaultPort(),
+                posted_total_reader=SqlAlchemyLockedDebtPostedTotalReader(session),
                 clock=lambda: WRITTEN_OFF,
             )
     with Session(m2_test_database) as session:
         debt = session.get_one(Debt, debt_id)
         assert debt.status == "overdue"
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(IdempotencyKey)
+                .where(IdempotencyKey.endpoint == "admin.debts.write_off")
+            )
+            == 0
+        )
+
+
+@pytest.mark.integration
+def test_write_off_audit_tail_fault_rolls_back_debt_rating_and_key(
+    m2_test_database: Engine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_audit(*args, **kwargs):
+        raise RuntimeError("synthetic write-off audit fault")
+
+    monkeypatch.setattr(
+        "app.debt.write_off_service.append_debt_written_off_audit",
+        fail_audit,
+    )
+    with Session(m2_test_database) as session, session.begin():
+        admin, debt = _seed_source(session)
+        command = _command(admin, debt)
+        debt_id = debt.id
+
+    with pytest.raises(RuntimeError, match="synthetic write-off audit fault"):
+        with Session(m2_test_database) as session, session.begin():
+            write_off_overdue_debt(
+                session,
+                command=command,
+                rating_append_port=SqlAlchemyLockedRatingAppendAdapter(),
+                posted_total_reader=SqlAlchemyLockedDebtPostedTotalReader(session),
+                clock=lambda: WRITTEN_OFF,
+            )
+
+    with Session(m2_test_database) as session:
+        assert session.get_one(Debt, debt_id).status == "overdue"
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(RatingEvent)
+                .where(RatingEvent.debt_id == debt_id)
+            )
+            == 1
+        )
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(AuditLog)
+                .where(AuditLog.object_id == debt_id)
+            )
+            == 2
+        )
         assert (
             session.scalar(
                 select(func.count())

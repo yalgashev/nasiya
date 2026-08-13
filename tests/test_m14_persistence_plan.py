@@ -93,7 +93,10 @@ def test_plan_preserves_m13_debt_indexes_and_names_exactly() -> None:
         "ix_debts_status_pending_expires_at_id",
     }
     assert inherited_indexes < debt_indexes
-    assert debt_indexes - inherited_indexes == {"ix_debts_status_due_date_id"}
+    assert debt_indexes == inherited_indexes | {
+        "ix_debts_status_due_date_id",
+        "ix_debts_status_overdue_at_id",
+    }
     assert all(f"`{index_name}`" in plan for index_name in inherited_indexes)
     assert "Add nullable `debts.paid_at TIMESTAMPTZ` with no default" in plan
 

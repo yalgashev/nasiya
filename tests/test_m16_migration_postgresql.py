@@ -58,7 +58,7 @@ def m15_database(m2_test_database: Engine) -> Generator[Engine, None, None]:
                 connection.execute(text("DELETE FROM rating_events"))
             command.downgrade(_config(), M15_REVISION)
         cleanup_m2_tables(m2_test_database)
-        command.upgrade(_config(), M16_REVISION)
+        command.upgrade(_config(), "head")
 
 
 def _parents(session: Session) -> tuple[User, ShopCustomer]:
@@ -103,27 +103,36 @@ def _positive_source(
     actor: User,
     relation: ShopCustomer,
     paid_at: datetime = PAID,
-) -> Debt:
-    debt = Debt(
-        shop_customer_id=relation.id,
-        created_by_user_id=actor.id,
-        original_amount_uzs=Decimal("100000"),
-        discount_basis_points=1000,
-        discounted_amount_uzs=Decimal("90000"),
-        due_date=date(2026, 8, 12),
-        pending_expires_at=CREATED + timedelta(hours=72),
-        status="paid",
-        revision=3,
-        accepted_at=ACCEPTED,
-        paid_at=paid_at,
-        created_at=CREATED,
-        updated_at=paid_at,
+) -> UUID:
+    debt_id = uuid4()
+    session.execute(
+        text(
+            "INSERT INTO debts (id,shop_customer_id,created_by_user_id,"
+            "original_amount_uzs,discount_basis_points,discounted_amount_uzs,"
+            "due_date,pending_expires_at,status,revision,accepted_at,paid_at,"
+            "created_at,updated_at) VALUES (:id,:shop_customer_id,:actor_id,"
+            ":original_amount,:discount_basis_points,:discounted_amount,"
+            ":due_date,:pending_expires_at,'paid',3,:accepted_at,:paid_at,"
+            ":created_at,:updated_at)"
+        ),
+        {
+            "id": debt_id,
+            "shop_customer_id": relation.id,
+            "actor_id": actor.id,
+            "original_amount": Decimal("100000"),
+            "discount_basis_points": 1000,
+            "discounted_amount": Decimal("90000"),
+            "due_date": date(2026, 8, 12),
+            "pending_expires_at": CREATED + timedelta(hours=72),
+            "accepted_at": ACCEPTED,
+            "paid_at": paid_at,
+            "created_at": CREATED,
+            "updated_at": paid_at,
+        },
     )
-    session.add(debt)
-    session.flush()
     payment = Payment(
         id=uuid4(),
-        debt_id=debt.id,
+        debt_id=debt_id,
         recorded_by_user_id=actor.id,
         amount_uzs=Decimal("90000"),
         method="cash",
@@ -154,14 +163,14 @@ def _positive_source(
                 actor_kind="USER",
                 actor_user_id=actor.id,
                 object_type="debt",
-                object_id=debt.id,
+                object_id=debt_id,
                 payload={"source": "payment", "debt_revision_after": 3},
                 occurred_at=paid_at,
             ),
         )
     )
     session.flush()
-    return debt
+    return debt_id
 
 
 def _negative_source(
@@ -170,26 +179,38 @@ def _negative_source(
     actor: User,
     relation: ShopCustomer,
     late_paid: bool = False,
-) -> Debt:
-    debt = Debt(
-        shop_customer_id=relation.id,
-        created_by_user_id=actor.id,
-        original_amount_uzs=Decimal("100000"),
-        discount_basis_points=1000,
-        discounted_amount_uzs=Decimal("90000"),
-        due_date=date(2026, 8, 10),
-        pending_expires_at=CREATED + timedelta(hours=72),
-        status="paid" if late_paid else "overdue",
-        revision=4 if late_paid else 3,
-        accepted_at=ACCEPTED,
-        overdue_at=OVERDUE,
-        overdue_revision=3,
-        paid_at=OVERDUE + timedelta(hours=2) if late_paid else None,
-        created_at=CREATED,
-        updated_at=OVERDUE + timedelta(hours=2) if late_paid else OVERDUE,
+) -> UUID:
+    debt_id = uuid4()
+    paid_at = OVERDUE + timedelta(hours=2) if late_paid else None
+    session.execute(
+        text(
+            "INSERT INTO debts (id,shop_customer_id,created_by_user_id,"
+            "original_amount_uzs,discount_basis_points,discounted_amount_uzs,"
+            "due_date,pending_expires_at,status,revision,accepted_at,overdue_at,"
+            "overdue_revision,paid_at,created_at,updated_at) VALUES "
+            "(:id,:shop_customer_id,:actor_id,:original_amount,"
+            ":discount_basis_points,:discounted_amount,:due_date,"
+            ":pending_expires_at,:status,:revision,:accepted_at,:overdue_at,"
+            "3,:paid_at,:created_at,:updated_at)"
+        ),
+        {
+            "id": debt_id,
+            "shop_customer_id": relation.id,
+            "actor_id": actor.id,
+            "original_amount": Decimal("100000"),
+            "discount_basis_points": 1000,
+            "discounted_amount": Decimal("90000"),
+            "due_date": date(2026, 8, 10),
+            "pending_expires_at": CREATED + timedelta(hours=72),
+            "status": "paid" if late_paid else "overdue",
+            "revision": 4 if late_paid else 3,
+            "accepted_at": ACCEPTED,
+            "overdue_at": OVERDUE,
+            "paid_at": paid_at,
+            "created_at": CREATED,
+            "updated_at": paid_at or OVERDUE,
+        },
     )
-    session.add(debt)
-    session.flush()
     session.add_all(
         (
             AuditLog(
@@ -197,7 +218,7 @@ def _negative_source(
                 actor_kind="SYSTEM",
                 actor_user_id=None,
                 object_type="debt",
-                object_id=debt.id,
+                object_id=debt_id,
                 payload={
                     "source": "batch",
                     "from_status": "active",
@@ -212,7 +233,7 @@ def _negative_source(
                 actor_kind="SYSTEM",
                 actor_user_id=None,
                 object_type="debt",
-                object_id=debt.id,
+                object_id=debt_id,
                 payload={
                     "source": "batch",
                     "from_basis": "discounted",
@@ -225,7 +246,7 @@ def _negative_source(
         )
     )
     session.flush()
-    return debt
+    return debt_id
 
 
 @pytest.mark.integration
@@ -264,25 +285,29 @@ def test_mixed_history_reconciles_deterministically_and_preserves_sources(
             relation=relation,
             late_paid=True,
         )
-        active = Debt(
-            shop_customer_id=relation.id,
-            created_by_user_id=actor.id,
-            original_amount_uzs=Decimal("100000"),
-            discount_basis_points=0,
-            discounted_amount_uzs=Decimal("100000"),
-            due_date=date(2026, 8, 1),
-            pending_expires_at=CREATED + timedelta(hours=72),
-            status="active",
-            revision=2,
-            accepted_at=ACCEPTED,
-            created_at=CREATED,
-            updated_at=ACCEPTED,
+        session.execute(
+            text(
+                "INSERT INTO debts (id,shop_customer_id,created_by_user_id,"
+                "original_amount_uzs,discount_basis_points,discounted_amount_uzs,"
+                "due_date,pending_expires_at,status,revision,accepted_at,"
+                "created_at,updated_at) VALUES (:id,:shop_customer_id,:actor_id,"
+                "100000,0,100000,:due_date,:pending_expires_at,'active',2,"
+                ":accepted_at,:created_at,:updated_at)"
+            ),
+            {
+                "id": uuid4(),
+                "shop_customer_id": relation.id,
+                "actor_id": actor.id,
+                "due_date": date(2026, 8, 1),
+                "pending_expires_at": CREATED + timedelta(hours=72),
+                "accepted_at": ACCEPTED,
+                "created_at": CREATED,
+                "updated_at": ACCEPTED,
+            },
         )
-        session.add(active)
-        session.flush()
-        winner_id = winner.id
-        negative_id = negative.id
-        late_paid_id = late_paid.id
+        winner_id = winner
+        negative_id = negative
+        late_paid_id = late_paid
         before = {
             table: session.execute(
                 text(
@@ -350,7 +375,7 @@ def test_incoherent_positive_aborts_whole_upgrade(m15_database: Engine) -> None:
     with Session(m15_database) as session, session.begin():
         actor, relation = _parents(session)
         debt = _positive_source(session, actor=actor, relation=relation)
-        payment = session.scalar(select(Payment).where(Payment.debt_id == debt.id))
+        payment = session.scalar(select(Payment).where(Payment.debt_id == debt))
         assert payment is not None
         session.execute(
             text("DELETE FROM audit_log WHERE object_id = :payment_id"),
@@ -378,7 +403,7 @@ def test_each_positive_source_contradiction_aborts_upgrade(
     with Session(m15_database) as session, session.begin():
         actor, relation = _parents(session)
         debt = _positive_source(session, actor=actor, relation=relation)
-        payment = session.scalar(select(Payment).where(Payment.debt_id == debt.id))
+        payment = session.scalar(select(Payment).where(Payment.debt_id == debt))
         assert payment is not None
         if corruption == "no_payment":
             session.delete(payment)
@@ -409,7 +434,7 @@ def test_mismatched_overdue_audit_pair_aborts_upgrade(
                 "DELETE FROM audit_log WHERE object_id = :debt_id "
                 "AND event_type = 'debt.clawback_applied'"
             ),
-            {"debt_id": debt.id},
+            {"debt_id": debt},
         )
 
     with pytest.raises(RuntimeError, match="incoherent negative source history"):

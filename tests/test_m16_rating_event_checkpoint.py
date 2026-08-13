@@ -41,7 +41,9 @@ def test_m16_rating_checkpoint_matches_frozen_producer_and_read_contract() -> No
     assert "func.sum" not in runtime.casefold()
 
 
-def test_m16_rating_checkpoint_has_no_private_disclosure_web_or_out_creep() -> None:
+def test_m16_rating_checkpoint_allows_only_the_later_m17_written_off_extension() -> (
+    None
+):
     changed_runtime = "\n".join(
         _source(path)
         for path in (
@@ -55,7 +57,6 @@ def test_m16_rating_checkpoint_has_no_private_disclosure_web_or_out_creep() -> N
         "@router.",
         "from app.notification",
         "from app.scheduler",
-        "written_off",
         "void_payment",
         "reverse_payment",
         "rating_override",
@@ -63,6 +64,8 @@ def test_m16_rating_checkpoint_has_no_private_disclosure_web_or_out_creep() -> N
         "band_cache",
     ):
         assert forbidden not in changed_runtime
+    assert "written_off" in changed_runtime
+    assert "void_payment" not in changed_runtime
 
 
 def test_m16_rating_checkpoint_keeps_required_barrier_and_boundary_evidence() -> None:

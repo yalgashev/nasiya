@@ -31,10 +31,12 @@ from app.debt.commands import (
     WriteOffDebtRawForm,
     assemble_write_off_debt_command,
 )
+from app.debt.overdue_ports import LockedDebtPostedTotalReadPort
+from app.debt.payment_progress import DebtWebPaymentProgressReader
+from app.debt.rating_ports import LockedWrittenOffRatingAppendPort
 from app.debt.web_presentation import resolve_debt_web_language
 from app.debt.write_off_service import WriteOffMutationRejected, write_off_overdue_debt
 from app.offers.authorization import PlatformAdminActor, require_platform_admin_actor
-from app.rating.adapters import SqlAlchemyLockedRatingAppendAdapter
 from app.security_headers import mark_auth_response_no_store
 
 router = APIRouter()
@@ -54,7 +56,12 @@ def admin_write_off_candidates(
 ) -> Response:
     language = resolve_debt_web_language(request.headers.get("accept-language"))
     try:
-        candidates = present_admin_write_off_candidates(db, actor=actor)
+        candidates = present_admin_write_off_candidates(
+            db,
+            actor=actor,
+            progress_reader=_payment_progress_reader(request),
+            server_now=_write_off_clock(request)(),
+        )
     except PermissionError:
         return _redirect_candidates()
     return _render(
@@ -85,12 +92,26 @@ def admin_write_off_detail(
 
     locator = DebtId(debt_id)
     language = resolve_debt_web_language(request.headers.get("accept-language"))
+    server_now = _write_off_clock(request)()
+    progress_reader = _payment_progress_reader(request)
     try:
-        completed = present_admin_write_off_completed(db, actor=actor, debt_id=locator)
+        completed = present_admin_write_off_completed(
+            db,
+            actor=actor,
+            debt_id=locator,
+            progress_reader=progress_reader,
+            server_now=server_now,
+        )
         fresh = (
             None
             if completed is not None
-            else present_admin_write_off_fresh(db, actor=actor, debt_id=locator)
+            else present_admin_write_off_fresh(
+                db,
+                actor=actor,
+                debt_id=locator,
+                progress_reader=progress_reader,
+                server_now=server_now,
+            )
         )
     except PermissionError:
         return _redirect_candidates()
@@ -157,6 +178,7 @@ def admin_write_off_create(
                 session,
                 command=assembly.command,
                 rating_append_port=_rating_append_port(request),
+                posted_total_reader=_posted_total_reader(request, session),
                 clock=_write_off_clock(request),
             )
     except (PermissionError, WriteOffMutationRejected, RuntimeError, ValueError):
@@ -164,11 +186,23 @@ def admin_write_off_create(
     return _redirect_detail(debt_id)
 
 
-def _rating_append_port(request: Request) -> SqlAlchemyLockedRatingAppendAdapter:
+def _rating_append_port(request: Request) -> LockedWrittenOffRatingAppendPort:
     port = request.app.state.rating_append_port
-    if not isinstance(port, SqlAlchemyLockedRatingAppendAdapter):
+    if not isinstance(port, LockedWrittenOffRatingAppendPort):
         raise RuntimeError("Write-off rating adapter is unavailable")
     return port
+
+
+def _posted_total_reader(
+    request: Request, session: DatabaseSession
+) -> LockedDebtPostedTotalReadPort:
+    factory = request.app.state.locked_debt_posted_total_reader_factory
+    if not callable(factory):
+        raise RuntimeError("Write-off payment reader is unavailable")
+    reader = factory(session)
+    if not isinstance(reader, LockedDebtPostedTotalReadPort):
+        raise RuntimeError("Write-off payment reader is unavailable")
+    return reader
 
 
 def _write_off_clock(request: Request) -> Callable[[], datetime]:
@@ -176,6 +210,13 @@ def _write_off_clock(request: Request) -> Callable[[], datetime]:
     if not callable(clock):
         raise RuntimeError("Write-off clock is unavailable")
     return clock
+
+
+def _payment_progress_reader(request: Request) -> DebtWebPaymentProgressReader:
+    reader = request.app.state.debt_web_payment_progress_reader
+    if not isinstance(reader, DebtWebPaymentProgressReader):
+        raise RuntimeError("Write-off payment progress adapter is unavailable")
+    return reader
 
 
 def _render(

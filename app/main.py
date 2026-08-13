@@ -26,9 +26,13 @@ from app.payment.read_service import (
     get_customer_debt_web_detail_with_payment_progress,
     get_tenant_debt_detail_with_payment_progress,
     list_customer_debt_web_items_with_payment_progress,
+    list_payment_progress_for_debts,
     list_tenant_customer_debts_with_payment_progress,
 )
-from app.payment.repository import payment_open_set_reader_factory
+from app.payment.repository import (
+    SqlAlchemyLockedDebtPostedTotalReader,
+    payment_open_set_reader_factory,
+)
 from app.payment.router import router as payment_router
 from app.rating.adapters import SqlAlchemyLockedRatingAppendAdapter
 from app.rating.router import router as rating_router
@@ -76,6 +80,9 @@ def create_app(
         customer_document_storage_service
     )
     application.state.debt_open_set_reader_factory = payment_open_set_reader_factory
+    application.state.locked_debt_posted_total_reader_factory = (
+        SqlAlchemyLockedDebtPostedTotalReader
+    )
     application.state.debt_hard_block_reader_factory = (
         locked_customer_global_hard_block_reader_factory
     )
@@ -84,6 +91,7 @@ def create_app(
         get_tenant_debt_detail=get_tenant_debt_detail_with_payment_progress,
         list_customer_debt_web_items=list_customer_debt_web_items_with_payment_progress,
         get_customer_debt_web_detail=get_customer_debt_web_detail_with_payment_progress,
+        list_payment_progress_for_debts=list_payment_progress_for_debts,
     )
     application.state.rating_append_port = SqlAlchemyLockedRatingAppendAdapter()
     application.state.write_off_clock = lambda: datetime.now(UTC)

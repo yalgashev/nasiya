@@ -21,6 +21,7 @@ from app.debt.models import Debt
 from app.debt.write_off_service import write_off_overdue_debt
 from app.idempotency.models import IdempotencyKey
 from app.main import create_app
+from app.payment.repository import SqlAlchemyLockedDebtPostedTotalReader
 from app.rating.adapters import SqlAlchemyLockedRatingAppendAdapter
 from app.rating.models import RatingEvent
 from app.security_headers import AUTH_NO_STORE_CACHE_CONTROL, CONTENT_SECURITY_POLICY
@@ -358,6 +359,7 @@ def test_guessed_and_moved_admin_debt_locators_are_generic_unavailable(
             session,
             command=_command(other_admin, debt),
             rating_append_port=SqlAlchemyLockedRatingAppendAdapter(),
+            posted_total_reader=SqlAlchemyLockedDebtPostedTotalReader(session),
             clock=lambda: WRITTEN_OFF,
         )
 

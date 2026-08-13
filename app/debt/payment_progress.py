@@ -91,6 +91,7 @@ class DebtWebPaymentProgressReader:
     get_tenant_debt_detail: Callable[..., object | None]
     list_customer_debt_web_items: Callable[..., tuple[object, ...]]
     get_customer_debt_web_detail: Callable[..., object]
+    list_payment_progress_for_debts: Callable[..., dict[object, object]]
 
     def __post_init__(self) -> None:
         if not all(
@@ -100,6 +101,7 @@ class DebtWebPaymentProgressReader:
                 self.get_tenant_debt_detail,
                 self.list_customer_debt_web_items,
                 self.get_customer_debt_web_detail,
+                self.list_payment_progress_for_debts,
             )
         ):
             raise ValueError("Debt web payment progress reader is invalid")

@@ -26,7 +26,7 @@ def _source(relative_path: str) -> str:
     return (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
 
 
-def test_future_written_off_enum_is_allowlisted_but_not_m15_persistence() -> None:
+def test_m17_written_off_extension_is_exact_but_absent_from_m15_revision() -> None:
     assert DebtStatus.WRITTEN_OFF not in M15_PERSISTED_STATUSES
     assert DebtStatus.WRITTEN_OFF_SETTLED not in M15_PERSISTED_STATUSES
 
@@ -37,18 +37,35 @@ def test_future_written_off_enum_is_allowlisted_but_not_m15_persistence() -> Non
     }
     assert vocabulary_paths == {
         "app/audit/contracts.py",
+        "app/audit/models.py",
         "app/audit/redaction.py",
+        "app/audit/repository.py",
+        "app/debt/admin_write_off_presentation.py",
         "app/debt/contracts.py",
         "app/debt/enums.py",
+        "app/debt/models.py",
         "app/debt/payment_progress.py",
         "app/debt/policy.py",
         "app/debt/rating_ports.py",
+        "app/debt/repository.py",
+        "app/debt/router.py",
+        "app/debt/web_presentation.py",
+        "app/debt/write_off_core.py",
+        "app/debt/write_off_service.py",
+        "app/debt/write_off_targeting.py",
         "app/payment/contracts.py",
         "app/payment/policy.py",
+        "app/payment/presentation.py",
         "app/payment/rating_ports.py",
+        "app/payment/read_service.py",
+        "app/payment/router.py",
+        "app/payment/service.py",
         "app/payment/values.py",
+        "app/rating/adapters.py",
         "app/rating/contracts.py",
+        "app/rating/current_read_service.py",
         "app/rating/enums.py",
+        "app/rating/models.py",
         "app/rating/service.py",
     }
 

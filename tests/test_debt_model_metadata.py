@@ -24,7 +24,7 @@ def test_debt_and_idempotency_models_are_registered_for_runtime_and_alembic() ->
         )
 
 
-def test_debt_is_one_registered_pii_free_m15_table() -> None:
+def test_debt_is_one_registered_pii_free_table_with_exact_m17_extension() -> None:
     table = Debt.__table__
 
     assert Base.metadata.tables["debts"] is table
@@ -48,6 +48,12 @@ def test_debt_is_one_registered_pii_free_m15_table() -> None:
         "paid_at",
         "overdue_at",
         "overdue_revision",
+        "written_off_at",
+        "written_off_revision",
+        "written_off_reason",
+        "written_off_actor_user_id",
+        "written_off_settled_at",
+        "written_off_settled_revision",
         "created_at",
         "updated_at",
     )
@@ -84,6 +90,10 @@ def test_debt_columns_defaults_and_timestamps_are_exact() -> None:
     assert table.c.overdue_revision.nullable is True
     assert table.c.overdue_revision.default is None
     assert table.c.overdue_revision.server_default is None
+    assert isinstance(table.c.written_off_revision.type, Integer)
+    assert isinstance(table.c.written_off_settled_revision.type, Integer)
+    assert isinstance(table.c.written_off_reason.type, Text)
+    assert isinstance(table.c.written_off_actor_user_id.type, PostgresUUID)
     assert isinstance(table.c.rejection_reason.type, Text)
     assert isinstance(table.c.cancellation_reason.type, Text)
     assert table.c.rejection_reason.nullable is True
@@ -104,6 +114,8 @@ def test_debt_columns_defaults_and_timestamps_are_exact() -> None:
         "expired_at",
         "paid_at",
         "overdue_at",
+        "written_off_at",
+        "written_off_settled_at",
         "created_at",
         "updated_at",
     ):
@@ -145,7 +157,7 @@ def test_debt_constraints_indexes_and_foreign_keys_are_exact() -> None:
         ),
         "ck_debts_status_allowed": (
             "status IN ('pending', 'active', 'rejected', 'cancelled', 'expired', "
-            "'paid', 'overdue')"
+            "'paid', 'overdue', 'written_off', 'written_off_settled')"
         ),
         "ck_debts_revision_positive": "revision > 0",
         "ck_debts_rejection_reason_normalized": (
@@ -169,6 +181,15 @@ def test_debt_constraints_indexes_and_foreign_keys_are_exact() -> None:
         "ck_debts_overdue_metadata_pair",
         "ck_debts_overdue_revision_positive",
         "ck_debts_overdue_revision_not_after_revision",
+        "ck_debts_written_off_metadata_complete",
+        "ck_debts_written_off_reason_allowed",
+        "ck_debts_written_off_revision_positive",
+        "ck_debts_written_off_revision_not_after_revision",
+        "ck_debts_written_off_settled_metadata_pair",
+        "ck_debts_written_off_settled_revision_positive",
+        "ck_debts_written_off_settled_revision_not_after_revision",
+        "ck_debts_written_off_revision_chain",
+        "ck_debts_written_off_settled_revision_chain",
     }
     assert checks["ck_debts_overdue_metadata_pair"] == (
         "(overdue_at IS NULL) = (overdue_revision IS NULL)"
@@ -188,6 +209,8 @@ def test_debt_constraints_indexes_and_foreign_keys_are_exact() -> None:
         "status = 'expired'",
         "status = 'overdue'",
         "status = 'paid'",
+        "status = 'written_off'",
+        "status = 'written_off_settled'",
         "overdue_revision < revision",
     ):
         assert exact_shape in metadata
@@ -198,6 +221,8 @@ def test_debt_constraints_indexes_and_foreign_keys_are_exact() -> None:
         "overdue_at >= accepted_at",
         "updated_at >= overdue_at",
         "paid_at >= overdue_at",
+        "written_off_at >= overdue_at",
+        "written_off_settled_at >= written_off_at",
     ):
         assert exact_order in timestamp_order
     assert indexes == {
@@ -222,6 +247,11 @@ def test_debt_constraints_indexes_and_foreign_keys_are_exact() -> None:
             "debts.due_date",
             "debts.id",
         ),
+        "ix_debts_status_overdue_at_id": (
+            "debts.status",
+            "debts.overdue_at",
+            "debts.id",
+        ),
     }
     assert foreign_keys == {
         "fk_debts_shop_customer_id_shop_customers_id": (
@@ -229,6 +259,10 @@ def test_debt_constraints_indexes_and_foreign_keys_are_exact() -> None:
             "RESTRICT",
         ),
         "fk_debts_created_by_user_id_users_id": ("users.id", "RESTRICT"),
+        "fk_debts_written_off_actor_user_id_users_id": (
+            "users.id",
+            "RESTRICT",
+        ),
     }
     assert "Asia/Tashkent" in Debt.__doc__
     assert "due_date" not in checks["ck_debts_timestamp_order"]

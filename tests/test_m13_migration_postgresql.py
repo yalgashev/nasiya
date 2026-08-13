@@ -54,4 +54,4 @@ def test_m13_empty_downgrade_restores_m12_and_reupgrades(
                 == M12_REVISION
             )
     finally:
-        command.upgrade(config, M15_REVISION)
+        command.upgrade(config, "head")

@@ -10,6 +10,7 @@ import pytest
 from app.debt.contracts import DebtAggregate, DebtLifecycleError, WriteOffReason
 from app.debt.enums import DebtPaymentFailure, DebtStatus
 from app.debt.values import (
+    MAX_DEBT_AMOUNT_UZS,
     DebtId,
     DebtRevision,
     DiscountBasisPoints,
@@ -163,3 +164,46 @@ def test_effective_only_and_terminal_states_cannot_be_written_off_or_reversed() 
             payment_created_at=datetime(2026, 1, 8, tzinfo=UTC),
         )
     assert exc_info.value.failure is DebtPaymentFailure.NOT_PAYABLE
+
+
+@pytest.mark.parametrize(
+    "original_amount",
+    (Decimal("1"), MAX_DEBT_AMOUNT_UZS),
+)
+def test_immediate_same_instant_transitions_preserve_adjacent_revisions_and_bounds(
+    original_amount: Decimal,
+) -> None:
+    source = replace(
+        _overdue(),
+        original_amount=OriginalAmountUZS(original_amount),
+        discounted_amount=DiscountedAmountUZS(original_amount),
+        discount_basis_points=DiscountBasisPoints(0),
+    )
+    assert source.overdue_at is not None
+    written_off = source.mark_written_off(
+        now=source.overdue_at,
+        actor_user_id=uuid4(),
+        reason=WriteOffReason.COLLECTION_EXHAUSTED,
+        posted_total_uzs=Decimal("0"),
+        expected_revision=source.revision,
+    )
+    settled = written_off.record_written_off_recovery(
+        payment_amount_uzs=original_amount,
+        current_remaining_due_uzs=original_amount,
+        expected_revision=written_off.revision,
+        payment_created_at=source.overdue_at,
+    )
+
+    assert written_off.written_off_at == source.overdue_at
+    assert settled.written_off_settled_at == written_off.written_off_at
+    assert written_off.revision.value == source.revision.value + 1
+    assert settled.revision.value == written_off.revision.value + 1
+    assert settled.written_off_revision == written_off.revision
+    assert settled.written_off_settled_revision == settled.revision
+
+
+def test_recovery_money_contract_rejects_float_and_non_whole_uzs() -> None:
+    with pytest.raises(TypeError):
+        OriginalAmountUZS(1.0)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="whole UZS"):
+        OriginalAmountUZS(Decimal("1.5"))

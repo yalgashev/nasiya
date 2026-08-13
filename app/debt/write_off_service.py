@@ -17,6 +17,7 @@ from app.debt.commands import (
     WriteOffDebtFailure,
     WriteOffDebtMutationResult,
 )
+from app.debt.overdue_ports import LockedDebtPostedTotalReadPort
 from app.debt.rating_ports import (
     LockedWrittenOffRatingAppendPort,
     WrittenOffRatingAppendOutcome,
@@ -50,7 +51,6 @@ from app.idempotency.repository import (
     find_completed_key,
     insert_or_resolve_key,
 )
-from app.payment.repository import posted_payment_total
 from app.shop_customer.values import ShopCustomerId
 
 __all__ = ("WriteOffMutationRejected", "write_off_overdue_debt")
@@ -76,6 +76,7 @@ def write_off_overdue_debt(
     *,
     command: WriteOffDebtCommand,
     rating_append_port: LockedWrittenOffRatingAppendPort,
+    posted_total_reader: LockedDebtPostedTotalReadPort,
     clock: WriteOffClock | None = None,
 ) -> WriteOffDebtMutationResult:
     """Stage one Debt/-40/audit/key unit; the caller owns the transaction."""
@@ -84,6 +85,8 @@ def write_off_overdue_debt(
         raise TypeError("command must be a WriteOffDebtCommand")
     if not isinstance(rating_append_port, LockedWrittenOffRatingAppendPort):
         raise TypeError("rating_append_port must implement write-off append port")
+    if not isinstance(posted_total_reader, LockedDebtPostedTotalReadPort):
+        raise TypeError("posted_total_reader must implement locked Debt read port")
     server_clock = clock or _utc_now
     if not callable(server_clock):
         raise TypeError("clock must be callable")
@@ -139,6 +142,7 @@ def write_off_overdue_debt(
         debt=debt,
         rating_append_port=rating_append_port,
         rating_source=rating_source,
+        posted_total_reader=posted_total_reader,
     )
     occurred_at = _aware_utc(server_clock())
     try:
@@ -209,12 +213,13 @@ def _read_overdue_source_facts(
     debt: object,
     rating_append_port: LockedWrittenOffRatingAppendPort,
     rating_source,
+    posted_total_reader: LockedDebtPostedTotalReadPort,
 ) -> OverdueWriteOffSourceFacts:
     from app.debt.contracts import DebtAggregate
 
     if not isinstance(debt, DebtAggregate) or debt.overdue_at is None:
         return OverdueWriteOffSourceFacts(
-            posted_total_uzs=posted_payment_total(session, debt_id=debt.id).value,
+            posted_total_uzs=posted_total_reader.read_posted_total_uzs(debt_id=debt.id),
             has_unique_overdue_rating=False,
             has_exact_overdue_audit_pair=False,
         )
@@ -247,7 +252,7 @@ def _read_overdue_source_facts(
         )
     )
     return OverdueWriteOffSourceFacts(
-        posted_total_uzs=posted_payment_total(session, debt_id=debt.id).value,
+        posted_total_uzs=posted_total_reader.read_posted_total_uzs(debt_id=debt.id),
         has_unique_overdue_rating=rating_ok,
         has_exact_overdue_audit_pair=audit_ok,
     )

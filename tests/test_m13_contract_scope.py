@@ -15,6 +15,7 @@ FORBIDDEN_RUNTIME_IMPORTS = (
     "app.customer_identity",
 )
 RUNTIME_IMPORT_EXCEPTIONS = {
+    Path("app/debt/admin_write_off_router.py"): ("fastapi", "starlette"),
     Path("app/debt/dependencies.py"): ("fastapi",),
     Path("app/debt/router.py"): (
         "fastapi",

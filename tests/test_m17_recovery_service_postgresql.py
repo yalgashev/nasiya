@@ -1,5 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from threading import Barrier
 from uuid import UUID, uuid4
@@ -9,7 +9,9 @@ from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+import app.payment.service as payment_service
 from app.audit.models import AuditLog
+from app.auth.models import User
 from app.debt.business_time import tashkent_business_date
 from app.debt.models import Debt
 from app.debt.repository import (
@@ -17,15 +19,34 @@ from app.debt.repository import (
     locked_customer_global_hard_block_reader_factory,
 )
 from app.debt.values import CustomerId
-from app.idempotency.contracts import IdempotencyOutcome
+from app.idempotency.contracts import (
+    IdempotencyOutcome,
+    canonical_idempotency_key_digest,
+)
+from app.idempotency.models import IdempotencyKey
 from app.payment.commands import CreatePaymentV2RawForm, assemble_create_payment_request
 from app.payment.models import Payment
+from app.payment.repository import SqlAlchemyLockedDebtPostedTotalReader
 from app.payment.service import PaymentMutationRejected
+from app.rating.adapters import SqlAlchemyLockedRatingAppendAdapter
 from app.rating.current_read_service import read_locked_current_rating_state
+from app.rating.disclosure_service import record_risk_band_disclosure
 from app.rating.enums import RiskBand
-from app.rating.models import RatingEvent
+from app.rating.models import DisclosureViewLog, RatingEvent
 from app.shop_customer.models import ShopCustomer
 from tests.rating_support import record_debt_payment
+from tests.test_m16_disclosure_services_postgresql import (
+    Seed,
+)
+from tests.test_m16_disclosure_services_postgresql import (
+    _actor as _disclosure_actor,
+)
+from tests.test_m16_disclosure_services_postgresql import (
+    _command as _disclosure_command,
+)
+from tests.test_m17_write_off_service_postgresql import (
+    _command as _write_off_command,
+)
 from tests.test_payment_targeting_postgresql import _context, _seed_one
 
 OVERDUE_AT = datetime(2026, 8, 13, tzinfo=UTC)
@@ -284,6 +305,67 @@ def test_settlement_rating_fault_rolls_back_payment_debt_audits_and_key(
             )
             == 0
         )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "amount,fault_target",
+    (
+        ("400", "append_payment_recorded_audit"),
+        ("1000", "append_debt_written_off_settled_audit"),
+    ),
+)
+def test_recovery_audit_tail_fault_rolls_back_every_staged_row(
+    m2_test_database: Engine,
+    monkeypatch: pytest.MonkeyPatch,
+    amount: str,
+    fault_target: str,
+) -> None:
+    actor_id, shop_id, debt_id = _seed_written_off_source(m2_test_database)
+    actor, command = _command(
+        actor_id=actor_id,
+        shop_id=shop_id,
+        debt_id=debt_id,
+        amount=amount,
+        revision=4,
+        key=uuid4(),
+    )
+
+    def fail_audit(*args, **kwargs):
+        raise RuntimeError("synthetic recovery audit fault")
+
+    monkeypatch.setattr(payment_service, fault_target, fail_audit)
+    with pytest.raises(RuntimeError, match="synthetic recovery audit fault"):
+        with Session(m2_test_database) as session, session.begin():
+            record_debt_payment(
+                session,
+                actor=actor,
+                command=command,
+                payment_clock=lambda: SETTLED_AT,
+            )
+
+    with Session(m2_test_database) as session:
+        debt = session.get_one(Debt, debt_id)
+        assert debt.status == "written_off" and debt.revision == 4
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(Payment)
+                .where(Payment.debt_id == debt_id)
+            )
+            == 0
+        )
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(RatingEvent)
+                .where(
+                    RatingEvent.debt_id == debt_id,
+                    RatingEvent.event_type == "written_off_settled",
+                )
+            )
+            == 0
+        )
         assert (
             session.scalar(
                 select(func.count())
@@ -356,3 +438,148 @@ def test_two_terminal_attempts_serialize_to_one_payment_and_one_plus_ten(
             )
             == 1
         )
+
+
+@pytest.mark.integration
+def test_settlement_keeps_old_blocked_snapshot_and_fresh_view_is_numeric(
+    m2_test_database: Engine,
+) -> None:
+    actor_id, shop_id, debt_id = _seed_written_off_source(m2_test_database)
+    with Session(m2_test_database) as session, session.begin():
+        relation_id = session.get_one(Debt, debt_id).shop_customer_id
+        seed = Seed(actor_id, shop_id, relation_id)
+        old = record_risk_band_disclosure(
+            session,
+            actor=_disclosure_actor(seed),
+            command=_disclosure_command(seed),
+            disclosure_clock=lambda: PARTIAL_AT,
+        )
+        old_id = old.disclosure_view_id.as_uuid()
+        assert session.get_one(DisclosureViewLog, old_id).band == "blocked"
+
+    actor, settlement = _command(
+        actor_id=actor_id,
+        shop_id=shop_id,
+        debt_id=debt_id,
+        amount="1000",
+        revision=4,
+        key=uuid4(),
+    )
+    with Session(m2_test_database) as session, session.begin():
+        record_debt_payment(
+            session,
+            actor=actor,
+            command=settlement,
+            payment_clock=lambda: SETTLED_AT,
+        )
+
+    with Session(m2_test_database) as session, session.begin():
+        seed = Seed(actor_id, shop_id, relation_id)
+        fresh = record_risk_band_disclosure(
+            session,
+            actor=_disclosure_actor(seed),
+            command=_disclosure_command(seed),
+            disclosure_clock=lambda: SETTLED_AT,
+        )
+        assert session.get_one(DisclosureViewLog, old_id).band == "blocked"
+        assert (
+            session.get_one(DisclosureViewLog, fresh.disclosure_view_id.as_uuid()).band
+            == "red"
+        )
+        session.add(
+            Debt(
+                id=uuid4(),
+                shop_customer_id=relation_id,
+                created_by_user_id=actor_id,
+                original_amount_uzs=Decimal("1"),
+                discount_basis_points=0,
+                discounted_amount_uzs=Decimal("1"),
+                due_date=date(2026, 8, 15),
+                pending_expires_at=OVERDUE_AT + timedelta(days=1),
+                status="active",
+                revision=2,
+                accepted_at=OVERDUE_AT,
+                created_at=OVERDUE_AT - timedelta(days=2),
+                updated_at=OVERDUE_AT,
+            )
+        )
+        session.flush()
+        blocked_again = record_risk_band_disclosure(
+            session,
+            actor=_disclosure_actor(seed),
+            command=_disclosure_command(seed),
+            disclosure_clock=lambda: SETTLED_AT,
+        )
+        assert (
+            session.get_one(
+                DisclosureViewLog, blocked_again.disclosure_view_id.as_uuid()
+            ).band
+            == "blocked"
+        )
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(RatingEvent)
+                .where(
+                    RatingEvent.debt_id == debt_id,
+                    RatingEvent.event_type == "written_off_settled",
+                )
+            )
+            == 1
+        )
+
+
+@pytest.mark.integration
+def test_original_admin_write_off_key_replays_after_later_settlement(
+    m2_test_database: Engine,
+) -> None:
+    actor_id, shop_id, debt_id = _seed_written_off_source(m2_test_database)
+    key = uuid4()
+    with Session(m2_test_database) as session, session.begin():
+        actor_row = session.get_one(User, actor_id)
+        actor_row.is_platform_admin = True
+        session.flush()
+        debt = session.get_one(Debt, debt_id)
+        write_off_command = _write_off_command(actor_row, debt, key=key)
+        session.add(
+            IdempotencyKey(
+                actor_user_id=actor_id,
+                endpoint="admin.debts.write_off",
+                key_digest=canonical_idempotency_key_digest(
+                    write_off_command.idempotency_key
+                ).value,
+                request_hash=write_off_command.request_hash.value,
+                result_object_type="debt",
+                result_object_id=debt_id,
+                created_at=WRITTEN_OFF_AT,
+            )
+        )
+
+    payment_actor, settlement = _command(
+        actor_id=actor_id,
+        shop_id=shop_id,
+        debt_id=debt_id,
+        amount="1000",
+        revision=4,
+        key=uuid4(),
+    )
+    with Session(m2_test_database) as session, session.begin():
+        record_debt_payment(
+            session,
+            actor=payment_actor,
+            command=settlement,
+            payment_clock=lambda: SETTLED_AT,
+        )
+
+    from app.debt.write_off_service import write_off_overdue_debt
+
+    with Session(m2_test_database) as session, session.begin():
+        replay = write_off_overdue_debt(
+            session,
+            command=write_off_command,
+            rating_append_port=SqlAlchemyLockedRatingAppendAdapter(),
+            posted_total_reader=SqlAlchemyLockedDebtPostedTotalReader(session),
+            clock=lambda: (_ for _ in ()).throw(AssertionError("clock called")),
+        )
+        assert replay.outcome is IdempotencyOutcome.REPLAY
+        assert session.get_one(Debt, debt_id).status == "written_off_settled"
