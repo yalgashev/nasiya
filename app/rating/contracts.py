@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from uuid import UUID
 
 from app.debt.business_time import tashkent_business_date
-from app.debt.values import DebtId
+from app.debt.values import DebtId, DebtRevision
 from app.rating.enums import (
     RatingEventAppendOutcome,
     RatingEventType,
@@ -22,12 +23,14 @@ from app.shop_customer.values import ShopCustomerId
 __all__ = (
     "RatingEvent",
     "RatingEventAppendResult",
+    "RatingCompensationSourceProof",
     "RatingEventOrderKey",
     "RatingSnapshot",
     "RatingEventValue",
     "RiskBandDisclosureProjection",
     "create_on_time_paid_rating_event",
     "create_overdue_rating_event",
+    "create_rating_compensation_event",
     "create_written_off_rating_event",
     "create_written_off_settled_rating_event",
     "numeric_risk_band",
@@ -103,6 +106,7 @@ class RatingEventOrderKey:
     occurred_at: datetime
     debt_id: DebtId = field(repr=False)
     event_type: RatingEventType
+    source_revision: DebtRevision
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -117,12 +121,15 @@ class RatingEventOrderKey:
             raise ValueError("Rating event order Debt is invalid")
         if not isinstance(self.event_type, RatingEventType):
             raise ValueError("Rating event order type is invalid")
+        if not isinstance(self.source_revision, DebtRevision):
+            raise ValueError("Rating event order source revision is invalid")
 
-    def as_sort_key(self) -> tuple[datetime, int, str]:
+    def as_sort_key(self) -> tuple[datetime, int, str, int]:
         return (
             self.occurred_at,
             self.debt_id.as_uuid().int,
             self.event_type.value,
+            self.source_revision.value,
         )
 
     def __repr__(self) -> str:
@@ -141,6 +148,7 @@ class RatingEvent:
     occurred_at: datetime
     business_date: date
     recording_source: RatingRecordingSource
+    source_revision: DebtRevision
 
     def __post_init__(self) -> None:
         if not isinstance(self.id, RatingEventId):
@@ -149,6 +157,8 @@ class RatingEvent:
             raise ValueError("Rating event ShopCustomer is invalid")
         if not isinstance(self.debt_id, DebtId):
             raise ValueError("Rating event Debt is invalid")
+        if not isinstance(self.source_revision, DebtRevision):
+            raise ValueError("Rating event source revision is invalid")
         value = RatingEventValue(
             event_type=self.event_type,
             recording_source=self.recording_source,
@@ -164,11 +174,12 @@ class RatingEvent:
             occurred_at=self.occurred_at,
             debt_id=self.debt_id,
             event_type=self.event_type,
+            source_revision=self.source_revision,
         )
 
     @property
-    def source_key(self) -> tuple[DebtId, RatingEventType]:
-        return (self.debt_id, self.event_type)
+    def source_key(self) -> tuple[DebtId, RatingEventType, DebtRevision]:
+        return (self.debt_id, self.event_type, self.source_revision)
 
     def __repr__(self) -> str:
         return "RatingEvent(<redacted>)"
@@ -236,6 +247,7 @@ def create_on_time_paid_rating_event(
     shop_customer_id: ShopCustomerId,
     debt_id: DebtId,
     payment_created_at: datetime,
+    source_revision: DebtRevision,
     recording_source: RatingRecordingSource,
 ) -> RatingEvent:
     return _create_source_event(
@@ -244,6 +256,7 @@ def create_on_time_paid_rating_event(
         debt_id=debt_id,
         event_type=RatingEventType.ON_TIME_PAID,
         source_occurred_at=payment_created_at,
+        source_revision=source_revision,
         recording_source=recording_source,
     )
 
@@ -254,6 +267,7 @@ def create_overdue_rating_event(
     shop_customer_id: ShopCustomerId,
     debt_id: DebtId,
     overdue_at: datetime,
+    source_revision: DebtRevision,
     recording_source: RatingRecordingSource,
 ) -> RatingEvent:
     return _create_source_event(
@@ -262,6 +276,7 @@ def create_overdue_rating_event(
         debt_id=debt_id,
         event_type=RatingEventType.OVERDUE,
         source_occurred_at=overdue_at,
+        source_revision=source_revision,
         recording_source=recording_source,
     )
 
@@ -272,6 +287,7 @@ def create_written_off_rating_event(
     shop_customer_id: ShopCustomerId,
     debt_id: DebtId,
     written_off_at: datetime,
+    source_revision: DebtRevision,
 ) -> RatingEvent:
     return _create_source_event(
         event_id=event_id,
@@ -279,6 +295,7 @@ def create_written_off_rating_event(
         debt_id=debt_id,
         event_type=RatingEventType.WRITTEN_OFF,
         source_occurred_at=written_off_at,
+        source_revision=source_revision,
         recording_source=RatingRecordingSource.LIVE,
     )
 
@@ -289,6 +306,7 @@ def create_written_off_settled_rating_event(
     shop_customer_id: ShopCustomerId,
     debt_id: DebtId,
     written_off_settled_at: datetime,
+    source_revision: DebtRevision,
 ) -> RatingEvent:
     return _create_source_event(
         event_id=event_id,
@@ -296,6 +314,7 @@ def create_written_off_settled_rating_event(
         debt_id=debt_id,
         event_type=RatingEventType.WRITTEN_OFF_SETTLED,
         source_occurred_at=written_off_settled_at,
+        source_revision=source_revision,
         recording_source=RatingRecordingSource.LIVE,
     )
 
@@ -307,6 +326,7 @@ def _create_source_event(
     debt_id: DebtId,
     event_type: RatingEventType,
     source_occurred_at: datetime,
+    source_revision: DebtRevision,
     recording_source: RatingRecordingSource,
 ) -> RatingEvent:
     value = RatingEventValue.from_occurred_at(
@@ -323,6 +343,97 @@ def _create_source_event(
         occurred_at=value.occurred_at,
         business_date=value.business_date,
         recording_source=value.recording_source,
+        source_revision=source_revision,
+    )
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class RatingCompensationSourceProof:
+    """Exact Payment, positive RatingEvent, and Debt audit source chain."""
+
+    payment_id: UUID = field(repr=False)
+    payment_debt_id: DebtId = field(repr=False)
+    payment_shop_customer_id: ShopCustomerId = field(repr=False)
+    payment_revision: DebtRevision
+    payment_created_at: datetime
+    positive_event: RatingEvent = field(repr=False)
+    audit_event_type: str
+    audit_debt_id: DebtId = field(repr=False)
+    audit_revision: DebtRevision
+    audit_occurred_at: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.payment_id, UUID):
+            raise ValueError("Rating compensation Payment identity is invalid")
+        if not isinstance(self.payment_revision, DebtRevision):
+            raise ValueError("Rating compensation Payment revision is invalid")
+        if not isinstance(self.payment_debt_id, DebtId):
+            raise ValueError("Rating compensation Payment Debt is invalid")
+        if not isinstance(self.payment_shop_customer_id, ShopCustomerId):
+            raise ValueError("Rating compensation Payment relation is invalid")
+        payment_created_at = _normalize_aware_utc(
+            self.payment_created_at,
+            field_name="Rating compensation Payment time",
+        )
+        if not isinstance(self.positive_event, RatingEvent):
+            raise ValueError("Rating compensation positive event is invalid")
+        expected_audit = {
+            RatingEventType.ON_TIME_PAID: "debt.paid",
+            RatingEventType.WRITTEN_OFF_SETTLED: "debt.written_off_settled",
+        }.get(self.positive_event.event_type)
+        if expected_audit is None:
+            raise ValueError("Rating event is not compensable")
+        if self.audit_event_type != expected_audit:
+            raise ValueError("Rating compensation audit type is incoherent")
+        if not isinstance(self.audit_debt_id, DebtId):
+            raise ValueError("Rating compensation audit Debt is invalid")
+        if not isinstance(self.audit_revision, DebtRevision):
+            raise ValueError("Rating compensation audit revision is invalid")
+        audit_occurred_at = _normalize_aware_utc(
+            self.audit_occurred_at,
+            field_name="Rating compensation audit time",
+        )
+        if (
+            self.positive_event.source_revision != self.payment_revision
+            or self.positive_event.debt_id != self.payment_debt_id
+            or self.positive_event.shop_customer_id != self.payment_shop_customer_id
+            or self.audit_debt_id != self.payment_debt_id
+            or self.audit_revision != self.payment_revision
+            or self.positive_event.occurred_at != payment_created_at
+            or audit_occurred_at != payment_created_at
+        ):
+            raise ValueError("Rating compensation source chain is incoherent")
+        object.__setattr__(self, "payment_created_at", payment_created_at)
+        object.__setattr__(self, "audit_occurred_at", audit_occurred_at)
+
+    def __repr__(self) -> str:
+        return "RatingCompensationSourceProof(<redacted>)"
+
+
+def create_rating_compensation_event(
+    *,
+    event_id: RatingEventId,
+    source: RatingCompensationSourceProof,
+    voided_at: datetime,
+) -> RatingEvent:
+    """Create only an exact -5/-10 counterpart to a proven positive source."""
+
+    if not isinstance(source, RatingCompensationSourceProof):
+        raise TypeError("source must be a RatingCompensationSourceProof")
+    event_type = {
+        RatingEventType.ON_TIME_PAID: RatingEventType.ON_TIME_PAID_VOIDED,
+        RatingEventType.WRITTEN_OFF_SETTLED: (
+            RatingEventType.WRITTEN_OFF_SETTLED_VOIDED
+        ),
+    }[source.positive_event.event_type]
+    return _create_source_event(
+        event_id=event_id,
+        shop_customer_id=source.positive_event.shop_customer_id,
+        debt_id=source.positive_event.debt_id,
+        event_type=event_type,
+        source_occurred_at=voided_at,
+        source_revision=source.payment_revision,
+        recording_source=RatingRecordingSource.LIVE,
     )
 
 

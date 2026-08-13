@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 
 from app.debt.rating_ports import PendingWrittenOffRatingEffect
-from app.debt.values import DebtId
+from app.debt.values import DebtId, DebtRevision
 from app.payment.rating_ports import PendingWrittenOffSettledRatingEffect
 from app.rating.contracts import (
     create_on_time_paid_rating_event,
@@ -32,6 +32,7 @@ def _chain(*types: RatingEventType):
             debt_id=debt_id,
             payment_created_at=base,
             recording_source=RatingRecordingSource.LIVE,
+            source_revision=DebtRevision(2),
         ),
         RatingEventType.OVERDUE: lambda: create_overdue_rating_event(
             event_id=RatingEventId(uuid4()),
@@ -39,12 +40,14 @@ def _chain(*types: RatingEventType):
             debt_id=debt_id,
             overdue_at=base,
             recording_source=RatingRecordingSource.LIVE,
+            source_revision=DebtRevision(3),
         ),
         RatingEventType.WRITTEN_OFF: lambda: create_written_off_rating_event(
             event_id=RatingEventId(uuid4()),
             shop_customer_id=shop_customer_id,
             debt_id=debt_id,
             written_off_at=base,
+            source_revision=DebtRevision(4),
         ),
         RatingEventType.WRITTEN_OFF_SETTLED: (
             lambda: create_written_off_settled_rating_event(
@@ -52,6 +55,7 @@ def _chain(*types: RatingEventType):
                 shop_customer_id=shop_customer_id,
                 debt_id=debt_id,
                 written_off_settled_at=base,
+                source_revision=DebtRevision(5),
             )
         ),
     }
@@ -102,12 +106,14 @@ def test_m17_factories_and_pending_effects_use_exact_source_instant() -> None:
         shop_customer_id=shop_customer_id,
         debt_id=debt_id,
         written_off_at=instant,
+        source_revision=DebtRevision(4),
     )
     settled = create_written_off_settled_rating_event(
         event_id=RatingEventId(uuid4()),
         shop_customer_id=shop_customer_id,
         debt_id=debt_id,
         written_off_settled_at=instant,
+        source_revision=DebtRevision(5),
     )
     assert (written_off.delta, settled.delta) == (-40, 10)
     assert written_off.recording_source is RatingRecordingSource.LIVE
@@ -117,12 +123,14 @@ def test_m17_factories_and_pending_effects_use_exact_source_instant() -> None:
         debt_id=debt_id,
         shop_customer_id=shop_customer_id,
         written_off_at=instant,
+        source_revision=DebtRevision(4),
     )
     settlement_effect = PendingWrittenOffSettledRatingEffect(
         event_id=uuid4(),
         debt_id=debt_id,
         shop_customer_id=shop_customer_id,
         payment_created_at=instant,
+        source_revision=DebtRevision(5),
     )
     assert effect.written_off_at == instant
     assert settlement_effect.payment_created_at == instant
@@ -150,12 +158,14 @@ def test_tashkent_midnight_and_equal_instant_chain_use_authoritative_order() -> 
         shop_customer_id=relation,
         debt_id=first_debt,
         written_off_at=before_midnight,
+        source_revision=DebtRevision(4),
     )
     after = create_written_off_settled_rating_event(
         event_id=RatingEventId(uuid4()),
         shop_customer_id=relation,
         debt_id=first_debt,
         written_off_settled_at=at_midnight,
+        source_revision=DebtRevision(5),
     )
     assert before.business_date == date(2026, 8, 13)
     assert after.business_date == date(2026, 8, 14)
@@ -167,6 +177,7 @@ def test_tashkent_midnight_and_equal_instant_chain_use_authoritative_order() -> 
             debt_id=DebtId(uuid4()),
             payment_created_at=datetime(2025, 12, day, tzinfo=UTC),
             recording_source=RatingRecordingSource.LIVE,
+            source_revision=DebtRevision(day),
         )
         for day in range(1, 9)
     )
@@ -199,6 +210,7 @@ def test_m17_deltas_clamp_after_each_event_not_only_after_final_sum() -> None:
             occurred_at=event.occurred_at + timedelta(days=1),
             business_date=event.business_date + timedelta(days=1),
             recording_source=event.recording_source,
+            source_revision=event.source_revision,
         )
         for event in second
     )

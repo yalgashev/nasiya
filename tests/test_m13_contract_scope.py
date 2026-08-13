@@ -24,6 +24,12 @@ RUNTIME_IMPORT_EXCEPTIONS = {
         "app.rating.presentation",
     ),
     Path("app/idempotency/repository.py"): ("app.rating.values",),
+    # M18's closed void request hash owns only these two payment value imports;
+    # persistence and producer dependencies remain forbidden here.
+    Path("app/idempotency/contracts.py"): (
+        "app.payment.enums",
+        "app.payment.values",
+    ),
 }
 
 

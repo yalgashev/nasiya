@@ -63,11 +63,12 @@ def test_error_catalog_contains_only_stable_codes() -> None:
         ErrorCode.DEBT_EXPIRED,
         ErrorCode.IDEMPOTENCY_CONFLICT,
         ErrorCode.PAYMENT_UNAVAILABLE,
+        ErrorCode.PAYMENT_NOT_VOIDABLE,
         ErrorCode.PAYMENT_AMOUNT_EXCEEDS_BALANCE,
         ErrorCode.DEBT_CHANGED,
         ErrorCode.DEBT_NOT_PAYABLE,
     }
-    assert len(ERROR_CATALOG) == 52
+    assert len(ERROR_CATALOG) == 53
 
 
 def test_error_code_values_are_stable() -> None:
@@ -121,6 +122,7 @@ def test_error_code_values_are_stable() -> None:
         "DEBT_EXPIRED",
         "IDEMPOTENCY_CONFLICT",
         "PAYMENT_UNAVAILABLE",
+        "PAYMENT_NOT_VOIDABLE",
         "PAYMENT_AMOUNT_EXCEEDS_BALANCE",
         "DEBT_CHANGED",
         "DEBT_NOT_PAYABLE",
@@ -170,6 +172,7 @@ def test_error_code_values_are_stable() -> None:
         (ErrorCode.SHOP_CUSTOMER_UNAVAILABLE, 404),
         (ErrorCode.SHOP_CUSTOMER_CHANGED, 409),
         (ErrorCode.PAYMENT_UNAVAILABLE, 404),
+        (ErrorCode.PAYMENT_NOT_VOIDABLE, 409),
         (ErrorCode.PAYMENT_AMOUNT_EXCEEDS_BALANCE, 409),
         (ErrorCode.DEBT_CHANGED, 409),
         (ErrorCode.DEBT_NOT_PAYABLE, 409),
@@ -304,6 +307,10 @@ def test_error_http_status_mapping_is_stable(
             "Mijoz bog'lanishi o'zgargan. Sahifani yangilang.",
         ),
         (ErrorCode.PAYMENT_UNAVAILABLE, "To'lov hozir mavjud emas."),
+        (
+            ErrorCode.PAYMENT_NOT_VOIDABLE,
+            "Bu to'lovni hozir bekor qilib bo'lmaydi.",
+        ),
         (
             ErrorCode.PAYMENT_AMOUNT_EXCEEDS_BALANCE,
             "To'lov summasi qolgan qarzdan oshadi.",

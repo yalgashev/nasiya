@@ -23,12 +23,14 @@ __all__ = (
     "PaymentAmountUZS",
     "PaymentExposureUZS",
     "PaymentId",
+    "PaymentVoidMoney",
     "PostedPaymentTotalUZS",
     "RemainingDueUZS",
     "calculate_payment_exposure",
     "calculate_clawback_increase",
     "calculate_discounted_remaining_due",
     "calculate_overdue_remaining_due",
+    "calculate_payment_void_money",
     "calculate_remaining_due",
     "calculate_remaining_due_for_basis",
     "open_debt_count_contribution",
@@ -120,10 +122,79 @@ class PaymentExposureUZS:
         return "<redacted>"
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class PaymentVoidMoney:
+    """Exact before/target/after money proof for one append-only void."""
+
+    posted_total_before: PostedPaymentTotalUZS
+    target_amount: PaymentAmountUZS
+    posted_total_after: PostedPaymentTotalUZS
+    remaining_due_after: RemainingDueUZS
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.posted_total_before, PostedPaymentTotalUZS):
+            raise TypeError("Pre-void posted total must be a PostedPaymentTotalUZS")
+        if not isinstance(self.target_amount, PaymentAmountUZS):
+            raise TypeError("Void target amount must be a PaymentAmountUZS")
+        if not isinstance(self.posted_total_after, PostedPaymentTotalUZS):
+            raise TypeError("Post-void posted total must be a PostedPaymentTotalUZS")
+        if not isinstance(self.remaining_due_after, RemainingDueUZS):
+            raise TypeError("Post-void remaining due must be a RemainingDueUZS")
+        if (
+            self.posted_total_before.value - self.target_amount.value
+            != self.posted_total_after.value
+        ):
+            raise IncoherentPaymentLedgerError(
+                "Post-void total must equal pre-void total minus target amount"
+            )
+        if self.remaining_due_after.value <= _ZERO_UZS:
+            raise IncoherentPaymentLedgerError(
+                "Payment void must restore a positive remaining balance"
+            )
+
+    def __repr__(self) -> str:
+        return "PaymentVoidMoney(<redacted>)"
+
+
 def parse_payment_amount_uzs(value: str) -> PaymentAmountUZS:
     if not isinstance(value, str) or _WHOLE_UZS_INPUT_PATTERN.fullmatch(value) is None:
         raise ValueError("Payment amount must be ASCII whole UZS")
     return PaymentAmountUZS(Decimal(value))
+
+
+def calculate_payment_void_money(
+    *,
+    posted_total_before: PostedPaymentTotalUZS,
+    target_amount: PaymentAmountUZS,
+    resulting_balance_basis: DebtBalanceBasis,
+    original_amount: OriginalAmountUZS,
+    discounted_amount: DiscountedAmountUZS,
+) -> PaymentVoidMoney:
+    """Subtract exactly one positive Payment and require a reopened balance."""
+
+    if not isinstance(posted_total_before, PostedPaymentTotalUZS):
+        raise TypeError("Pre-void posted total must be a PostedPaymentTotalUZS")
+    if not isinstance(target_amount, PaymentAmountUZS):
+        raise TypeError("Void target amount must be a PaymentAmountUZS")
+    if target_amount.value > posted_total_before.value:
+        raise IncoherentPaymentLedgerError(
+            "Void target amount exceeds pre-void posted total"
+        )
+    posted_total_after = PostedPaymentTotalUZS(
+        posted_total_before.value - target_amount.value
+    )
+    remaining_due_after = calculate_remaining_due_for_basis(
+        basis=resulting_balance_basis,
+        original_amount=original_amount,
+        discounted_amount=discounted_amount,
+        posted_total=posted_total_after,
+    )
+    return PaymentVoidMoney(
+        posted_total_before=posted_total_before,
+        target_amount=target_amount,
+        posted_total_after=posted_total_after,
+        remaining_due_after=remaining_due_after,
+    )
 
 
 def calculate_remaining_due(

@@ -136,6 +136,7 @@ def test_m16_endpoint_result_vocabularies_and_generic_result_are_exact() -> None
         IdempotencyEndpoint.SHOP_DEBT_PAYMENTS_CREATE,
         IdempotencyEndpoint.SHOP_RISK_BAND_DISCLOSURES_CREATE,
         IdempotencyEndpoint.ADMIN_DEBTS_WRITE_OFF,
+        IdempotencyEndpoint.SHOP_PAYMENTS_VOID,
     )
     assert tuple(IdempotencyResultType) == (
         IdempotencyResultType.DEBT,

@@ -384,6 +384,7 @@ def record_debt_payment(
                     debt_id=debt.id,
                     shop_customer_id=debt.shop_customer_id,
                     payment_created_at=payment.created_at,
+                    source_revision=payment.debt_revision_after,
                 ),
             )
             if settlement_outcome is not WrittenOffSettledRatingAppendOutcome.APPENDED:
@@ -447,6 +448,7 @@ def record_debt_payment(
                         shop_customer_id=debt.shop_customer_id,
                         payment_created_at=payment.created_at,
                         payment_business_date=payment_business_date,
+                        source_revision=payment.debt_revision_after,
                     ),
                 )
                 if rating_outcome not in {

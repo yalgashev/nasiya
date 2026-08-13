@@ -23,7 +23,7 @@ from app.debt.values import (
     OriginalAmountUZS,
 )
 from app.offers.enums import OfferLanguage
-from app.payment.enums import PaymentMethod
+from app.payment.enums import PaymentMethod, PaymentVoidReason
 from app.payment.values import PaymentAmountUZS
 from app.shop_customer.contracts import (
     ShopCustomerPolicy,
@@ -56,7 +56,9 @@ class AuditEventType(StrEnum):
     DEBT_OVERDUE = "debt.overdue"
     DEBT_CLAWBACK_APPLIED = "debt.clawback_applied"
     PAYMENT_RECORDED = "payment.recorded"
+    PAYMENT_VOIDED = "payment.voided"
     DEBT_PAID = "debt.paid"
+    DEBT_REOPENED_AFTER_PAYMENT_VOID = "debt.reopened_after_payment_void"
     DEBT_WRITTEN_OFF = "debt.written_off"
     DEBT_WRITTEN_OFF_SETTLED = "debt.written_off_settled"
     DISCLOSURE_RISK_BAND_VIEWED = "disclosure.risk_band_viewed"
@@ -111,7 +113,9 @@ _EVENT_OBJECT_TYPES: Final[Mapping[AuditEventType, AuditObjectType]] = MappingPr
         AuditEventType.DEBT_OVERDUE: AuditObjectType.DEBT,
         AuditEventType.DEBT_CLAWBACK_APPLIED: AuditObjectType.DEBT,
         AuditEventType.PAYMENT_RECORDED: AuditObjectType.PAYMENT,
+        AuditEventType.PAYMENT_VOIDED: AuditObjectType.PAYMENT,
         AuditEventType.DEBT_PAID: AuditObjectType.DEBT,
+        AuditEventType.DEBT_REOPENED_AFTER_PAYMENT_VOID: AuditObjectType.DEBT,
         AuditEventType.DEBT_WRITTEN_OFF: AuditObjectType.DEBT,
         AuditEventType.DEBT_WRITTEN_OFF_SETTLED: AuditObjectType.DEBT,
         AuditEventType.DISCLOSURE_RISK_BAND_VIEWED: (AuditObjectType.DISCLOSURE_VIEW),
@@ -382,6 +386,148 @@ class DebtPaidAuditPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class PaymentVoidedAuditPayload:
+    reason: PaymentVoidReason
+    from_status: DebtStatus
+    to_status: DebtStatus
+    debt_revision_after: DebtRevision
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.reason, PaymentVoidReason):
+            raise ValueError("Payment void audit reason is invalid")
+        allowed_targets = {
+            DebtStatus.ACTIVE: frozenset({DebtStatus.ACTIVE}),
+            DebtStatus.OVERDUE: frozenset({DebtStatus.OVERDUE}),
+            DebtStatus.WRITTEN_OFF: frozenset({DebtStatus.WRITTEN_OFF}),
+            DebtStatus.PAID: frozenset({DebtStatus.ACTIVE, DebtStatus.OVERDUE}),
+            DebtStatus.WRITTEN_OFF_SETTLED: frozenset({DebtStatus.WRITTEN_OFF}),
+        }
+        if self.to_status not in allowed_targets.get(self.from_status, frozenset()):
+            raise ValueError("Payment void audit transition is invalid")
+        if not isinstance(self.debt_revision_after, DebtRevision):
+            raise ValueError("Payment void audit revision is invalid")
+
+    def as_candidate_metadata(self) -> Mapping[str, object]:
+        return MappingProxyType(
+            {
+                "reason": self.reason.value,
+                "from_status": self.from_status.value,
+                "to_status": self.to_status.value,
+                "debt_revision_after": self.debt_revision_after.value,
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DebtReopenedAfterPaymentVoidAuditPayload:
+    from_status: DebtStatus
+    to_status: DebtStatus
+    debt_revision_after: DebtRevision
+    source: DebtOverdueSource = field(
+        default=DebtOverdueSource.PAYMENT_VOID, init=False
+    )
+
+    def __post_init__(self) -> None:
+        allowed_pairs = {
+            (DebtStatus.PAID, DebtStatus.ACTIVE),
+            (DebtStatus.PAID, DebtStatus.OVERDUE),
+            (DebtStatus.WRITTEN_OFF_SETTLED, DebtStatus.WRITTEN_OFF),
+        }
+        if (self.from_status, self.to_status) not in allowed_pairs:
+            raise ValueError("Payment void reopen audit transition is invalid")
+        if not isinstance(self.debt_revision_after, DebtRevision):
+            raise ValueError("Payment void reopen audit revision is invalid")
+
+    def as_candidate_metadata(self) -> Mapping[str, object]:
+        return MappingProxyType(
+            {
+                "source": self.source.value,
+                "from_status": self.from_status.value,
+                "to_status": self.to_status.value,
+                "debt_revision_after": self.debt_revision_after.value,
+            }
+        )
+
+
+def create_payment_voided_audit_event(
+    *,
+    actor_user_id: UUID,
+    payment_id: UUID,
+    occurred_at: datetime,
+    voided_at: datetime,
+    current_revision: DebtRevision,
+    payload: PaymentVoidedAuditPayload,
+) -> AuditEvent:
+    if not isinstance(payload, PaymentVoidedAuditPayload):
+        raise ValueError("Payment void audit payload is invalid")
+    return _create_payment_void_user_audit(
+        event_type=AuditEventType.PAYMENT_VOIDED,
+        object_type=AuditObjectType.PAYMENT,
+        object_id=payment_id,
+        actor_user_id=actor_user_id,
+        occurred_at=occurred_at,
+        voided_at=voided_at,
+        current_revision=current_revision,
+        payload_revision=payload.debt_revision_after,
+        metadata=payload.as_candidate_metadata(),
+    )
+
+
+def create_debt_reopened_after_payment_void_audit_event(
+    *,
+    actor_user_id: UUID,
+    debt_id: UUID,
+    occurred_at: datetime,
+    voided_at: datetime,
+    current_revision: DebtRevision,
+    payload: DebtReopenedAfterPaymentVoidAuditPayload,
+) -> AuditEvent:
+    if not isinstance(payload, DebtReopenedAfterPaymentVoidAuditPayload):
+        raise ValueError("Payment void reopen audit payload is invalid")
+    return _create_payment_void_user_audit(
+        event_type=AuditEventType.DEBT_REOPENED_AFTER_PAYMENT_VOID,
+        object_type=AuditObjectType.DEBT,
+        object_id=debt_id,
+        actor_user_id=actor_user_id,
+        occurred_at=occurred_at,
+        voided_at=voided_at,
+        current_revision=current_revision,
+        payload_revision=payload.debt_revision_after,
+        metadata=payload.as_candidate_metadata(),
+    )
+
+
+def _create_payment_void_user_audit(
+    *,
+    event_type: AuditEventType,
+    object_type: AuditObjectType,
+    object_id: UUID,
+    actor_user_id: UUID,
+    occurred_at: datetime,
+    voided_at: datetime,
+    current_revision: DebtRevision,
+    payload_revision: DebtRevision,
+    metadata: Mapping[str, object],
+) -> AuditEvent:
+    if not isinstance(current_revision, DebtRevision):
+        raise ValueError("Payment void audit current revision is invalid")
+    normalized = _as_utc(occurred_at, field_name="occurred_at")
+    if normalized != _as_utc(voided_at, field_name="voided_at"):
+        raise ValueError("Payment void audit time must match source")
+    if payload_revision != current_revision:
+        raise ValueError("Payment void audit revision must match source")
+    return AuditEvent(
+        event_type=event_type,
+        actor_kind=AuditActorKind.USER,
+        actor_user_id=actor_user_id,
+        object_type=object_type,
+        object_id=object_id,
+        occurred_at=normalized,
+        candidate_metadata=metadata,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class DebtWrittenOffAuditPayload:
     written_off_revision: DebtRevision
     reason_provided: bool = field(default=True, init=False)
@@ -504,6 +650,13 @@ class DebtOverdueAuditPayload:
             self.business_date, date
         ):
             raise ValueError("Debt overdue audit business date is invalid")
+        object.__setattr__(
+            self,
+            "from_status",
+            DebtStatus.PAID
+            if self.source is DebtOverdueSource.PAYMENT_VOID
+            else DebtStatus.ACTIVE,
+        )
 
     def as_candidate_metadata(self) -> Mapping[str, object]:
         return MappingProxyType(

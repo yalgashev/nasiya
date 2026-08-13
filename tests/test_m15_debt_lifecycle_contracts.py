@@ -43,7 +43,9 @@ def _active_debt(*, discount_basis_points: int = 1000) -> DebtAggregate:
     ).accept(now=ACCEPTED_AT)
 
 
-@pytest.mark.parametrize("source", tuple(DebtOverdueSource))
+@pytest.mark.parametrize(
+    "source", (DebtOverdueSource.INLINE_PAYMENT, DebtOverdueSource.BATCH)
+)
 @pytest.mark.parametrize("posted", (Decimal("0"), Decimal("899"), Decimal("900")))
 def test_active_to_overdue_is_immutable_exactly_one_revision(
     source: DebtOverdueSource, posted: Decimal

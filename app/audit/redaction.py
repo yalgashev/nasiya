@@ -19,7 +19,7 @@ from app.customer_identity.contracts import CustomerDocumentType
 from app.debt.enums import DebtExpirySource, DebtOverdueSource
 from app.debt.values import MAX_DEBT_AMOUNT_UZS
 from app.offers.enums import OfferLanguage, OfferPurpose, OfferStatus
-from app.payment.enums import PaymentMethod
+from app.payment.enums import PaymentMethod, PaymentVoidReason
 from app.payment.values import MAX_PAYMENT_AMOUNT_UZS
 from app.shop_customer.enums import ShopCustomerListStatus
 from app.shop_customer.values import MAX_CREDIT_LIMIT_UZS, MAX_OPEN_DEBTS
@@ -411,11 +411,13 @@ def _debt_overdue_payload(metadata: Mapping[str, object]) -> AuditPayload:
         "overdue_revision",
         "business_date",
     )
-    if values["from_status"] != "active" or values["to_status"] != "overdue":
+    source = _overdue_source(values["source"])
+    expected_from = "paid" if source == "payment_void" else "active"
+    if values["from_status"] != expected_from or values["to_status"] != "overdue":
         raise ValueError("Debt overdue audit transition is invalid")
     return {
-        "source": _overdue_source(values["source"]),
-        "from_status": "active",
+        "source": source,
+        "from_status": expected_from,
         "to_status": "overdue",
         "overdue_revision": _payment_revision(values["overdue_revision"]),
         "business_date": _iso_date(values["business_date"]),
@@ -487,6 +489,65 @@ def _debt_paid_payload(metadata: Mapping[str, object]) -> AuditPayload:
         raise ValueError("Debt paid audit source is invalid")
     return {
         "source": "payment",
+        "debt_revision_after": _payment_revision(values["debt_revision_after"]),
+    }
+
+
+def _payment_voided_payload(metadata: Mapping[str, object]) -> AuditPayload:
+    values = _exact_required(
+        metadata,
+        "reason",
+        "from_status",
+        "to_status",
+        "debt_revision_after",
+    )
+    try:
+        reason = PaymentVoidReason(values["reason"])
+    except (TypeError, ValueError):
+        raise ValueError("Payment void audit reason is invalid") from None
+    allowed_targets = {
+        "active": {"active"},
+        "overdue": {"overdue"},
+        "written_off": {"written_off"},
+        "paid": {"active", "overdue"},
+        "written_off_settled": {"written_off"},
+    }
+    from_status = values["from_status"]
+    if not isinstance(from_status, str) or values[
+        "to_status"
+    ] not in allowed_targets.get(from_status, set()):
+        raise ValueError("Payment void audit transition is invalid")
+    return {
+        "reason": reason.value,
+        "from_status": from_status,
+        "to_status": values["to_status"],
+        "debt_revision_after": _payment_revision(values["debt_revision_after"]),
+    }
+
+
+def _debt_reopened_after_payment_void_payload(
+    metadata: Mapping[str, object],
+) -> AuditPayload:
+    values = _exact_required(
+        metadata,
+        "source",
+        "from_status",
+        "to_status",
+        "debt_revision_after",
+    )
+    if values["source"] != "payment_void" or (
+        values["from_status"],
+        values["to_status"],
+    ) not in {
+        ("paid", "active"),
+        ("paid", "overdue"),
+        ("written_off_settled", "written_off"),
+    }:
+        raise ValueError("Payment void reopen audit transition is invalid")
+    return {
+        "source": "payment_void",
+        "from_status": values["from_status"],
+        "to_status": values["to_status"],
         "debt_revision_after": _payment_revision(values["debt_revision_after"]),
     }
 
@@ -591,7 +652,11 @@ _PAYLOAD_BUILDERS: Final[
     AuditEventType.DEBT_OVERDUE: _debt_overdue_payload,
     AuditEventType.DEBT_CLAWBACK_APPLIED: _debt_clawback_applied_payload,
     AuditEventType.PAYMENT_RECORDED: _payment_recorded_payload,
+    AuditEventType.PAYMENT_VOIDED: _payment_voided_payload,
     AuditEventType.DEBT_PAID: _debt_paid_payload,
+    AuditEventType.DEBT_REOPENED_AFTER_PAYMENT_VOID: (
+        _debt_reopened_after_payment_void_payload
+    ),
     AuditEventType.DEBT_WRITTEN_OFF: _debt_written_off_payload,
     AuditEventType.DEBT_WRITTEN_OFF_SETTLED: _debt_written_off_settled_payload,
     AuditEventType.DISCLOSURE_RISK_BAND_VIEWED: (_risk_band_disclosure_payload),

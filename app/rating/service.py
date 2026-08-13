@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.customer.models import Customer
 from app.debt.models import Debt
+from app.debt.values import DebtRevision
 from app.rating.contracts import (
     RatingEvent,
     RatingEventAppendResult,
@@ -128,25 +129,54 @@ def _ordered_coherent_events(
     by_debt: dict[object, list[RatingEvent]] = {}
     for event in received:
         by_debt.setdefault(event.debt_id, []).append(event)
-    allowed_chains = {
-        (RatingEventType.ON_TIME_PAID,),
-        (RatingEventType.OVERDUE,),
-        (RatingEventType.OVERDUE, RatingEventType.WRITTEN_OFF),
-        (
-            RatingEventType.OVERDUE,
-            RatingEventType.WRITTEN_OFF,
-            RatingEventType.WRITTEN_OFF_SETTLED,
-        ),
-    }
     for debt_events in by_debt.values():
         source_ordered = sorted(
             debt_events,
-            key=lambda event: (
-                event.occurred_at,
-                event.event_type.value,
-            ),
+            key=lambda event: event.order_key.as_sort_key(),
         )
-        chain = tuple(event.event_type for event in source_ordered)
-        if chain not in allowed_chains:
-            raise IncoherentRatingHistoryError("Rating history is incoherent")
+        _validate_debt_cycles(source_ordered)
     return tuple(sorted(received, key=lambda event: event.order_key.as_sort_key()))
+
+
+def _validate_debt_cycles(events: list[RatingEvent]) -> None:
+    positives: dict[tuple[RatingEventType, DebtRevision], bool] = {}
+    overdue_seen = False
+    written_off_seen = False
+    open_settlement_revision: DebtRevision | None = None
+    for event in events:
+        event_type = event.event_type
+        revision = event.source_revision
+        if event_type is RatingEventType.ON_TIME_PAID:
+            if overdue_seen:
+                raise IncoherentRatingHistoryError("Rating history is incoherent")
+            positives[(event_type, revision)] = False
+            continue
+        if event_type is RatingEventType.ON_TIME_PAID_VOIDED:
+            key = (RatingEventType.ON_TIME_PAID, revision)
+            if overdue_seen or key not in positives or positives[key]:
+                raise IncoherentRatingHistoryError("Rating history is incoherent")
+            positives[key] = True
+            continue
+        if event_type is RatingEventType.OVERDUE:
+            if overdue_seen or any(
+                not compensated for compensated in positives.values()
+            ):
+                raise IncoherentRatingHistoryError("Rating history is incoherent")
+            overdue_seen = True
+            continue
+        if event_type is RatingEventType.WRITTEN_OFF:
+            if not overdue_seen or written_off_seen:
+                raise IncoherentRatingHistoryError("Rating history is incoherent")
+            written_off_seen = True
+            continue
+        if event_type is RatingEventType.WRITTEN_OFF_SETTLED:
+            if not written_off_seen or open_settlement_revision is not None:
+                raise IncoherentRatingHistoryError("Rating history is incoherent")
+            open_settlement_revision = revision
+            continue
+        if event_type is RatingEventType.WRITTEN_OFF_SETTLED_VOIDED:
+            if open_settlement_revision != revision:
+                raise IncoherentRatingHistoryError("Rating history is incoherent")
+            open_settlement_revision = None
+            continue
+        raise IncoherentRatingHistoryError("Rating history is incoherent")

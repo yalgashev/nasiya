@@ -63,6 +63,7 @@ def test_pending_effects_are_identifier_redacted() -> None:
         debt_id=DebtId(UUID(int=2)),
         shop_customer_id=ShopCustomerId(UUID(int=3)),
         overdue_at=occurred_at,
+        source_revision=DebtRevision(3),
     )
     transition = PendingOverdueTransitionEffect(
         rating_effect=overdue,
@@ -77,6 +78,7 @@ def test_pending_effects_are_identifier_redacted() -> None:
         shop_customer_id=ShopCustomerId(UUID(int=6)),
         payment_created_at=occurred_at,
         payment_business_date=date(2026, 8, 12),
+        source_revision=DebtRevision(4),
     )
 
     for value in (overdue, transition, positive):

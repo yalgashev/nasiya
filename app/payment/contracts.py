@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import unicodedata
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from decimal import Decimal
 from uuid import UUID
 
 from app.debt.business_time import is_effectively_overdue, normalize_payment_created_at
@@ -17,21 +19,32 @@ from app.idempotency.contracts import (
     IdempotencyResultType,
 )
 from app.payment.enums import PaymentMethod
-from app.payment.values import PaymentAmountUZS, PaymentId, RemainingDueUZS
+from app.payment.values import (
+    PaymentAmountUZS,
+    PaymentId,
+    PostedPaymentTotalUZS,
+    RemainingDueUZS,
+)
 from app.shop.values import ShopId
 
 __all__ = (
     "PaymentAggregate",
     "PaymentHistoryItem",
+    "PaymentLedgerFact",
+    "PaymentLedgerInvariantError",
+    "PaymentNotVoidableError",
     "PaymentProjection",
     "PaymentReceiptProjection",
     "IncoherentPaymentHistoryError",
     "create_payment_request_hash_v1",
     "create_payment_request_hash_v2",
     "create_payment_request_hash",
+    "calculate_non_voided_posted_total",
+    "latest_non_voided_payment",
     "resolve_current_balance_basis",
     "resolve_historical_balance_basis",
     "payment_id_from_completed_result",
+    "require_latest_non_voided_payment",
 )
 
 _CREATE_PAYMENT_HASH_DOMAIN_V1 = b"nasiya.m14.create-payment.request.v1"
@@ -40,6 +53,53 @@ _CREATE_PAYMENT_HASH_DOMAIN_V2 = b"nasiya.m15.create-payment.request.v2"
 
 class IncoherentPaymentHistoryError(ValueError):
     """Raised when a Payment revision collides with the overdue marker."""
+
+
+class PaymentLedgerInvariantError(ValueError):
+    """Raised when revision facts cannot describe one append-only Debt ledger."""
+
+
+class PaymentNotVoidableError(ValueError):
+    """Identifier-free denial for a missing, earlier, or already-voided target."""
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class PaymentLedgerFact:
+    """One immutable Payment plus its optional append-only void revision."""
+
+    payment_id: PaymentId = field(repr=False)
+    debt_id: DebtId = field(repr=False)
+    amount: PaymentAmountUZS
+    debt_revision_after: DebtRevision
+    void_debt_revision_after: DebtRevision | None = None
+
+    def __post_init__(self) -> None:
+        _require_payment_id(self.payment_id)
+        _require_debt_id(self.debt_id)
+        _require_amount(self.amount)
+        _require_revision(self.debt_revision_after)
+        if self.void_debt_revision_after is not None:
+            _require_revision(self.void_debt_revision_after)
+            if self.void_debt_revision_after.value <= self.debt_revision_after.value:
+                raise PaymentLedgerInvariantError(
+                    "Payment void revision must follow its Payment revision"
+                )
+
+    @property
+    def is_currently_non_voided(self) -> bool:
+        return self.void_debt_revision_after is None
+
+    def is_non_voided_at(self, revision: DebtRevision) -> bool:
+        """Apply the frozen revision-as-of inclusion predicate."""
+
+        _require_revision(revision)
+        return self.debt_revision_after.value <= revision.value and (
+            self.void_debt_revision_after is None
+            or self.void_debt_revision_after.value > revision.value
+        )
+
+    def __repr__(self) -> str:
+        return "PaymentLedgerFact(<redacted>)"
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -200,6 +260,60 @@ class PaymentReceiptProjection:
 
     def __repr__(self) -> str:
         return "PaymentReceiptProjection(<safe>)"
+
+
+def calculate_non_voided_posted_total(
+    facts: Iterable[PaymentLedgerFact],
+    *,
+    as_of_revision: DebtRevision | None = None,
+) -> PostedPaymentTotalUZS:
+    """Sum current anti-join facts or apply the exact revision-as-of predicate."""
+
+    validated = _validate_payment_ledger_facts(facts)
+    if as_of_revision is not None:
+        _require_revision(as_of_revision)
+    included = (
+        fact.is_currently_non_voided
+        if as_of_revision is None
+        else fact.is_non_voided_at(as_of_revision)
+        for fact in validated
+    )
+    total = sum(
+        (
+            fact.amount.value
+            for fact, is_included in zip(validated, included, strict=True)
+            if is_included
+        ),
+        start=Decimal("0"),
+    )
+    return PostedPaymentTotalUZS(total)
+
+
+def latest_non_voided_payment(
+    facts: Iterable[PaymentLedgerFact],
+) -> PaymentLedgerFact | None:
+    """Return latest strictly by maximum current non-voided Debt revision."""
+
+    validated = _validate_payment_ledger_facts(facts)
+    current = tuple(fact for fact in validated if fact.is_currently_non_voided)
+    if not current:
+        return None
+    return max(current, key=lambda fact: fact.debt_revision_after.value)
+
+
+def require_latest_non_voided_payment(
+    facts: Iterable[PaymentLedgerFact],
+    *,
+    target_payment_id: PaymentId,
+) -> PaymentLedgerFact:
+    """Resolve only the maximum non-voided revision with a generic denial."""
+
+    _require_payment_id(target_payment_id)
+    validated = _validate_payment_ledger_facts(facts)
+    latest = latest_non_voided_payment(validated)
+    if latest is None or latest.payment_id != target_payment_id:
+        raise PaymentNotVoidableError("Payment is not voidable")
+    return latest
 
 
 def create_payment_request_hash(
@@ -390,6 +504,73 @@ def _require_revision(value: DebtRevision) -> None:
 def _require_remaining_due(value: RemainingDueUZS, *, field_name: str) -> None:
     if not isinstance(value, RemainingDueUZS):
         raise ValueError(f"{field_name} is invalid")
+
+
+def _validate_payment_ledger_facts(
+    facts: Iterable[PaymentLedgerFact],
+) -> tuple[PaymentLedgerFact, ...]:
+    try:
+        validated = tuple(facts)
+    except TypeError:
+        raise TypeError("Payment ledger facts must be iterable") from None
+    if any(not isinstance(fact, PaymentLedgerFact) for fact in validated):
+        raise TypeError("Payment ledger contains an invalid fact")
+    if not validated:
+        return validated
+
+    debt_id = validated[0].debt_id
+    payment_ids: set[PaymentId] = set()
+    payment_revisions: set[DebtRevision] = set()
+    void_revisions: set[DebtRevision] = set()
+    for fact in validated:
+        if fact.debt_id != debt_id:
+            raise PaymentLedgerInvariantError(
+                "Payment ledger facts must belong to one Debt"
+            )
+        if fact.payment_id in payment_ids:
+            raise PaymentLedgerInvariantError("Payment ledger repeats a Payment")
+        if fact.debt_revision_after in payment_revisions:
+            raise PaymentLedgerInvariantError(
+                "Payment ledger repeats a Payment revision"
+            )
+        payment_ids.add(fact.payment_id)
+        payment_revisions.add(fact.debt_revision_after)
+        if fact.void_debt_revision_after is not None:
+            if fact.void_debt_revision_after in void_revisions:
+                raise PaymentLedgerInvariantError(
+                    "Payment ledger repeats a void revision"
+                )
+            void_revisions.add(fact.void_debt_revision_after)
+    if payment_revisions & void_revisions:
+        raise PaymentLedgerInvariantError(
+            "Payment and void facts cannot share a Debt revision"
+        )
+    for voided_fact in (
+        fact for fact in validated if fact.void_debt_revision_after is not None
+    ):
+        assert voided_fact.void_debt_revision_after is not None
+        void_revision = voided_fact.void_debt_revision_after.value
+        non_voided_before = tuple(
+            fact
+            for fact in validated
+            if fact.debt_revision_after.value < void_revision
+            and (
+                fact.void_debt_revision_after is None
+                or fact.void_debt_revision_after.value >= void_revision
+            )
+        )
+        if (
+            not non_voided_before
+            or max(
+                non_voided_before,
+                key=lambda fact: fact.debt_revision_after.value,
+            )
+            is not voided_fact
+        ):
+            raise PaymentLedgerInvariantError(
+                "Payment void did not target the latest non-voided revision"
+            )
+    return validated
 
 
 def _normalize_shop_display_name(value: str) -> str:

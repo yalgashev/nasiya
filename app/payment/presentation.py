@@ -4,25 +4,31 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Final
 
 from app.auth.error_codes import ErrorCode
 from app.debt.presentation import DebtWebLanguage
+from app.payment.enums import PaymentVoidReason
 from app.shop.enums import ShopRole, ShopStatus
 
 __all__ = (
     "PAYMENT_WEB_COPY",
     "PAYMENT_ROUTE_CONTRACTS",
+    "M18_PAYMENT_VOID_ROUTE_CONTRACTS",
     "PaymentCustomerCapability",
     "PaymentCustomerCapabilityContext",
     "PaymentRouteContract",
+    "CustomerPaymentVoidPresentation",
+    "ShopPaymentVoidPresentation",
     "PaymentShopCapability",
     "PaymentShopCapabilityContext",
     "customer_payment_capabilities",
     "get_payment_web_error_message",
     "get_payment_web_copy",
+    "get_payment_void_reason_label",
     "shop_payment_capabilities",
 )
 
@@ -86,6 +92,11 @@ PAYMENT_WEB_COPY: Final[Mapping[DebtWebLanguage, Mapping[str, str]]] = MappingPr
                 "status_written_off_settled": "Undirish qarzi yopilgan",
                 "back_to_debt": "Qarzga qaytish",
                 "back_to_history": "To'lovlar tarixiga qaytish",
+                "void_reason_duplicate_payment": "Takroriy to'lov",
+                "void_reason_incorrect_amount": "Noto'g'ri summa",
+                "void_reason_incorrect_method": "Noto'g'ri usul",
+                "void_reason_payment_not_received": "To'lov olinmagan",
+                "void_reason_wrong_debt": "Noto'g'ri qarz",
             }
         ),
         DebtWebLanguage.RU: MappingProxyType(
@@ -146,6 +157,11 @@ PAYMENT_WEB_COPY: Final[Mapping[DebtWebLanguage, Mapping[str, str]]] = MappingPr
                 "status_written_off_settled": "Списанный долг погашен",
                 "back_to_debt": "Вернуться к долгу",
                 "back_to_history": "Вернуться к истории платежей",
+                "void_reason_duplicate_payment": "Повторный платёж",
+                "void_reason_incorrect_amount": "Неверная сумма",
+                "void_reason_incorrect_method": "Неверный способ",
+                "void_reason_payment_not_received": "Платёж не получен",
+                "void_reason_wrong_debt": "Неверный долг",
             }
         ),
     }
@@ -156,6 +172,14 @@ def get_payment_web_copy(language: DebtWebLanguage) -> Mapping[str, str]:
     if not isinstance(language, DebtWebLanguage):
         raise ValueError("Payment web language is invalid")
     return PAYMENT_WEB_COPY[language]
+
+
+def get_payment_void_reason_label(
+    language: DebtWebLanguage, reason: PaymentVoidReason
+) -> str:
+    if not isinstance(reason, PaymentVoidReason):
+        raise ValueError("Payment void reason is invalid")
+    return get_payment_web_copy(language)[f"void_reason_{reason.value}"]
 
 
 _UZ_LATN_ERRORS: Final[Mapping[ErrorCode, str]] = MappingProxyType(
@@ -215,6 +239,8 @@ class PaymentShopCapability(StrEnum):
     RECEIPT = "receipt"
     CREATE_FORM = "create_form"
     CREATE = "create"
+    VOID_FORM = "void_form"
+    VOID = "void"
 
 
 class PaymentCustomerCapability(StrEnum):
@@ -267,6 +293,10 @@ def shop_payment_capabilities(
         capabilities.update(
             {PaymentShopCapability.CREATE_FORM, PaymentShopCapability.CREATE}
         )
+        if context.role in {ShopRole.OWNER, ShopRole.MANAGER}:
+            capabilities.update(
+                {PaymentShopCapability.VOID_FORM, PaymentShopCapability.VOID}
+            )
     return frozenset(capabilities)
 
 
@@ -288,6 +318,58 @@ class PaymentRouteContract:
     method: str
     path: str
     form_fields: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ShopPaymentVoidPresentation:
+    is_voided: bool
+    voided_at: datetime | None
+    reason_label: str | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.is_voided, bool):
+            raise ValueError("Shop Payment void state is invalid")
+        if self.is_voided != (
+            self.voided_at is not None and self.reason_label is not None
+        ):
+            raise ValueError("Payment void presentation fields are incoherent")
+        _validate_void_projection_time(self.voided_at)
+        if self.reason_label is not None and (
+            not isinstance(self.reason_label, str) or not self.reason_label.strip()
+        ):
+            raise ValueError("Shop Payment void reason label is invalid")
+        if self.voided_at is not None:
+            object.__setattr__(self, "voided_at", self.voided_at.astimezone(UTC))
+
+    def __repr__(self) -> str:
+        return "ShopPaymentVoidPresentation(<safe>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class CustomerPaymentVoidPresentation:
+    is_voided: bool
+    voided_at: datetime | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.is_voided, bool):
+            raise ValueError("Customer Payment void state is invalid")
+        if self.is_voided != (self.voided_at is not None):
+            raise ValueError("Payment void presentation fields are incoherent")
+        _validate_void_projection_time(self.voided_at)
+        if self.voided_at is not None:
+            object.__setattr__(self, "voided_at", self.voided_at.astimezone(UTC))
+
+    def __repr__(self) -> str:
+        return "CustomerPaymentVoidPresentation(<safe>)"
+
+
+def _validate_void_projection_time(voided_at: datetime | None) -> None:
+    if voided_at is not None and (
+        not isinstance(voided_at, datetime)
+        or voided_at.tzinfo is None
+        or voided_at.utcoffset() is None
+    ):
+        raise ValueError("Payment void presentation time must be aware")
 
 
 PAYMENT_ROUTE_CONTRACTS: Final[tuple[PaymentRouteContract, ...]] = (
@@ -316,5 +398,23 @@ PAYMENT_ROUTE_CONTRACTS: Final[tuple[PaymentRouteContract, ...]] = (
     ),
     PaymentRouteContract(
         "customer_payment_receipt", "GET", "/customer/payments/{payment_id}"
+    ),
+)
+
+M18_PAYMENT_VOID_ROUTE_CONTRACTS: Final[tuple[PaymentRouteContract, ...]] = (
+    PaymentRouteContract(
+        "shop_payment_void_form", "GET", "/shop/payments/{payment_id}/void"
+    ),
+    PaymentRouteContract(
+        "shop_payment_void",
+        "POST",
+        "/shop/payments/{payment_id}/void",
+        (
+            "reason",
+            "idempotency_key",
+            "expected_revision",
+            "confirmation",
+            "csrf_token",
+        ),
     ),
 )

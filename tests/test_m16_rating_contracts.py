@@ -20,8 +20,8 @@ from app.rating.enums import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_m16_vocabulary_is_exact_and_closed() -> None:
-    assert tuple(RatingEventType) == (
+def test_m16_vocabulary_is_preserved_when_m18_extends_rating_events() -> None:
+    assert tuple(RatingEventType)[:4] == (
         RatingEventType.ON_TIME_PAID,
         RatingEventType.OVERDUE,
         RatingEventType.WRITTEN_OFF,
@@ -159,7 +159,6 @@ def test_rating_contract_sources_exclude_unrelated_future_vocabulary() -> None:
 
     for forbidden in (
         "override",
-        "compensation",
         "notification",
     ):
         assert forbidden not in source

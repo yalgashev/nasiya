@@ -117,6 +117,7 @@ class SqlAlchemyLockedRatingAppendAdapter:
                 shop_customer_id=effect.shop_customer_id,
                 debt_id=effect.debt_id,
                 payment_created_at=effect.payment_created_at,
+                source_revision=effect.source_revision,
                 recording_source=RatingRecordingSource.LIVE,
             ),
         )
@@ -145,6 +146,7 @@ class SqlAlchemyLockedRatingAppendAdapter:
                 shop_customer_id=effect.shop_customer_id,
                 debt_id=effect.debt_id,
                 overdue_at=effect.overdue_at,
+                source_revision=effect.source_revision,
                 recording_source=RatingRecordingSource.LIVE,
             ),
         )
@@ -177,6 +179,7 @@ class SqlAlchemyLockedRatingAppendAdapter:
                 shop_customer_id=effect.shop_customer_id,
                 debt_id=effect.debt_id,
                 written_off_at=effect.written_off_at,
+                source_revision=effect.source_revision,
             ),
         )
         if result.outcome is RatingEventAppendOutcome.APPENDED:
@@ -285,6 +288,7 @@ class SqlAlchemyLockedRatingAppendAdapter:
                 shop_customer_id=effect.shop_customer_id,
                 debt_id=effect.debt_id,
                 written_off_settled_at=effect.payment_created_at,
+                source_revision=effect.source_revision,
             ),
         )
         if result.outcome is RatingEventAppendOutcome.APPENDED:

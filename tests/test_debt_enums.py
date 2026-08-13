@@ -80,11 +80,15 @@ def test_m15_persisted_status_subset_adds_overdue_only() -> None:
     )
 
 
-def test_m15_overdue_source_and_balance_basis_are_closed() -> None:
+def test_m18_overdue_source_adds_only_payment_void_and_preserves_balance_basis() -> (
+    None
+):
     assert tuple(DebtOverdueSource) == (
         DebtOverdueSource.INLINE_PAYMENT,
         DebtOverdueSource.BATCH,
+        DebtOverdueSource.PAYMENT_VOID,
     )
+    assert DebtOverdueSource.PAYMENT_VOID.value == "payment_void"
     assert tuple(DebtBalanceBasis) == (
         DebtBalanceBasis.DISCOUNTED,
         DebtBalanceBasis.ORIGINAL,

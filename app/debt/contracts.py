@@ -37,9 +37,12 @@ from app.debt.values import (
 __all__ = (
     "DebtAggregate",
     "DebtLifecycleError",
+    "DebtPaymentVoidTransition",
+    "DebtPaymentVoidTransitionError",
     "DebtPaymentTransitionError",
     "DebtProjection",
     "DebtReason",
+    "PendingPaymentVoidOverdueEffect",
     "WriteOffReason",
 )
 
@@ -59,6 +62,10 @@ class DebtPaymentTransitionError(DebtLifecycleError):
 
     def __repr__(self) -> str:
         return f"DebtPaymentTransitionError(failure={self.failure!r})"
+
+
+class DebtPaymentVoidTransitionError(DebtLifecycleError):
+    """Identifier-free denial for an incoherent Payment-void Debt transition."""
 
 
 class WriteOffReason(StrEnum):
@@ -358,6 +365,10 @@ class DebtAggregate:
             raise DebtLifecycleError("Active debt has not passed its due date")
         if not isinstance(source, DebtOverdueSource):
             raise ValueError("Debt overdue source is invalid")
+        if source is DebtOverdueSource.PAYMENT_VOID:
+            raise DebtLifecycleError(
+                "Payment-void overdue requires a paid Debt transition"
+            )
         if (
             not _is_nonnegative_whole_uzs(posted_total_uzs)
             or posted_total_uzs > self.discounted_amount.value
@@ -694,6 +705,196 @@ class DebtAggregate:
             f"paid_at={self.paid_at!r}, cancellation_reason=<redacted>, "
             "written_off_reason=<redacted>, written_off_actor_user_id=<redacted>)"
         )
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class PendingPaymentVoidOverdueEffect:
+    """Typed canonical overdue effect for only paid-after-due void."""
+
+    source: DebtOverdueSource
+    from_status: DebtStatus
+    overdue_revision: DebtRevision
+    occurred_at: datetime
+
+    def __post_init__(self) -> None:
+        if self.source is not DebtOverdueSource.PAYMENT_VOID:
+            raise DebtPaymentVoidTransitionError(
+                "Payment-void overdue effect source is invalid"
+            )
+        if self.from_status is not DebtStatus.PAID:
+            raise DebtPaymentVoidTransitionError(
+                "Payment-void overdue effect must originate from paid"
+            )
+        if not isinstance(self.overdue_revision, DebtRevision):
+            raise DebtPaymentVoidTransitionError(
+                "Payment-void overdue effect revision is invalid"
+            )
+        object.__setattr__(self, "occurred_at", _transition_time(self.occurred_at))
+
+    def __repr__(self) -> str:
+        return "PendingPaymentVoidOverdueEffect(<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class DebtPaymentVoidTransition:
+    """Validated before/after contract consumed by the later pure producer."""
+
+    before: DebtAggregate = field(repr=False)
+    debt: DebtAggregate = field(repr=False)
+    expected_revision: DebtRevision
+    voided_at: datetime
+    remaining_due_uzs: Decimal = field(repr=False)
+    overdue_effect: PendingPaymentVoidOverdueEffect | None = field(
+        default=None, repr=False
+    )
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.before, DebtAggregate) or not isinstance(
+            self.debt, DebtAggregate
+        ):
+            raise TypeError("Payment-void transition requires Debt aggregates")
+        if not isinstance(self.expected_revision, DebtRevision):
+            raise ValueError("Expected debt revision is invalid")
+        if self.expected_revision != self.before.revision:
+            raise DebtPaymentVoidTransitionError("Debt revision changed")
+        voided_at = _transition_time(self.voided_at)
+        object.__setattr__(self, "voided_at", voided_at)
+        if not _is_positive_whole_uzs(self.remaining_due_uzs):
+            raise DebtPaymentVoidTransitionError(
+                "Payment void must restore a positive remaining balance"
+            )
+        self._validate_common_state(voided_at)
+        self._validate_status_and_markers(voided_at)
+
+    def _validate_common_state(self, voided_at: datetime) -> None:
+        before = self.before
+        after = self.debt
+        if after.revision != DebtRevision(before.revision.value + 1):
+            raise DebtPaymentVoidTransitionError(
+                "Payment void must consume exactly one Debt revision"
+            )
+        if after.updated_at != voided_at:
+            raise DebtPaymentVoidTransitionError(
+                "Payment void update time must equal void time"
+            )
+        immutable_fields = (
+            "id",
+            "shop_customer_id",
+            "created_by_user_id",
+            "original_amount",
+            "discount_basis_points",
+            "discounted_amount",
+            "due_date",
+            "pending_expires_at",
+            "created_at",
+            "accepted_at",
+            "rejected_at",
+            "cancelled_at",
+            "expired_at",
+            "rejection_reason",
+            "cancellation_reason",
+            "written_off_at",
+            "written_off_revision",
+            "written_off_reason",
+            "written_off_actor_user_id",
+        )
+        if any(
+            getattr(before, name) != getattr(after, name) for name in immutable_fields
+        ):
+            raise DebtPaymentVoidTransitionError(
+                "Payment void changed immutable Debt evidence"
+            )
+        if after.paid_at is not None:
+            raise DebtPaymentVoidTransitionError(
+                "Payment void must clear the current paid marker"
+            )
+        if (
+            after.written_off_settled_at is not None
+            or after.written_off_settled_revision is not None
+        ):
+            raise DebtPaymentVoidTransitionError(
+                "Payment void must clear the current settlement marker pair"
+            )
+
+    def _validate_status_and_markers(self, voided_at: datetime) -> None:
+        before = self.before
+        after = self.debt
+        effect = self.overdue_effect
+        if before.status is DebtStatus.ACTIVE:
+            self._require_exact_status(DebtStatus.ACTIVE)
+            self._require_preserved_overdue_markers()
+            self._require_no_overdue_effect()
+            return
+        if before.status is DebtStatus.OVERDUE:
+            self._require_exact_status(DebtStatus.OVERDUE)
+            self._require_preserved_overdue_markers()
+            self._require_no_overdue_effect()
+            return
+        if before.status is DebtStatus.WRITTEN_OFF:
+            self._require_exact_status(DebtStatus.WRITTEN_OFF)
+            self._require_preserved_overdue_markers()
+            self._require_no_overdue_effect()
+            return
+        if before.status is DebtStatus.WRITTEN_OFF_SETTLED:
+            self._require_exact_status(DebtStatus.WRITTEN_OFF)
+            self._require_preserved_overdue_markers()
+            self._require_no_overdue_effect()
+            return
+        if before.status is not DebtStatus.PAID:
+            raise DebtPaymentVoidTransitionError(
+                "Debt status cannot be reopened by Payment void"
+            )
+        if before.overdue_revision is not None:
+            self._require_exact_status(DebtStatus.OVERDUE)
+            self._require_preserved_overdue_markers()
+            self._require_no_overdue_effect()
+            return
+        if is_payment_due_date_payable(
+            payment_created_at=voided_at,
+            due_date=before.due_date,
+        ):
+            self._require_exact_status(DebtStatus.ACTIVE)
+            self._require_preserved_overdue_markers()
+            self._require_no_overdue_effect()
+            return
+
+        self._require_exact_status(DebtStatus.OVERDUE)
+        if after.overdue_at != voided_at or after.overdue_revision != after.revision:
+            raise DebtPaymentVoidTransitionError(
+                "Paid-after-due void requires current-revision overdue markers"
+            )
+        if (
+            not isinstance(effect, PendingPaymentVoidOverdueEffect)
+            or effect.overdue_revision != after.revision
+            or effect.occurred_at != voided_at
+        ):
+            raise DebtPaymentVoidTransitionError(
+                "Paid-after-due void requires one canonical pending overdue effect"
+            )
+
+    def _require_exact_status(self, status: DebtStatus) -> None:
+        if self.debt.status is not status:
+            raise DebtPaymentVoidTransitionError(
+                "Payment void resulting Debt status is invalid"
+            )
+
+    def _require_preserved_overdue_markers(self) -> None:
+        if (
+            self.debt.overdue_at != self.before.overdue_at
+            or self.debt.overdue_revision != self.before.overdue_revision
+        ):
+            raise DebtPaymentVoidTransitionError(
+                "Payment void changed historic overdue evidence"
+            )
+
+    def _require_no_overdue_effect(self) -> None:
+        if self.overdue_effect is not None:
+            raise DebtPaymentVoidTransitionError(
+                "Payment void produced an unexpected overdue effect"
+            )
+
+    def __repr__(self) -> str:
+        return "DebtPaymentVoidTransition(<redacted>)"
 
 
 def _require_uuid(value: object, *, field_name: str) -> None:

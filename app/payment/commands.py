@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from enum import StrEnum
 from uuid import UUID
 
 from app.auth.error_codes import ErrorCode
@@ -12,6 +13,9 @@ from app.debt.values import DebtId, DebtRevision, ShopId, UserId
 from app.idempotency.contracts import (
     CanonicalIdempotencyKey,
     CreatePaymentRequestHash,
+    VoidPaymentRequestHash,
+    create_void_payment_request_hash_v1,
+    parse_idempotency_key,
     require_matching_idempotency_keys,
 )
 from app.payment.contracts import (
@@ -20,8 +24,14 @@ from app.payment.contracts import (
     create_payment_request_hash_v2,
 )
 from app.payment.dependencies import DetachedPaymentActorContext
-from app.payment.enums import PaymentMethod, parse_payment_method
-from app.payment.values import PaymentAmountUZS, parse_payment_amount_uzs
+from app.payment.enums import (
+    PaymentMethod,
+    PaymentVoidOutcome,
+    PaymentVoidReason,
+    parse_payment_method,
+    parse_payment_void_reason,
+)
+from app.payment.values import PaymentAmountUZS, PaymentId, parse_payment_amount_uzs
 
 __all__ = (
     "CreatePaymentCommand",
@@ -31,11 +41,114 @@ __all__ = (
     "CreatePaymentV2Command",
     "CompletedM14PaymentReplayCandidate",
     "CreatePaymentRequestAssembly",
+    "VoidPaymentCommand",
+    "VoidPaymentCommandAssembly",
+    "VoidPaymentFailure",
+    "VoidPaymentMutationResult",
+    "VoidPaymentRawForm",
     "assemble_create_payment_command",
     "assemble_create_payment_request",
+    "assemble_void_payment_command",
 )
 
 _CANONICAL_POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*", flags=re.ASCII)
+
+
+class VoidPaymentFailure(StrEnum):
+    UNAVAILABLE = "PAYMENT_UNAVAILABLE"
+    NOT_VOIDABLE = "PAYMENT_NOT_VOIDABLE"
+    CHANGED = "DEBT_CHANGED"
+    INVALID_INPUT = "VALIDATION_ERROR"
+    IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class VoidPaymentRawForm:
+    """Only normalized browser fields; target identity stays server-derived."""
+
+    expected_revision: str = field(repr=False)
+    reason: str | None = field(repr=False)
+    idempotency_key: str | None = field(repr=False)
+    confirmed: str | None = field(repr=False)
+
+    def __repr__(self) -> str:
+        return "VoidPaymentRawForm(<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class VoidPaymentCommand:
+    actor_user_id: UserId = field(repr=False)
+    current_shop_id: ShopId = field(repr=False)
+    payment_id: PaymentId = field(repr=False)
+    debt_id: DebtId = field(repr=False)
+    expected_revision: DebtRevision = field(repr=False)
+    reason: PaymentVoidReason = field(repr=False)
+    idempotency_key: CanonicalIdempotencyKey = field(repr=False)
+    request_hash: VoidPaymentRequestHash = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.actor_user_id, UUID):
+            raise ValueError("Void-payment command actor is invalid")
+        if not isinstance(self.current_shop_id, UUID):
+            raise ValueError("Void-payment command shop is invalid")
+        if not isinstance(self.payment_id, PaymentId):
+            raise ValueError("Void-payment command Payment is invalid")
+        if not isinstance(self.debt_id, DebtId):
+            raise ValueError("Void-payment command Debt is invalid")
+        if not isinstance(self.expected_revision, DebtRevision):
+            raise ValueError("Void-payment command revision is invalid")
+        if not isinstance(self.reason, PaymentVoidReason):
+            raise ValueError("Void-payment command reason is invalid")
+        if not isinstance(self.idempotency_key, CanonicalIdempotencyKey):
+            raise ValueError("Void-payment command key is invalid")
+        expected_hash = create_void_payment_request_hash_v1(
+            actor_user_id=self.actor_user_id,
+            shop_id=self.current_shop_id,
+            payment_id=self.payment_id,
+            debt_id=self.debt_id,
+            expected_revision=self.expected_revision,
+            reason=self.reason,
+        )
+        if self.request_hash != expected_hash:
+            raise ValueError("Void-payment command request hash is invalid")
+
+    def __repr__(self) -> str:
+        return "VoidPaymentCommand(<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class VoidPaymentCommandAssembly:
+    command: VoidPaymentCommand | None = field(default=None, repr=False)
+    failure: VoidPaymentFailure | None = None
+
+    def __post_init__(self) -> None:
+        if (self.command is None) == (self.failure is None):
+            raise ValueError("Void-payment command assembly is invalid")
+        if self.failure not in {None, VoidPaymentFailure.INVALID_INPUT}:
+            raise ValueError("Void-payment command assembly failure is invalid")
+
+    def __repr__(self) -> str:
+        return (
+            f"VoidPaymentCommandAssembly(failure={self.failure!r}, command=<redacted>)"
+        )
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class VoidPaymentMutationResult:
+    outcome: PaymentVoidOutcome
+    payment_id: PaymentId = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.outcome, PaymentVoidOutcome):
+            raise ValueError("Void-payment mutation outcome is invalid")
+        if not isinstance(self.payment_id, PaymentId):
+            raise ValueError("Void-payment mutation Payment is invalid")
+
+    def __repr__(self) -> str:
+        return (
+            f"VoidPaymentMutationResult(outcome={self.outcome.value!r}, "
+            "payment_id=<redacted>)"
+        )
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -372,6 +485,56 @@ def assemble_create_payment_request(
         )
     except (TypeError, ValueError, OverflowError):
         return CreatePaymentRequestAssembly(error=ErrorCode.VALIDATION_ERROR)
+
+
+def assemble_void_payment_command(
+    *,
+    actor_user_id: UserId,
+    current_shop_id: ShopId,
+    payment_id: PaymentId,
+    server_resolved_debt_id: DebtId,
+    raw: VoidPaymentRawForm,
+) -> VoidPaymentCommandAssembly:
+    """Build a tenant-bound command from server identity and closed raw fields."""
+
+    if not isinstance(raw, VoidPaymentRawForm):
+        raise TypeError("raw must be a VoidPaymentRawForm")
+    try:
+        if not isinstance(actor_user_id, UUID):
+            raise ValueError("Void-payment actor is invalid")
+        if not isinstance(current_shop_id, UUID):
+            raise ValueError("Void-payment Shop is invalid")
+        if not isinstance(payment_id, PaymentId):
+            raise ValueError("Void-payment Payment is invalid")
+        if not isinstance(server_resolved_debt_id, DebtId):
+            raise ValueError("Void-payment server-resolved Debt is invalid")
+        if raw.confirmed != "yes":
+            raise ValueError("Void-payment confirmation is invalid")
+        expected_revision = _parse_expected_revision(raw.expected_revision)
+        reason = parse_payment_void_reason(raw.reason)  # type: ignore[arg-type]
+        key = parse_idempotency_key(raw.idempotency_key)  # type: ignore[arg-type]
+        request_hash = create_void_payment_request_hash_v1(
+            actor_user_id=actor_user_id,
+            shop_id=current_shop_id,
+            payment_id=payment_id,
+            debt_id=server_resolved_debt_id,
+            expected_revision=expected_revision,
+            reason=reason,
+        )
+        return VoidPaymentCommandAssembly(
+            command=VoidPaymentCommand(
+                actor_user_id=actor_user_id,
+                current_shop_id=current_shop_id,
+                payment_id=payment_id,
+                debt_id=server_resolved_debt_id,
+                expected_revision=expected_revision,
+                reason=reason,
+                idempotency_key=key,
+                request_hash=request_hash,
+            )
+        )
+    except (TypeError, ValueError, OverflowError):
+        return VoidPaymentCommandAssembly(failure=VoidPaymentFailure.INVALID_INPUT)
 
 
 def _require_common_command_fields(

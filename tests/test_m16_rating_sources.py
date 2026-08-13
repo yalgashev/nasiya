@@ -12,7 +12,7 @@ from app.debt.rating_ports import (
     OverdueRatingAppendOutcome,
     PendingOverdueRatingEffect,
 )
-from app.debt.values import CustomerId, DebtId
+from app.debt.values import CustomerId, DebtId, DebtRevision
 from app.payment.rating_ports import (
     LockedPaymentRatingAppendPort,
     PaymentRatingAppendOutcome,
@@ -50,6 +50,7 @@ def _source_event(
         "event_id": RatingEventId(UUID(int=1)),
         "shop_customer_id": ShopCustomerId(UUID(int=2)),
         "debt_id": DebtId(UUID(int=3)),
+        "source_revision": DebtRevision(4),
         "recording_source": source,
     }
     occurred_at = datetime(2026, 5, 1, 19, tzinfo=UTC)
@@ -79,7 +80,7 @@ def test_factories_allow_only_exact_source_event_matrix(
     assert event.recording_source is source
     assert event.delta == rating_event_delta(event_type)
     assert event.business_date == date(2026, 5, 2)
-    assert event.source_key == (event.debt_id, event_type)
+    assert event.source_key == (event.debt_id, event_type, DebtRevision(4))
 
 
 def test_rating_event_is_immutable_and_fully_redacted() -> None:
@@ -165,6 +166,7 @@ def test_pending_payment_and_overdue_effects_are_typed_and_redacted() -> None:
         debt_id=debt_id,
         shop_customer_id=shop_customer_id,
         overdue_at=occurred_at,
+        source_revision=DebtRevision(3),
     )
     on_time = PendingOnTimePaidRatingEffect(
         event_id=uuid4(),
@@ -172,6 +174,7 @@ def test_pending_payment_and_overdue_effects_are_typed_and_redacted() -> None:
         shop_customer_id=shop_customer_id,
         payment_created_at=occurred_at,
         payment_business_date=date(2026, 5, 2),
+        source_revision=DebtRevision(4),
     )
 
     assert overdue.overdue_at == occurred_at
@@ -185,6 +188,7 @@ def test_pending_payment_and_overdue_effects_are_typed_and_redacted() -> None:
             shop_customer_id=shop_customer_id,
             payment_created_at=occurred_at,
             payment_business_date=date(2026, 5, 1),
+            source_revision=DebtRevision(4),
         )
 
 

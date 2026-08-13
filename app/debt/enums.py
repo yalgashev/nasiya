@@ -74,6 +74,8 @@ class DebtBalanceBasis(StrEnum):
 class DebtOverdueSource(StrEnum):
     INLINE_PAYMENT = "inline_payment"
     BATCH = "batch"
+    # Reserved exclusively for M18's atomic paid-to-overdue void transition.
+    PAYMENT_VOID = "payment_void"
 
 
 class DebtTransitionEvent(StrEnum):

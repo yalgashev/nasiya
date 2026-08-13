@@ -66,6 +66,7 @@ class PendingOverdueRatingEffect:
     debt_id: DebtId = field(repr=False)
     shop_customer_id: ShopCustomerId = field(repr=False)
     overdue_at: datetime
+    source_revision: DebtRevision
 
     def __post_init__(self) -> None:
         if not isinstance(self.event_id, UUID):
@@ -74,6 +75,8 @@ class PendingOverdueRatingEffect:
             raise ValueError("Pending overdue rating Debt is invalid")
         if not isinstance(self.shop_customer_id, ShopCustomerId):
             raise ValueError("Pending overdue rating ShopCustomer is invalid")
+        if not isinstance(self.source_revision, DebtRevision):
+            raise ValueError("Pending overdue rating source revision is invalid")
         occurred_at = _normalize_aware_utc(self.overdue_at)
         tashkent_business_date(occurred_at)
         object.__setattr__(self, "overdue_at", occurred_at)
@@ -88,6 +91,7 @@ class PendingWrittenOffRatingEffect:
     debt_id: DebtId = field(repr=False)
     shop_customer_id: ShopCustomerId = field(repr=False)
     written_off_at: datetime
+    source_revision: DebtRevision
 
     def __post_init__(self) -> None:
         if not isinstance(self.event_id, UUID):
@@ -96,6 +100,8 @@ class PendingWrittenOffRatingEffect:
             raise ValueError("Pending write-off rating Debt is invalid")
         if not isinstance(self.shop_customer_id, ShopCustomerId):
             raise ValueError("Pending write-off rating ShopCustomer is invalid")
+        if not isinstance(self.source_revision, DebtRevision):
+            raise ValueError("Pending write-off rating source revision is invalid")
         occurred_at = _normalize_aware_utc(self.written_off_at)
         tashkent_business_date(occurred_at)
         object.__setattr__(self, "written_off_at", occurred_at)

@@ -90,6 +90,7 @@ def materialize_persisted_overdue_write_off(
             debt_id=updated.id,
             shop_customer_id=updated.shop_customer_id,
             written_off_at=updated.written_off_at,
+            source_revision=updated.written_off_revision,
         ),
         audit_payload=DebtWrittenOffAuditPayload(
             written_off_revision=updated.written_off_revision

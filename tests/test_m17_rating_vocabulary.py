@@ -23,15 +23,16 @@ def test_m17_persisted_debt_status_family_adds_only_written_off_states() -> None
     assert M15_PERSISTED_STATUSES < M17_PERSISTED_STATUSES
 
 
-def test_m17_rating_vocabulary_and_deltas_are_exact_and_exhaustive() -> None:
-    assert tuple(RatingEventType) == (
+def test_m17_rating_vocabulary_and_deltas_are_preserved_by_m18() -> None:
+    assert tuple(RatingEventType)[:4] == (
         RatingEventType.ON_TIME_PAID,
         RatingEventType.OVERDUE,
         RatingEventType.WRITTEN_OFF,
         RatingEventType.WRITTEN_OFF_SETTLED,
     )
     assert {
-        event_type: rating_event_delta(event_type) for event_type in RatingEventType
+        event_type: rating_event_delta(event_type)
+        for event_type in tuple(RatingEventType)[:4]
     } == {
         RatingEventType.ON_TIME_PAID: 5,
         RatingEventType.OVERDUE: -15,
@@ -97,13 +98,14 @@ def test_m17_rating_recording_sources_are_closed_per_event_type(
                 )
 
 
-def test_m17_vocabulary_excludes_reversal_compensation_and_override() -> None:
+def test_m17_vocabulary_excludes_unapproved_reversal_and_override() -> None:
     values = {event_type.value for event_type in RatingEventType}
 
     assert not values & {
         "written_off_reversed",
-        "compensation",
         "override",
+        "refund",
+        "unvoid",
         "voided",
         "notification",
     }

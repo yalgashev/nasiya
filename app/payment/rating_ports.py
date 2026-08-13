@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.debt.business_time import tashkent_business_date
 from app.debt.enums import DebtStatus
 from app.debt.values import DebtId, DebtRevision, OriginalAmountUZS
-from app.payment.values import PaymentAmountUZS, RemainingDueUZS
+from app.payment.values import PaymentAmountUZS, PaymentId, RemainingDueUZS
 from app.shop_customer.values import ShopCustomerId
 
 if TYPE_CHECKING:
@@ -25,6 +25,11 @@ __all__ = (
     "PaymentRatingAppendOutcome",
     "PaymentRatingEligibility",
     "PaymentRatingEligibilityFacts",
+    "PaymentVoidCompensationAppendOutcome",
+    "PaymentVoidRatingAppendPort",
+    "PaymentVoidRatingSourceReadPort",
+    "PaymentRatingPositiveSource",
+    "PreTransitionRatingSourceToken",
     "PendingOnTimePaidRatingEffect",
     "PendingWrittenOffSettledRatingEffect",
     "WrittenOffSettledRatingAppendOutcome",
@@ -46,6 +51,55 @@ class PaymentRatingEligibility(StrEnum):
 class WrittenOffSettledRatingAppendOutcome(StrEnum):
     APPENDED = "appended"
     SOURCE_ALREADY_EXISTS = "source_already_exists"
+
+
+class PaymentRatingPositiveSource(StrEnum):
+    ON_TIME_PAID = "on_time_paid"
+    WRITTEN_OFF_SETTLED = "written_off_settled"
+
+
+class PaymentVoidCompensationAppendOutcome(StrEnum):
+    APPENDED = "appended"
+    SOURCE_ALREADY_EXISTS = "source_already_exists"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class PreTransitionRatingSourceToken:
+    """Terminal marker proof captured before a Payment void clears it."""
+
+    payment_id: PaymentId = field(repr=False)
+    debt_id: DebtId = field(repr=False)
+    shop_customer_id: ShopCustomerId = field(repr=False)
+    positive_source: PaymentRatingPositiveSource
+    terminal_status: DebtStatus
+    source_revision: DebtRevision
+    source_occurred_at: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.payment_id, PaymentId):
+            raise ValueError("Pre-transition source Payment is invalid")
+        if not isinstance(self.debt_id, DebtId):
+            raise ValueError("Pre-transition source Debt is invalid")
+        if not isinstance(self.shop_customer_id, ShopCustomerId):
+            raise ValueError("Pre-transition source ShopCustomer is invalid")
+        expected_status = {
+            PaymentRatingPositiveSource.ON_TIME_PAID: DebtStatus.PAID,
+            PaymentRatingPositiveSource.WRITTEN_OFF_SETTLED: (
+                DebtStatus.WRITTEN_OFF_SETTLED
+            ),
+        }.get(self.positive_source)
+        if expected_status is None or self.terminal_status is not expected_status:
+            raise ValueError("Pre-transition rating source marker is incoherent")
+        if not isinstance(self.source_revision, DebtRevision):
+            raise ValueError("Pre-transition source revision is invalid")
+        object.__setattr__(
+            self,
+            "source_occurred_at",
+            _normalize_aware_utc(self.source_occurred_at),
+        )
+
+    def __repr__(self) -> str:
+        return "PreTransitionRatingSourceToken(<redacted>)"
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -74,6 +128,7 @@ class PendingOnTimePaidRatingEffect:
     shop_customer_id: ShopCustomerId = field(repr=False)
     payment_created_at: datetime
     payment_business_date: date
+    source_revision: DebtRevision
 
     def __post_init__(self) -> None:
         if not isinstance(self.event_id, UUID):
@@ -82,6 +137,8 @@ class PendingOnTimePaidRatingEffect:
             raise ValueError("Pending on-time rating Debt is invalid")
         if not isinstance(self.shop_customer_id, ShopCustomerId):
             raise ValueError("Pending on-time rating ShopCustomer is invalid")
+        if not isinstance(self.source_revision, DebtRevision):
+            raise ValueError("Pending on-time rating source revision is invalid")
         occurred_at = _normalize_aware_utc(self.payment_created_at)
         if (
             not isinstance(self.payment_business_date, date)
@@ -103,6 +160,7 @@ class PendingWrittenOffSettledRatingEffect:
     debt_id: DebtId = field(repr=False)
     shop_customer_id: ShopCustomerId = field(repr=False)
     payment_created_at: datetime
+    source_revision: DebtRevision
 
     def __post_init__(self) -> None:
         if not isinstance(self.event_id, UUID):
@@ -111,6 +169,8 @@ class PendingWrittenOffSettledRatingEffect:
             raise ValueError("Pending settlement rating Debt is invalid")
         if not isinstance(self.shop_customer_id, ShopCustomerId):
             raise ValueError("Pending settlement rating ShopCustomer is invalid")
+        if not isinstance(self.source_revision, DebtRevision):
+            raise ValueError("Pending settlement rating source revision is invalid")
         occurred_at = _normalize_aware_utc(self.payment_created_at)
         tashkent_business_date(occurred_at)
         object.__setattr__(self, "payment_created_at", occurred_at)
@@ -162,6 +222,32 @@ class LockedWrittenOffSettledRatingAppendPort(Protocol):
         locked_debt: LockedTenantPaymentDebt,
         effect: PendingWrittenOffSettledRatingEffect,
     ) -> WrittenOffSettledRatingAppendOutcome: ...
+
+
+@runtime_checkable
+class PaymentVoidRatingSourceReadPort(Protocol):
+    def read_pre_transition_source(
+        self,
+        session: Session,
+        *,
+        payment_id: PaymentId,
+        debt_id: DebtId,
+        shop_customer_id: ShopCustomerId,
+        terminal_status: DebtStatus,
+        source_revision: DebtRevision,
+        source_occurred_at: datetime,
+    ) -> PreTransitionRatingSourceToken | None: ...
+
+
+@runtime_checkable
+class PaymentVoidRatingAppendPort(Protocol):
+    def append_source_compensation(
+        self,
+        session: Session,
+        *,
+        source: PreTransitionRatingSourceToken,
+        voided_at: datetime,
+    ) -> PaymentVoidCompensationAppendOutcome: ...
 
 
 def _normalize_aware_utc(value: datetime) -> datetime:

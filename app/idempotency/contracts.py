@@ -20,12 +20,15 @@ from app.debt.values import (
     ShopId,
     UserId,
 )
+from app.payment.enums import PaymentVoidReason
+from app.payment.values import PaymentId
 
 __all__ = (
     "CanonicalIdempotencyKey",
     "CompletedIdempotencyResult",
     "CreateDebtRequestHash",
     "CreatePaymentRequestHash",
+    "VoidPaymentRequestHash",
     "WriteOffDebtRequestHash",
     "IdempotencyEndpoint",
     "IdempotencyKeyDigest",
@@ -34,6 +37,7 @@ __all__ = (
     "IdempotencyResultType",
     "canonical_idempotency_key_digest",
     "create_debt_request_hash",
+    "create_void_payment_request_hash_v1",
     "create_write_off_debt_request_hash_v1",
     "parse_idempotency_key",
     "require_matching_idempotency_keys",
@@ -42,6 +46,7 @@ __all__ = (
 _SHA256_HEX_PATTERN: Final = re.compile(r"[0-9a-f]{64}", flags=re.ASCII)
 _CREATE_DEBT_HASH_DOMAIN: Final = b"nasiya.m13.create-debt.request.v1"
 _WRITE_OFF_DEBT_HASH_DOMAIN_V1: Final = b"nasiya.m17.write-off-debt.request.v1"
+_VOID_PAYMENT_HASH_DOMAIN_V1: Final = b"nasiya.m18.void-payment.request.v1"
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -106,11 +111,23 @@ class WriteOffDebtRequestHash:
         return "WriteOffDebtRequestHash(<redacted>)"
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class VoidPaymentRequestHash:
+    value: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        _require_sha256_hex(self.value, field_name="Void-payment request hash")
+
+    def __repr__(self) -> str:
+        return "VoidPaymentRequestHash(<redacted>)"
+
+
 class IdempotencyEndpoint(StrEnum):
     SHOP_DEBTS_CREATE = "shop.debts.create"
     SHOP_DEBT_PAYMENTS_CREATE = "shop.debt_payments.create"
     SHOP_RISK_BAND_DISCLOSURES_CREATE = "shop.risk_band_disclosures.create"
     ADMIN_DEBTS_WRITE_OFF = "admin.debts.write_off"
+    SHOP_PAYMENTS_VOID = "shop.payments.void"
 
 
 class IdempotencyResultType(StrEnum):
@@ -302,6 +319,41 @@ def create_write_off_debt_request_hash_v1(
         )
     )
     return WriteOffDebtRequestHash(hashlib.sha256(encoded).hexdigest())
+
+
+def create_void_payment_request_hash_v1(
+    *,
+    actor_user_id: UserId,
+    shop_id: ShopId,
+    payment_id: PaymentId,
+    debt_id: DebtId,
+    expected_revision: DebtRevision,
+    reason: PaymentVoidReason,
+) -> VoidPaymentRequestHash:
+    """Bind the complete server-resolved M18 void mutation identity."""
+
+    if not isinstance(actor_user_id, UUID) or not isinstance(shop_id, UUID):
+        raise ValueError("Void-payment request identity is invalid")
+    if not isinstance(payment_id, PaymentId):
+        raise ValueError("Void-payment request Payment is invalid")
+    if not isinstance(debt_id, DebtId):
+        raise ValueError("Void-payment request Debt is invalid")
+    if not isinstance(expected_revision, DebtRevision):
+        raise ValueError("Void-payment request revision is invalid")
+    if not isinstance(reason, PaymentVoidReason):
+        raise ValueError("Void-payment request reason is invalid")
+    encoded = _length_safe_encode(
+        (
+            _VOID_PAYMENT_HASH_DOMAIN_V1,
+            actor_user_id.bytes,
+            shop_id.bytes,
+            payment_id.as_uuid().bytes,
+            debt_id.as_uuid().bytes,
+            str(expected_revision.value).encode("ascii"),
+            reason.value.encode("ascii"),
+        )
+    )
+    return VoidPaymentRequestHash(hashlib.sha256(encoded).hexdigest())
 
 
 def _length_safe_encode(parts: tuple[bytes, ...]) -> bytes:

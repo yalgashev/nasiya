@@ -23,6 +23,8 @@ class RatingEventType(StrEnum):
     OVERDUE = "overdue"
     WRITTEN_OFF = "written_off"
     WRITTEN_OFF_SETTLED = "written_off_settled"
+    ON_TIME_PAID_VOIDED = "on_time_paid_voided"
+    WRITTEN_OFF_SETTLED_VOIDED = "written_off_settled_voided"
 
 
 class RatingRecordingSource(StrEnum):
@@ -64,6 +66,8 @@ def rating_event_delta(event_type: RatingEventType) -> int:
         RatingEventType.OVERDUE: -15,
         RatingEventType.WRITTEN_OFF: -40,
         RatingEventType.WRITTEN_OFF_SETTLED: 10,
+        RatingEventType.ON_TIME_PAID_VOIDED: -5,
+        RatingEventType.WRITTEN_OFF_SETTLED_VOIDED: -10,
     }[event_type]
 
 
@@ -75,6 +79,8 @@ def rating_event_allowed_recording_sources(
     if event_type in {
         RatingEventType.WRITTEN_OFF,
         RatingEventType.WRITTEN_OFF_SETTLED,
+        RatingEventType.ON_TIME_PAID_VOIDED,
+        RatingEventType.WRITTEN_OFF_SETTLED_VOIDED,
     }:
         return frozenset({RatingRecordingSource.LIVE})
     return frozenset(

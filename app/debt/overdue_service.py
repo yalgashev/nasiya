@@ -221,6 +221,7 @@ def materialize_locked_overdue_debt(
             debt_id=DebtId(row.id),
             shop_customer_id=ShopCustomerId(row.shop_customer_id),
             overdue_at=normalized_now,
+            source_revision=transitioned.overdue_revision,
         ),
         source=source,
         overdue_revision=transitioned.overdue_revision,

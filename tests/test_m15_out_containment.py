@@ -78,9 +78,19 @@ def test_m17_written_off_extension_is_exact_but_absent_from_m15_revision() -> No
 
 
 def test_future_integrations_are_absent_from_new_m15_runtime_surfaces() -> None:
-    runtime = "\n".join(
-        _source(path) for path in M15_RUNTIME_AND_PERSISTENCE
-    ).casefold()
+    runtime_parts = []
+    for path in M15_RUNTIME_AND_PERSISTENCE:
+        source = _source(path).casefold()
+        if path == "app/payment/commands.py":
+            # M18 extends this closed parsing/command boundary only.  The
+            # producer remains forbidden until its later checkpoint.
+            for approved_symbol in (
+                "create_void_payment_request_hash_v1",
+                "assemble_void_payment_command",
+            ):
+                source = source.replace(approved_symbol, "")
+        runtime_parts.append(source)
+    runtime = "\n".join(runtime_parts)
     for forbidden_wiring in (
         "from app.rating",
         "import app.rating",

@@ -3,7 +3,7 @@ from uuid import UUID
 
 import pytest
 
-from app.debt.values import DebtId
+from app.debt.values import DebtId, DebtRevision
 from app.rating.contracts import (
     RatingEvent,
     RatingEventOrderKey,
@@ -38,6 +38,7 @@ def _event(
         "shop_customer_id": _PAIR_ID,
         "debt_id": debt_id,
         "recording_source": RatingRecordingSource.LIVE,
+        "source_revision": DebtRevision(event_number),
     }
     if event_type is RatingEventType.ON_TIME_PAID:
         return create_on_time_paid_rating_event(
@@ -187,11 +188,13 @@ def test_total_order_uses_time_then_debt_then_event_type() -> None:
         occurred_at=same_source_time,
         debt_id=DebtId(UUID(int=50)),
         event_type=RatingEventType.ON_TIME_PAID,
+        source_revision=DebtRevision(1),
     )
     overdue_key = RatingEventOrderKey(
         occurred_at=same_source_time,
         debt_id=DebtId(UUID(int=50)),
         event_type=RatingEventType.OVERDUE,
+        source_revision=DebtRevision(2),
     )
     assert positive_key.as_sort_key() < overdue_key.as_sort_key()
 

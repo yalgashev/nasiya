@@ -56,6 +56,7 @@ class ErrorCode(StrEnum):
     DEBT_EXPIRED = "DEBT_EXPIRED"
     IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
     PAYMENT_UNAVAILABLE = "PAYMENT_UNAVAILABLE"
+    PAYMENT_NOT_VOIDABLE = "PAYMENT_NOT_VOIDABLE"
     PAYMENT_AMOUNT_EXCEEDS_BALANCE = "PAYMENT_AMOUNT_EXCEEDS_BALANCE"
     DEBT_CHANGED = "DEBT_CHANGED"
     DEBT_NOT_PAYABLE = "DEBT_NOT_PAYABLE"
@@ -314,6 +315,11 @@ ERROR_CATALOG: Final[Mapping[ErrorCode, ErrorDefinition]] = MappingProxyType(
             code=ErrorCode.PAYMENT_UNAVAILABLE,
             user_message="To'lov hozir mavjud emas.",
             http_status=HTTPStatus.NOT_FOUND,
+        ),
+        ErrorCode.PAYMENT_NOT_VOIDABLE: ErrorDefinition(
+            code=ErrorCode.PAYMENT_NOT_VOIDABLE,
+            user_message="Bu to'lovni hozir bekor qilib bo'lmaydi.",
+            http_status=HTTPStatus.CONFLICT,
         ),
         ErrorCode.PAYMENT_AMOUNT_EXCEEDS_BALANCE: ErrorDefinition(
             code=ErrorCode.PAYMENT_AMOUNT_EXCEEDS_BALANCE,

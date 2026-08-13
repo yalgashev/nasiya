@@ -3,7 +3,7 @@ import pytest
 from app.auth.error_codes import ErrorCode
 from app.debt.enums import M17_PERSISTED_STATUSES
 from app.debt.presentation import DebtWebLanguage
-from app.payment.enums import PaymentMethod
+from app.payment.enums import PaymentMethod, PaymentVoidReason
 from app.payment.presentation import (
     PAYMENT_ROUTE_CONTRACTS,
     PAYMENT_WEB_COPY,
@@ -20,7 +20,7 @@ from app.shop.enums import ShopRole, ShopStatus
 
 
 @pytest.mark.parametrize("role", list(ShopRole))
-def test_active_owner_manager_and_cashier_can_read_and_create_payment(
+def test_active_staff_can_read_create_and_only_owner_manager_can_void_payment(
     role: ShopRole,
 ) -> None:
     capabilities = shop_payment_capabilities(
@@ -31,7 +31,15 @@ def test_active_owner_manager_and_cashier_can_read_and_create_payment(
         )
     )
 
-    assert capabilities == frozenset(PaymentShopCapability)
+    expected = {
+        PaymentShopCapability.LIST,
+        PaymentShopCapability.RECEIPT,
+        PaymentShopCapability.CREATE_FORM,
+        PaymentShopCapability.CREATE,
+    }
+    if role in {ShopRole.OWNER, ShopRole.MANAGER}:
+        expected.update({PaymentShopCapability.VOID_FORM, PaymentShopCapability.VOID})
+    assert capabilities == frozenset(expected)
 
 
 @pytest.mark.parametrize("role", list(ShopRole))
@@ -194,6 +202,7 @@ def test_payment_copy_catalog_is_exact_complete_and_immutable_in_both_locales() 
         "recovery_terms",
         "back_to_debt",
         "back_to_history",
+        *(f"void_reason_{reason.value}" for reason in PaymentVoidReason),
         *(method.value for method in PaymentMethod),
         *(f"status_{status.value}" for status in M17_PERSISTED_STATUSES),
     }
