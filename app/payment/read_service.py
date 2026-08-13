@@ -758,7 +758,15 @@ def _progress(
         discounted_amount=DiscountedAmountUZS(debt.discounted_amount_uzs),
         posted_total=posted,
     )
-    payable = status in {DebtStatus.ACTIVE, DebtStatus.OVERDUE} and remaining.value > 0
+    payable = (
+        status
+        in {
+            DebtStatus.ACTIVE,
+            DebtStatus.OVERDUE,
+            DebtStatus.WRITTEN_OFF,
+        }
+        and remaining.value > 0
+    )
     return DebtPaymentProgressProjection(
         posted_total_uzs=posted.value,
         remaining_due_uzs=remaining.value,
@@ -772,6 +780,11 @@ def _progress(
             status is DebtStatus.OVERDUE
             or (status is DebtStatus.ACTIVE and basis is DebtBalanceBasis.ORIGINAL)
         ),
+        written_off_settled_at=(
+            None
+            if debt.written_off_settled_at is None
+            else debt.written_off_settled_at.astimezone(UTC).isoformat()
+        ),
     )
 
 
@@ -784,7 +797,13 @@ def _current_progress_basis(
 ) -> DebtBalanceBasis:
     """Use the M15 basis resolver only for statuses with a current balance."""
 
-    if status in {DebtStatus.ACTIVE, DebtStatus.OVERDUE, DebtStatus.PAID}:
+    if status in {
+        DebtStatus.ACTIVE,
+        DebtStatus.OVERDUE,
+        DebtStatus.PAID,
+        DebtStatus.WRITTEN_OFF,
+        DebtStatus.WRITTEN_OFF_SETTLED,
+    }:
         return resolve_current_balance_basis(
             status=status,
             due_date=due_date,

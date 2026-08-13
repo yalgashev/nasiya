@@ -7,6 +7,7 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.audit.models import AuditLog
 from app.debt.rating_ports import (
     LockedOverdueRatingSource,
     OverdueRatingAppendOutcome,
@@ -21,6 +22,8 @@ from app.payment.rating_ports import (
     PaymentRatingEligibility,
     PaymentRatingEligibilityFacts,
     PendingOnTimePaidRatingEffect,
+    PendingWrittenOffSettledRatingEffect,
+    WrittenOffSettledRatingAppendOutcome,
 )
 from app.payment.targeting import (
     LockedTenantPaymentDebt,
@@ -30,6 +33,7 @@ from app.rating.contracts import (
     create_on_time_paid_rating_event,
     create_overdue_rating_event,
     create_written_off_rating_event,
+    create_written_off_settled_rating_event,
 )
 from app.rating.eligibility import (
     OnTimePaidEligibilityFacts,
@@ -209,6 +213,85 @@ class SqlAlchemyLockedRatingAppendAdapter:
             and rows[0].delta == -15
             and rows[0].occurred_at == overdue_at
         )
+
+    def has_coherent_written_off_source(
+        self,
+        session: Session,
+        *,
+        locked_debt: LockedTenantPaymentDebt,
+        written_off_at,
+        written_off_revision: DebtRevision,
+    ) -> bool:
+        locked = validate_locked_tenant_payment_debt(session, locked_debt)
+        if not isinstance(written_off_revision, DebtRevision):
+            raise TypeError("written_off_revision must be a DebtRevision")
+        rows = tuple(
+            session.execute(
+                select(
+                    RatingEvent.shop_customer_id,
+                    RatingEvent.delta,
+                    RatingEvent.occurred_at,
+                ).where(
+                    RatingEvent.debt_id == locked.row.id,
+                    RatingEvent.event_type == RatingEventType.WRITTEN_OFF.value,
+                )
+            )
+        )
+        audits = tuple(
+            session.execute(
+                select(
+                    AuditLog.actor_kind,
+                    AuditLog.actor_user_id,
+                    AuditLog.object_type,
+                    AuditLog.occurred_at,
+                    AuditLog.payload,
+                ).where(
+                    AuditLog.event_type == "debt.written_off",
+                    AuditLog.object_id == locked.row.id,
+                )
+            )
+        )
+        return (
+            len(rows) == 1
+            and len(audits) == 1
+            and (
+                rows[0].shop_customer_id == locked.row.shop_customer_id
+                and rows[0].delta == -40
+                and rows[0].occurred_at == written_off_at
+                and audits[0].actor_kind == "USER"
+                and audits[0].actor_user_id == locked.row.written_off_actor_user_id
+                and audits[0].object_type == "debt"
+                and audits[0].occurred_at == written_off_at
+                and audits[0].payload.get("written_off_revision")
+                == written_off_revision.value
+            )
+        )
+
+    def append_pending_written_off_settled(
+        self,
+        session: Session,
+        *,
+        locked_debt: LockedTenantPaymentDebt,
+        effect: PendingWrittenOffSettledRatingEffect,
+    ) -> WrittenOffSettledRatingAppendOutcome:
+        locked = validate_locked_tenant_payment_debt(session, locked_debt)
+        if not isinstance(effect, PendingWrittenOffSettledRatingEffect):
+            raise TypeError("effect must be a PendingWrittenOffSettledRatingEffect")
+        result = append_locked_source_event(
+            session,
+            locked_source=self._payment_scope(session, locked),
+            event=create_written_off_settled_rating_event(
+                event_id=RatingEventId(effect.event_id),
+                shop_customer_id=effect.shop_customer_id,
+                debt_id=effect.debt_id,
+                written_off_settled_at=effect.payment_created_at,
+            ),
+        )
+        if result.outcome is RatingEventAppendOutcome.APPENDED:
+            return WrittenOffSettledRatingAppendOutcome.APPENDED
+        if result.outcome is RatingEventAppendOutcome.SOURCE_ALREADY_EXISTS:
+            return WrittenOffSettledRatingAppendOutcome.SOURCE_ALREADY_EXISTS
+        raise RuntimeError("Rating event append failed")
 
     @staticmethod
     def _payment_scope(

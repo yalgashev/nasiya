@@ -146,6 +146,15 @@ class LockedPaymentRatingAppendPort(Protocol):
 class LockedWrittenOffSettledRatingAppendPort(Protocol):
     """M17-only settlement append surface; it does not widen the M16 port."""
 
+    def has_coherent_written_off_source(
+        self,
+        session: Session,
+        *,
+        locked_debt: LockedTenantPaymentDebt,
+        written_off_at: datetime,
+        written_off_revision: DebtRevision,
+    ) -> bool: ...
+
     def append_pending_written_off_settled(
         self,
         session: Session,

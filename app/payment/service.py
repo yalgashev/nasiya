@@ -11,11 +11,19 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from app.audit.contracts import DebtPaidAuditPayload, PaymentRecordedAuditPayload
-from app.audit.repository import append_debt_paid_audit, append_payment_recorded_audit
+from app.audit.contracts import (
+    DebtPaidAuditPayload,
+    DebtWrittenOffSettledAuditPayload,
+    PaymentRecordedAuditPayload,
+)
+from app.audit.repository import (
+    append_debt_paid_audit,
+    append_debt_written_off_settled_audit,
+    append_payment_recorded_audit,
+)
 from app.auth.error_codes import ErrorCode
 from app.debt.business_time import tashkent_business_date
-from app.debt.enums import DebtBalanceBasis, DebtOverdueSource
+from app.debt.enums import DebtBalanceBasis, DebtOverdueSource, DebtStatus
 from app.debt.overdue_service import (
     append_pending_overdue_audits,
     materialize_locked_overdue_debt,
@@ -54,10 +62,13 @@ from app.payment.policy import (
 )
 from app.payment.rating_ports import (
     LockedPaymentRatingAppendPort,
+    LockedWrittenOffSettledRatingAppendPort,
     PaymentRatingAppendOutcome,
     PaymentRatingEligibility,
     PaymentRatingEligibilityFacts,
     PendingOnTimePaidRatingEffect,
+    PendingWrittenOffSettledRatingEffect,
+    WrittenOffSettledRatingAppendOutcome,
 )
 from app.payment.repository import (
     SqlAlchemyLockedDebtPostedTotalReader,
@@ -325,12 +336,32 @@ def record_debt_payment(
         remaining=balance.remaining,
     )
 
-    updated_debt = debt.record_payment(
-        payment_amount_uzs=command.amount.value,
-        current_remaining_due_uzs=balance.remaining.value,
-        expected_revision=debt.revision,
-        payment_created_at=payability.payment_created_at,
-    )
+    is_written_off_recovery = debt.status is DebtStatus.WRITTEN_OFF
+    if is_written_off_recovery:
+        if not isinstance(rating_append_port, LockedWrittenOffSettledRatingAppendPort):
+            raise TypeError("rating_append_port must implement settlement port")
+        if debt.written_off_at is None or debt.written_off_revision is None:
+            raise RuntimeError("Written-off source is inconsistent")
+        if not rating_append_port.has_coherent_written_off_source(
+            session,
+            locked_debt=locked_debt,
+            written_off_at=debt.written_off_at,
+            written_off_revision=debt.written_off_revision,
+        ):
+            raise RuntimeError("Written-off source is inconsistent")
+        updated_debt = debt.record_written_off_recovery(
+            payment_amount_uzs=command.amount.value,
+            current_remaining_due_uzs=balance.remaining.value,
+            expected_revision=debt.revision,
+            payment_created_at=payability.payment_created_at,
+        )
+    else:
+        updated_debt = debt.record_payment(
+            payment_amount_uzs=command.amount.value,
+            current_remaining_due_uzs=balance.remaining.value,
+            expected_revision=debt.revision,
+            payment_created_at=payability.payment_created_at,
+        )
     payment = PaymentAggregate(
         id=payment_id,
         debt_id=debt.id,
@@ -343,7 +374,21 @@ def record_debt_payment(
     update_locked_debt(session, row=locked_debt.row, debt=updated_debt)
     insert_payment(session, locked_debt=locked_debt.row, payment=payment)
 
-    if overdue_effect is not None:
+    if is_written_off_recovery:
+        if amount_outcome is PaymentAmountOutcome.FULL:
+            settlement_outcome = rating_append_port.append_pending_written_off_settled(
+                session,
+                locked_debt=locked_debt,
+                effect=PendingWrittenOffSettledRatingEffect(
+                    event_id=uuid4(),
+                    debt_id=debt.id,
+                    shop_customer_id=debt.shop_customer_id,
+                    payment_created_at=payment.created_at,
+                ),
+            )
+            if settlement_outcome is not WrittenOffSettledRatingAppendOutcome.APPENDED:
+                raise RuntimeError("Settlement rating source is inconsistent")
+    elif overdue_effect is not None:
         assert overdue_rating_source is not None
         overdue_outcome = rating_append_port.append_pending_overdue(
             session,
@@ -422,7 +467,21 @@ def record_debt_payment(
             debt_revision_after=updated_debt.revision,
         ),
     )
-    if amount_outcome is PaymentAmountOutcome.FULL:
+    if is_written_off_recovery and amount_outcome is PaymentAmountOutcome.FULL:
+        assert updated_debt.written_off_settled_at is not None
+        assert updated_debt.written_off_settled_revision is not None
+        append_debt_written_off_settled_audit(
+            session,
+            debt_id=debt.id.as_uuid(),
+            actor_user_id=actor.actor_user_id,
+            occurred_at=payment.created_at,
+            written_off_settled_at=updated_debt.written_off_settled_at,
+            current_revision=updated_debt.written_off_settled_revision,
+            payload=DebtWrittenOffSettledAuditPayload(
+                debt_revision_after=updated_debt.written_off_settled_revision,
+            ),
+        )
+    elif amount_outcome is PaymentAmountOutcome.FULL:
         append_debt_paid_audit(
             session,
             debt_id=debt.id.as_uuid(),
@@ -468,7 +527,7 @@ def _resolve_completed_payment(
         or scoped.payment.amount_uzs != command.amount.value
         or scoped.payment.method != command.method.value
         or scoped.payment.debt_revision_after
-        not in _allowed_completed_revisions(command)
+        not in _allowed_completed_revisions(command, debt=scoped.debt)
     ):
         raise PaymentMutationRejected(ErrorCode.PAYMENT_UNAVAILABLE)
     return RecordDebtPaymentResult(
@@ -548,8 +607,10 @@ def resolve_completed_m14_payment_replay(
     )
 
 
-def _allowed_completed_revisions(command: CreatePaymentV2Command) -> set[int]:
+def _allowed_completed_revisions(command: CreatePaymentV2Command, *, debt) -> set[int]:
     base = command.expected_revision.value
+    if debt.written_off_at is not None:
+        return {base + 1}
     if command.expected_balance_basis.value == "original":
         return {base + 1, base + 2}
     return {base + 1}

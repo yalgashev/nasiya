@@ -77,6 +77,8 @@ PAYMENT_WEB_COPY: Final[Mapping[DebtWebLanguage, Mapping[str, str]]] = MappingPr
                 "status_cancelled": "Bekor qilingan",
                 "status_expired": "Muddati tugagan",
                 "status_overdue": "Muddati o'tgan",
+                "status_written_off": "Undirishdan chiqarilgan",
+                "status_written_off_settled": "Undirish qarzi yopilgan",
                 "back_to_debt": "Qarzga qaytish",
                 "back_to_history": "To'lovlar tarixiga qaytish",
             }
@@ -131,6 +133,8 @@ PAYMENT_WEB_COPY: Final[Mapping[DebtWebLanguage, Mapping[str, str]]] = MappingPr
                 "status_cancelled": "Отменён",
                 "status_expired": "Срок истёк",
                 "status_overdue": "Срок оплаты истёк",
+                "status_written_off": "Списан для взыскания",
+                "status_written_off_settled": "Списанный долг погашен",
                 "back_to_debt": "Вернуться к долгу",
                 "back_to_history": "Вернуться к истории платежей",
             }

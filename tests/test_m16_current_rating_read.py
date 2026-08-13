@@ -26,6 +26,7 @@ def _row(
             "on_time_paid": 5,
             "overdue": -15,
             "written_off": -40,
+            "written_off_settled": 10,
         }[event_type],
     )
 
@@ -109,6 +110,20 @@ def test_written_off_chain_folds_sequentially_and_remains_hard_blocked() -> None
     corrupt = (rows[1],)
     with pytest.raises(IncoherentScalarRatingHistoryError):
         derive_current_rating_state(corrupt, global_hard_block=True)
+
+
+def test_settlement_history_unblocks_to_numeric_without_becoming_new() -> None:
+    debt_id = UUID(int=18)
+    rows = (
+        (datetime(2026, 8, 1, tzinfo=UTC), debt_id, "overdue", -15),
+        (datetime(2026, 8, 2, tzinfo=UTC), debt_id, "written_off", -40),
+        (datetime(2026, 8, 3, tzinfo=UTC), debt_id, "written_off_settled", 10),
+    )
+    result = derive_current_rating_state(rows, global_hard_block=False)
+
+    assert result.current_score == 15
+    assert result.has_history is True
+    assert result.band is RiskBand.RED
 
 
 def test_current_rating_read_uses_no_write_or_cache_surface() -> None:

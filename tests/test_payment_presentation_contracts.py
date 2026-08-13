@@ -1,7 +1,7 @@
 import pytest
 
 from app.auth.error_codes import ErrorCode
-from app.debt.enums import M15_PERSISTED_STATUSES
+from app.debt.enums import M17_PERSISTED_STATUSES
 from app.debt.presentation import DebtWebLanguage
 from app.payment.enums import PaymentMethod
 from app.payment.presentation import (
@@ -193,7 +193,7 @@ def test_payment_copy_catalog_is_exact_complete_and_immutable_in_both_locales() 
         "back_to_debt",
         "back_to_history",
         *(method.value for method in PaymentMethod),
-        *(f"status_{status.value}" for status in M15_PERSISTED_STATUSES),
+        *(f"status_{status.value}" for status in M17_PERSISTED_STATUSES),
     }
 
     assert set(PAYMENT_WEB_COPY) == set(DebtWebLanguage)

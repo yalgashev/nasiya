@@ -132,6 +132,11 @@ def derive_current_rating_state(
         (RatingEventType.ON_TIME_PAID,),
         (RatingEventType.OVERDUE,),
         (RatingEventType.OVERDUE, RatingEventType.WRITTEN_OFF),
+        (
+            RatingEventType.OVERDUE,
+            RatingEventType.WRITTEN_OFF,
+            RatingEventType.WRITTEN_OFF_SETTLED,
+        ),
     }
     if any(tuple(chain) not in allowed_chains for chain in by_debt.values()):
         raise IncoherentScalarRatingHistoryError("Rating history is incoherent")
