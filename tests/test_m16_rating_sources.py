@@ -27,6 +27,7 @@ from app.rating.enums import (
     RatingEventAppendOutcome,
     RatingEventType,
     RatingRecordingSource,
+    rating_event_delta,
 )
 from app.rating.ports import (
     LockedRatingCustomerScope,
@@ -63,7 +64,10 @@ def _source_event(
     )
 
 
-@pytest.mark.parametrize("event_type", tuple(RatingEventType))
+@pytest.mark.parametrize(
+    "event_type",
+    (RatingEventType.ON_TIME_PAID, RatingEventType.OVERDUE),
+)
 @pytest.mark.parametrize("source", tuple(RatingRecordingSource))
 def test_factories_allow_only_exact_source_event_matrix(
     event_type: RatingEventType,
@@ -73,7 +77,7 @@ def test_factories_allow_only_exact_source_event_matrix(
 
     assert event.event_type is event_type
     assert event.recording_source is source
-    assert event.delta == (5 if event_type is RatingEventType.ON_TIME_PAID else -15)
+    assert event.delta == rating_event_delta(event_type)
     assert event.business_date == date(2026, 5, 2)
     assert event.source_key == (event.debt_id, event_type)
 

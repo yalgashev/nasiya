@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Final
 from uuid import UUID
 
-from app.debt.enums import M15_PERSISTED_STATUSES, DebtBalanceBasis, DebtStatus
+from app.debt.enums import M17_PERSISTED_STATUSES, DebtBalanceBasis, DebtStatus
 from app.debt.values import (
     ClawbackIncreaseUZS,
     DiscountedAmountUZS,
@@ -218,7 +218,7 @@ def calculate_payment_exposure(
     discounted_amount: DiscountedAmountUZS,
     posted_total: PostedPaymentTotalUZS,
 ) -> PaymentExposureUZS:
-    _require_m15_debt_status(status)
+    _require_supported_debt_status(status)
     _require_debt_amount_relationship(
         original_amount=original_amount,
         discounted_amount=discounted_amount,
@@ -240,7 +240,7 @@ def calculate_payment_exposure(
 
 
 def open_debt_count_contribution(status: DebtStatus) -> int:
-    _require_m15_debt_status(status)
+    _require_supported_debt_status(status)
     return int(status in {DebtStatus.PENDING, DebtStatus.ACTIVE, DebtStatus.OVERDUE})
 
 
@@ -258,9 +258,9 @@ def require_payment_amount_within_remaining(
     return amount
 
 
-def _require_m15_debt_status(status: DebtStatus) -> None:
-    if not isinstance(status, DebtStatus) or status not in M15_PERSISTED_STATUSES:
-        raise ValueError("Debt status is outside the M15 persisted subset")
+def _require_supported_debt_status(status: DebtStatus) -> None:
+    if not isinstance(status, DebtStatus) or status not in M17_PERSISTED_STATUSES:
+        raise ValueError("Debt status is outside the M17 persisted subset")
 
 
 def _require_coherent_posted_total(
@@ -315,6 +315,18 @@ def _require_status_coherent_posted_total(
         if posted_total.value >= original_amount.value:
             raise IncoherentPaymentLedgerError(
                 "Overdue debt must retain an original-basis balance"
+            )
+        return
+    if status is DebtStatus.WRITTEN_OFF:
+        if posted_total.value >= original_amount.value:
+            raise IncoherentPaymentLedgerError(
+                "Written-off debt must retain an original-basis balance"
+            )
+        return
+    if status is DebtStatus.WRITTEN_OFF_SETTLED:
+        if posted_total.value != original_amount.value:
+            raise IncoherentPaymentLedgerError(
+                "Settled written-off debt total must equal original amount"
             )
         return
     if posted_total.value not in {

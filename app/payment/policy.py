@@ -92,6 +92,11 @@ def evaluate_locked_debt_payability(
             payment_created_at=captured_now.value,
             balance_basis=DebtBalanceBasis.ORIGINAL,
         )
+    if debt.status is DebtStatus.WRITTEN_OFF:
+        return PaymentPayabilityDecision(
+            payment_created_at=captured_now.value,
+            balance_basis=DebtBalanceBasis.ORIGINAL,
+        )
     if debt.status is not DebtStatus.ACTIVE:
         return PaymentPayabilityDecision(
             payment_created_at=captured_now.value,

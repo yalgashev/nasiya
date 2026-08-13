@@ -22,7 +22,7 @@ from app.rating.disclosure_service import (
     read_risk_band_disclosure_snapshot,
     record_risk_band_disclosure,
 )
-from app.rating.enums import RiskBand
+from app.rating.enums import RatingEventType, RiskBand
 from app.rating.ports import (
     LockedRatingSourceScope,
     RatingEventAppendError,
@@ -123,7 +123,30 @@ def _ordered_coherent_events(
         raise ValueError("Rating history contains an invalid event")
 
     source_keys = {event.source_key for event in received}
-    debt_ids = {event.debt_id for event in received}
-    if len(source_keys) != len(received) or len(debt_ids) != len(received):
+    if len(source_keys) != len(received):
         raise IncoherentRatingHistoryError("Rating history is incoherent")
+    by_debt: dict[object, list[RatingEvent]] = {}
+    for event in received:
+        by_debt.setdefault(event.debt_id, []).append(event)
+    allowed_chains = {
+        (RatingEventType.ON_TIME_PAID,),
+        (RatingEventType.OVERDUE,),
+        (RatingEventType.OVERDUE, RatingEventType.WRITTEN_OFF),
+        (
+            RatingEventType.OVERDUE,
+            RatingEventType.WRITTEN_OFF,
+            RatingEventType.WRITTEN_OFF_SETTLED,
+        ),
+    }
+    for debt_events in by_debt.values():
+        source_ordered = sorted(
+            debt_events,
+            key=lambda event: (
+                event.occurred_at,
+                event.event_type.value,
+            ),
+        )
+        chain = tuple(event.event_type for event in source_ordered)
+        if chain not in allowed_chains:
+            raise IncoherentRatingHistoryError("Rating history is incoherent")
     return tuple(sorted(received, key=lambda event: event.order_key.as_sort_key()))

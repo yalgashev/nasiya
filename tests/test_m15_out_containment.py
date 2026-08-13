@@ -35,10 +35,29 @@ def test_future_written_off_enum_is_allowlisted_but_not_m15_persistence() -> Non
         for path in (PROJECT_ROOT / "app").rglob("*.py")
         if "written_off" in path.read_text(encoding="utf-8").casefold()
     }
-    assert vocabulary_paths == {"app/debt/enums.py"}
+    assert vocabulary_paths == {
+        "app/audit/contracts.py",
+        "app/audit/redaction.py",
+        "app/debt/contracts.py",
+        "app/debt/enums.py",
+        "app/debt/payment_progress.py",
+        "app/debt/policy.py",
+        "app/debt/rating_ports.py",
+        "app/payment/contracts.py",
+        "app/payment/policy.py",
+        "app/payment/rating_ports.py",
+        "app/payment/values.py",
+        "app/rating/contracts.py",
+        "app/rating/enums.py",
+        "app/rating/service.py",
+    }
 
-    runtime = "\n".join(_source(path) for path in M15_RUNTIME_AND_PERSISTENCE)
-    assert "written_off" not in runtime.casefold()
+    assert (
+        "written_off"
+        not in _source(
+            "alembic/versions/b6c7d8e9f0a1_add_overdue_persistence.py"
+        ).casefold()
+    )
 
 
 def test_future_integrations_are_absent_from_new_m15_runtime_surfaces() -> None:

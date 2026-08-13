@@ -13,6 +13,7 @@ __all__ = (
     "M13_PERSISTED_STATUSES",
     "M14_PERSISTED_STATUSES",
     "M15_PERSISTED_STATUSES",
+    "M17_PERSISTED_STATUSES",
     "parse_debt_status",
 )
 
@@ -52,6 +53,15 @@ M15_PERSISTED_STATUSES: Final[frozenset[DebtStatus]] = frozenset(
     {
         *M14_PERSISTED_STATUSES,
         DebtStatus.OVERDUE,
+    }
+)
+
+
+M17_PERSISTED_STATUSES: Final[frozenset[DebtStatus]] = frozenset(
+    {
+        *M15_PERSISTED_STATUSES,
+        DebtStatus.WRITTEN_OFF,
+        DebtStatus.WRITTEN_OFF_SETTLED,
     }
 )
 

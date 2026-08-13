@@ -7,6 +7,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
+from app.debt.enums import DebtStatus
 from app.debt.values import CustomerId, OriginalAmountUZS, ShopCustomerId
 from app.shop_customer.contracts import DebtlessShopCustomerPolicyProjection
 from app.shop_customer.enums import ShopCustomerListStatus
@@ -21,7 +22,16 @@ __all__ = (
     "OpenDebtExposure",
     "OpenDebtExposureReadPort",
     "decide_debt_creation_eligibility",
+    "is_unresolved_persisted_hard_block_status",
 )
+
+
+def is_unresolved_persisted_hard_block_status(status: DebtStatus) -> bool:
+    """Return the debt-derived persisted overlay, never a score-derived block."""
+
+    if not isinstance(status, DebtStatus):
+        raise ValueError("Hard-block Debt status is invalid")
+    return status in {DebtStatus.OVERDUE, DebtStatus.WRITTEN_OFF}
 
 
 @dataclass(frozen=True, slots=True)

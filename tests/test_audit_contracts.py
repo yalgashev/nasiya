@@ -51,6 +51,8 @@ def test_audit_contract_registries_include_exact_m12_extensions() -> None:
         "debt.clawback_applied",
         "payment.recorded",
         "debt.paid",
+        "debt.written_off",
+        "debt.written_off_settled",
         "disclosure.risk_band_viewed",
     }
     assert {object_type.value for object_type in AuditObjectType} == {

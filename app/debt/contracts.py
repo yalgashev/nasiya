@@ -6,6 +6,7 @@ import unicodedata
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from enum import StrEnum
 from uuid import UUID
 
 from app.debt.business_time import (
@@ -17,7 +18,7 @@ from app.debt.business_time import (
     validate_due_date_not_before_expiry_business_date,
 )
 from app.debt.enums import (
-    M15_PERSISTED_STATUSES,
+    M17_PERSISTED_STATUSES,
     DebtExpirySource,
     DebtOverdueSource,
     DebtPaymentFailure,
@@ -39,6 +40,7 @@ __all__ = (
     "DebtPaymentTransitionError",
     "DebtProjection",
     "DebtReason",
+    "WriteOffReason",
 )
 
 
@@ -57,6 +59,14 @@ class DebtPaymentTransitionError(DebtLifecycleError):
 
     def __repr__(self) -> str:
         return f"DebtPaymentTransitionError(failure={self.failure!r})"
+
+
+class WriteOffReason(StrEnum):
+    COLLECTION_EXHAUSTED = "collection_exhausted"
+    CUSTOMER_UNREACHABLE = "customer_unreachable"
+    INSOLVENCY_OR_DECEASED = "insolvency_or_deceased"
+    LEGAL_OR_COMPLIANCE = "legal_or_compliance"
+    FRAUD_OR_ABUSE = "fraud_or_abuse"
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -100,6 +110,8 @@ class DebtProjection:
     paid_at: datetime | None
     overdue_at: datetime | None = None
     overdue_revision: DebtRevision | None = None
+    written_off_at: datetime | None = None
+    written_off_settled_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -127,6 +139,12 @@ class DebtAggregate:
     overdue_revision: DebtRevision | None = None
     rejection_reason: DebtReason | None = field(default=None, repr=False)
     cancellation_reason: DebtReason | None = field(default=None, repr=False)
+    written_off_at: datetime | None = None
+    written_off_revision: DebtRevision | None = None
+    written_off_reason: WriteOffReason | None = field(default=None, repr=False)
+    written_off_by_user_id: UserId | None = field(default=None, repr=False)
+    written_off_settled_at: datetime | None = None
+    written_off_settled_revision: DebtRevision | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.id, DebtId):
@@ -146,7 +164,7 @@ class DebtAggregate:
             raise ValueError("Debt due date is invalid")
         if (
             not isinstance(self.status, DebtStatus)
-            or self.status not in M15_PERSISTED_STATUSES
+            or self.status not in M17_PERSISTED_STATUSES
         ):
             raise ValueError("Debt status is invalid")
         if not isinstance(self.revision, DebtRevision):
@@ -172,6 +190,8 @@ class DebtAggregate:
             "expired_at",
             "paid_at",
             "overdue_at",
+            "written_off_at",
+            "written_off_settled_at",
         ):
             value = getattr(self, field_name)
             if value is not None:
@@ -186,6 +206,7 @@ class DebtAggregate:
                 raise ValueError("Debt overdue revision is invalid")
             if self.overdue_revision.value > self.revision.value:
                 raise ValueError("Debt overdue revision cannot exceed current revision")
+        self._validate_write_off_metadata()
         self._validate_lifecycle_timestamps()
 
     @classmethod
@@ -352,6 +373,82 @@ class DebtAggregate:
             overdue_revision=overdue_revision,
         )
 
+    def mark_written_off(
+        self,
+        *,
+        now: datetime,
+        actor_user_id: UserId,
+        reason: WriteOffReason,
+        posted_total_uzs: Decimal,
+        expected_revision: DebtRevision,
+    ) -> DebtAggregate:
+        if self.status is not DebtStatus.OVERDUE:
+            raise DebtLifecycleError("Debt is not writable off")
+        if not isinstance(expected_revision, DebtRevision):
+            raise ValueError("Expected debt revision is invalid")
+        if expected_revision != self.revision:
+            raise DebtPaymentTransitionError(DebtPaymentFailure.CHANGED)
+        if not isinstance(reason, WriteOffReason):
+            raise ValueError("Write-off reason is invalid")
+        _require_uuid(actor_user_id, field_name="write-off actor")
+        if (
+            not _is_nonnegative_whole_uzs(posted_total_uzs)
+            or posted_total_uzs >= self.original_amount.value
+        ):
+            raise DebtLifecycleError("Debt write-off balance is invalid")
+        transition_at = _transition_time(now)
+        if self.overdue_at is None or transition_at < self.overdue_at:
+            raise DebtLifecycleError("Debt write-off time is invalid")
+        revision = DebtRevision(self.revision.value + 1)
+        return replace(
+            self,
+            status=DebtStatus.WRITTEN_OFF,
+            revision=revision,
+            updated_at=transition_at,
+            written_off_at=transition_at,
+            written_off_revision=revision,
+            written_off_reason=reason,
+            written_off_by_user_id=actor_user_id,
+        )
+
+    def record_written_off_recovery(
+        self,
+        *,
+        payment_amount_uzs: Decimal,
+        current_remaining_due_uzs: Decimal,
+        expected_revision: DebtRevision,
+        payment_created_at: datetime,
+    ) -> DebtAggregate:
+        if self.status is not DebtStatus.WRITTEN_OFF:
+            raise DebtPaymentTransitionError(DebtPaymentFailure.NOT_PAYABLE)
+        if not isinstance(expected_revision, DebtRevision):
+            raise ValueError("Expected debt revision is invalid")
+        if expected_revision != self.revision:
+            raise DebtPaymentTransitionError(DebtPaymentFailure.CHANGED)
+        if (
+            not _is_positive_whole_uzs(current_remaining_due_uzs)
+            or current_remaining_due_uzs > self.original_amount.value
+        ):
+            raise DebtPaymentTransitionError(DebtPaymentFailure.NOT_PAYABLE)
+        if not _is_positive_whole_uzs(payment_amount_uzs):
+            raise ValueError("Payment amount is invalid")
+        if payment_amount_uzs > current_remaining_due_uzs:
+            raise DebtPaymentTransitionError(DebtPaymentFailure.AMOUNT_EXCEEDS_BALANCE)
+        transition_at = normalize_payment_created_at(payment_created_at)
+        if self.written_off_at is None or transition_at < self.written_off_at:
+            raise DebtPaymentTransitionError(DebtPaymentFailure.NOT_PAYABLE)
+        revision = DebtRevision(self.revision.value + 1)
+        if payment_amount_uzs < current_remaining_due_uzs:
+            return replace(self, revision=revision, updated_at=transition_at)
+        return replace(
+            self,
+            status=DebtStatus.WRITTEN_OFF_SETTLED,
+            revision=revision,
+            updated_at=transition_at,
+            written_off_settled_at=transition_at,
+            written_off_settled_revision=revision,
+        )
+
     def to_projection(self) -> DebtProjection:
         return DebtProjection(
             original_amount=self.original_amount,
@@ -370,6 +467,8 @@ class DebtAggregate:
             paid_at=self.paid_at,
             overdue_at=self.overdue_at,
             overdue_revision=self.overdue_revision,
+            written_off_at=self.written_off_at,
+            written_off_settled_at=self.written_off_settled_at,
         )
 
     def _require_unexpired_pending(self, now: datetime) -> None:
@@ -475,6 +574,19 @@ class DebtAggregate:
             if self.overdue_at < self.accepted_at:
                 raise ValueError("Debt overdue timestamp cannot precede acceptance")
             return
+        if self.status in {DebtStatus.WRITTEN_OFF, DebtStatus.WRITTEN_OFF_SETTLED}:
+            if (
+                self.accepted_at is None
+                or self.overdue_at is None
+                or any(value is not None for value in terminal_times)
+                or self.paid_at is not None
+                or self.rejection_reason is not None
+                or self.cancellation_reason is not None
+            ):
+                raise ValueError("Written-off debt lifecycle metadata is invalid")
+            if self.overdue_at < self.accepted_at:
+                raise ValueError("Debt overdue timestamp cannot precede acceptance")
+            return
         if self.status is DebtStatus.PAID:
             if (
                 self.accepted_at is None
@@ -505,7 +617,62 @@ class DebtAggregate:
                 if self.overdue_at < self.accepted_at or self.paid_at < self.overdue_at:
                     raise ValueError("Late-paid debt timestamps are out of order")
             return
-        raise ValueError("Debt cannot use a status outside M15")
+        raise ValueError("Debt cannot use a status outside M17")
+
+    def _validate_write_off_metadata(self) -> None:
+        write_off_values = (
+            self.written_off_at,
+            self.written_off_revision,
+            self.written_off_reason,
+            self.written_off_by_user_id,
+        )
+        if any(value is not None for value in write_off_values) and not all(
+            value is not None for value in write_off_values
+        ):
+            raise ValueError("Debt write-off metadata must be present together")
+        settlement_values = (
+            self.written_off_settled_at,
+            self.written_off_settled_revision,
+        )
+        if any(value is not None for value in settlement_values) and not all(
+            value is not None for value in settlement_values
+        ):
+            raise ValueError("Debt settlement metadata must be present together")
+        has_write_off = all(value is not None for value in write_off_values)
+        has_settlement = all(value is not None for value in settlement_values)
+        if self.status not in {DebtStatus.WRITTEN_OFF, DebtStatus.WRITTEN_OFF_SETTLED}:
+            if has_write_off or has_settlement:
+                raise ValueError("Debt status cannot carry write-off metadata")
+            return
+        if not has_write_off:
+            raise ValueError("Written-off debt requires write-off metadata")
+        if self.overdue_at is None or self.overdue_revision is None:
+            raise ValueError("Written-off debt requires overdue metadata")
+        assert self.written_off_revision is not None
+        assert self.written_off_at is not None
+        if not isinstance(self.written_off_reason, WriteOffReason):
+            raise ValueError("Debt write-off reason is invalid")
+        _require_uuid(self.written_off_by_user_id, field_name="write-off actor")
+        if self.written_off_revision.value <= self.overdue_revision.value:
+            raise ValueError("Debt write-off revision must follow overdue revision")
+        if self.written_off_revision.value > self.revision.value:
+            raise ValueError("Debt write-off revision cannot exceed current revision")
+        if self.written_off_at < self.overdue_at:
+            raise ValueError("Debt write-off time cannot precede overdue time")
+        if self.status is DebtStatus.WRITTEN_OFF:
+            if has_settlement:
+                raise ValueError("Unsettled written-off debt cannot carry settlement")
+            return
+        if not has_settlement:
+            raise ValueError("Settled written-off debt requires settlement metadata")
+        assert self.written_off_settled_revision is not None
+        assert self.written_off_settled_at is not None
+        if self.written_off_settled_revision.value <= self.written_off_revision.value:
+            raise ValueError("Debt settlement revision must follow write-off revision")
+        if self.written_off_settled_revision != self.revision:
+            raise ValueError("Debt settlement revision must equal current revision")
+        if self.written_off_settled_at < self.written_off_at:
+            raise ValueError("Debt settlement time cannot precede write-off time")
 
     def _require_no_overdue_metadata(self) -> None:
         if self.overdue_at is not None or self.overdue_revision is not None:
@@ -524,7 +691,8 @@ class DebtAggregate:
             f"updated_at={self.updated_at!r}, accepted_at={self.accepted_at!r}, "
             f"rejected_at={self.rejected_at!r}, cancelled_at={self.cancelled_at!r}, "
             f"expired_at={self.expired_at!r}, rejection_reason=<redacted>, "
-            f"paid_at={self.paid_at!r}, cancellation_reason=<redacted>)"
+            f"paid_at={self.paid_at!r}, cancellation_reason=<redacted>, "
+            "written_off_reason=<redacted>, written_off_by_user_id=<redacted>)"
         )
 
 

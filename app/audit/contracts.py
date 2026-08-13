@@ -57,6 +57,8 @@ class AuditEventType(StrEnum):
     DEBT_CLAWBACK_APPLIED = "debt.clawback_applied"
     PAYMENT_RECORDED = "payment.recorded"
     DEBT_PAID = "debt.paid"
+    DEBT_WRITTEN_OFF = "debt.written_off"
+    DEBT_WRITTEN_OFF_SETTLED = "debt.written_off_settled"
     DISCLOSURE_RISK_BAND_VIEWED = "disclosure.risk_band_viewed"
 
 
@@ -110,6 +112,8 @@ _EVENT_OBJECT_TYPES: Final[Mapping[AuditEventType, AuditObjectType]] = MappingPr
         AuditEventType.DEBT_CLAWBACK_APPLIED: AuditObjectType.DEBT,
         AuditEventType.PAYMENT_RECORDED: AuditObjectType.PAYMENT,
         AuditEventType.DEBT_PAID: AuditObjectType.DEBT,
+        AuditEventType.DEBT_WRITTEN_OFF: AuditObjectType.DEBT,
+        AuditEventType.DEBT_WRITTEN_OFF_SETTLED: AuditObjectType.DEBT,
         AuditEventType.DISCLOSURE_RISK_BAND_VIEWED: (AuditObjectType.DISCLOSURE_VIEW),
     }
 )
@@ -336,6 +340,9 @@ class PaymentRecordedAuditPayload:
         allowed_targets = {
             DebtStatus.ACTIVE: frozenset({DebtStatus.ACTIVE, DebtStatus.PAID}),
             DebtStatus.OVERDUE: frozenset({DebtStatus.OVERDUE, DebtStatus.PAID}),
+            DebtStatus.WRITTEN_OFF: frozenset(
+                {DebtStatus.WRITTEN_OFF, DebtStatus.WRITTEN_OFF_SETTLED}
+            ),
         }
         if self.to_status not in allowed_targets.get(self.from_status, frozenset()):
             raise ValueError("Payment recorded audit target status is invalid")
@@ -372,6 +379,110 @@ class DebtPaidAuditPayload:
                 "debt_revision_after": self.debt_revision_after.value,
             }
         )
+
+
+@dataclass(frozen=True, slots=True)
+class DebtWrittenOffAuditPayload:
+    written_off_revision: DebtRevision
+    reason_provided: bool = field(default=True, init=False)
+    from_status: DebtStatus = field(default=DebtStatus.OVERDUE, init=False)
+    to_status: DebtStatus = field(default=DebtStatus.WRITTEN_OFF, init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.written_off_revision, DebtRevision):
+            raise ValueError("Debt write-off audit revision is invalid")
+
+    def as_candidate_metadata(self) -> Mapping[str, object]:
+        return MappingProxyType(
+            {
+                "reason_provided": True,
+                "from_status": self.from_status.value,
+                "to_status": self.to_status.value,
+                "written_off_revision": self.written_off_revision.value,
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DebtWrittenOffSettledAuditPayload:
+    debt_revision_after: DebtRevision
+    source: str = field(default="payment", init=False)
+    from_status: DebtStatus = field(default=DebtStatus.WRITTEN_OFF, init=False)
+    to_status: DebtStatus = field(default=DebtStatus.WRITTEN_OFF_SETTLED, init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.debt_revision_after, DebtRevision):
+            raise ValueError("Debt settlement audit revision is invalid")
+
+    def as_candidate_metadata(self) -> Mapping[str, object]:
+        return MappingProxyType(
+            {
+                "source": self.source,
+                "from_status": self.from_status.value,
+                "to_status": self.to_status.value,
+                "debt_revision_after": self.debt_revision_after.value,
+            }
+        )
+
+
+def create_debt_written_off_audit_event(
+    *,
+    actor_user_id: UUID,
+    debt_id: UUID,
+    occurred_at: datetime,
+    written_off_at: datetime,
+    current_revision: DebtRevision,
+    payload: DebtWrittenOffAuditPayload,
+) -> AuditEvent:
+    if not isinstance(payload, DebtWrittenOffAuditPayload):
+        raise ValueError("Debt write-off audit payload is invalid")
+    if not isinstance(current_revision, DebtRevision):
+        raise ValueError("Debt write-off audit current revision is invalid")
+    normalized = _as_utc(occurred_at, field_name="occurred_at")
+    if normalized != _as_utc(written_off_at, field_name="written_off_at"):
+        raise ValueError("Debt write-off audit time must match source marker")
+    if payload.written_off_revision != current_revision:
+        raise ValueError("Debt write-off audit revision must match source")
+    return AuditEvent(
+        event_type=AuditEventType.DEBT_WRITTEN_OFF,
+        actor_kind=AuditActorKind.USER,
+        actor_user_id=actor_user_id,
+        object_type=AuditObjectType.DEBT,
+        object_id=debt_id,
+        occurred_at=normalized,
+        candidate_metadata=payload.as_candidate_metadata(),
+    )
+
+
+def create_debt_written_off_settled_audit_event(
+    *,
+    actor_user_id: UUID,
+    debt_id: UUID,
+    occurred_at: datetime,
+    written_off_settled_at: datetime,
+    current_revision: DebtRevision,
+    payload: DebtWrittenOffSettledAuditPayload,
+) -> AuditEvent:
+    if not isinstance(payload, DebtWrittenOffSettledAuditPayload):
+        raise ValueError("Debt settlement audit payload is invalid")
+    if not isinstance(current_revision, DebtRevision):
+        raise ValueError("Debt settlement audit current revision is invalid")
+    normalized = _as_utc(occurred_at, field_name="occurred_at")
+    if normalized != _as_utc(
+        written_off_settled_at, field_name="written_off_settled_at"
+    ):
+        raise ValueError("Debt settlement audit time must match source marker")
+    if payload.debt_revision_after != current_revision:
+        raise ValueError("Debt settlement audit revision must match source")
+    return AuditEvent(
+        event_type=AuditEventType.DEBT_WRITTEN_OFF_SETTLED,
+        actor_kind=AuditActorKind.USER,
+        actor_user_id=actor_user_id,
+        object_type=AuditObjectType.DEBT,
+        object_id=debt_id,
+        occurred_at=normalized,
+        candidate_metadata=payload.as_candidate_metadata(),
+    )
 
 
 @dataclass(frozen=True, slots=True, repr=False)

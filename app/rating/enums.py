@@ -13,6 +13,7 @@ __all__ = (
     "parse_rating_recording_source",
     "parse_risk_band",
     "parse_risk_band_disclosure_purpose",
+    "rating_event_allowed_recording_sources",
     "rating_event_delta",
 )
 
@@ -20,6 +21,8 @@ __all__ = (
 class RatingEventType(StrEnum):
     ON_TIME_PAID = "on_time_paid"
     OVERDUE = "overdue"
+    WRITTEN_OFF = "written_off"
+    WRITTEN_OFF_SETTLED = "written_off_settled"
 
 
 class RatingRecordingSource(StrEnum):
@@ -56,9 +59,30 @@ class RatingEventAppendOutcome(StrEnum):
 def rating_event_delta(event_type: RatingEventType) -> int:
     if not isinstance(event_type, RatingEventType):
         raise ValueError("Rating event type is invalid")
-    if event_type is RatingEventType.ON_TIME_PAID:
-        return 5
-    return -15
+    return {
+        RatingEventType.ON_TIME_PAID: 5,
+        RatingEventType.OVERDUE: -15,
+        RatingEventType.WRITTEN_OFF: -40,
+        RatingEventType.WRITTEN_OFF_SETTLED: 10,
+    }[event_type]
+
+
+def rating_event_allowed_recording_sources(
+    event_type: RatingEventType,
+) -> frozenset[RatingRecordingSource]:
+    if not isinstance(event_type, RatingEventType):
+        raise ValueError("Rating event type is invalid")
+    if event_type in {
+        RatingEventType.WRITTEN_OFF,
+        RatingEventType.WRITTEN_OFF_SETTLED,
+    }:
+        return frozenset({RatingRecordingSource.LIVE})
+    return frozenset(
+        {
+            RatingRecordingSource.LIVE,
+            RatingRecordingSource.HISTORICAL_RECONCILIATION,
+        }
+    )
 
 
 def parse_rating_event_type(value: str) -> RatingEventType:

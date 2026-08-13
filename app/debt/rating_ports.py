@@ -17,14 +17,22 @@ from app.shop_customer.values import ShopCustomerId
 __all__ = (
     "LockedOverdueRatingAppendPort",
     "LockedOverdueRatingSource",
+    "LockedWrittenOffRatingAppendPort",
     "OverdueRatingAppendOutcome",
     "PendingOverdueRatingEffect",
+    "PendingWrittenOffRatingEffect",
+    "WrittenOffRatingAppendOutcome",
     "mark_locked_overdue_rating_source",
     "validate_locked_overdue_rating_source",
 )
 
 
 class OverdueRatingAppendOutcome(StrEnum):
+    APPENDED = "appended"
+    SOURCE_ALREADY_EXISTS = "source_already_exists"
+
+
+class WrittenOffRatingAppendOutcome(StrEnum):
     APPENDED = "appended"
     SOURCE_ALREADY_EXISTS = "source_already_exists"
 
@@ -74,6 +82,28 @@ class PendingOverdueRatingEffect:
         return "PendingOverdueRatingEffect(<redacted>)"
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class PendingWrittenOffRatingEffect:
+    event_id: UUID = field(repr=False)
+    debt_id: DebtId = field(repr=False)
+    shop_customer_id: ShopCustomerId = field(repr=False)
+    written_off_at: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.event_id, UUID):
+            raise ValueError("Pending write-off rating identity is invalid")
+        if not isinstance(self.debt_id, DebtId):
+            raise ValueError("Pending write-off rating Debt is invalid")
+        if not isinstance(self.shop_customer_id, ShopCustomerId):
+            raise ValueError("Pending write-off rating ShopCustomer is invalid")
+        occurred_at = _normalize_aware_utc(self.written_off_at)
+        tashkent_business_date(occurred_at)
+        object.__setattr__(self, "written_off_at", occurred_at)
+
+    def __repr__(self) -> str:
+        return "PendingWrittenOffRatingEffect(<redacted>)"
+
+
 @runtime_checkable
 class LockedOverdueRatingAppendPort(Protocol):
     def append_pending_overdue(
@@ -82,6 +112,17 @@ class LockedOverdueRatingAppendPort(Protocol):
         *,
         locked_source: LockedOverdueRatingSource,
         effect: PendingOverdueRatingEffect,
+    ) -> WrittenOffRatingAppendOutcome: ...
+
+
+@runtime_checkable
+class LockedWrittenOffRatingAppendPort(Protocol):
+    def append_pending_written_off(
+        self,
+        session: Session,
+        *,
+        locked_source: LockedOverdueRatingSource,
+        effect: PendingWrittenOffRatingEffect,
     ) -> OverdueRatingAppendOutcome: ...
 
 

@@ -465,6 +465,7 @@ def _payment_recorded_payload(metadata: Mapping[str, object]) -> AuditPayload:
     allowed_targets = {
         "active": {"active", "paid"},
         "overdue": {"overdue", "paid"},
+        "written_off": {"written_off", "written_off_settled"},
     }
     from_status = values["from_status"]
     if not isinstance(from_status, str) or from_status not in allowed_targets:
@@ -486,6 +487,51 @@ def _debt_paid_payload(metadata: Mapping[str, object]) -> AuditPayload:
         raise ValueError("Debt paid audit source is invalid")
     return {
         "source": "payment",
+        "debt_revision_after": _payment_revision(values["debt_revision_after"]),
+    }
+
+
+def _debt_written_off_payload(metadata: Mapping[str, object]) -> AuditPayload:
+    values = _exact_required(
+        metadata,
+        "reason_provided",
+        "from_status",
+        "to_status",
+        "written_off_revision",
+    )
+    if values["reason_provided"] is not True:
+        raise ValueError("Debt write-off audit requires a reason")
+    if values["from_status"] != "overdue" or values["to_status"] != "written_off":
+        raise ValueError("Debt write-off audit transition is invalid")
+    return {
+        "reason_provided": True,
+        "from_status": "overdue",
+        "to_status": "written_off",
+        "written_off_revision": _payment_revision(values["written_off_revision"]),
+    }
+
+
+def _debt_written_off_settled_payload(
+    metadata: Mapping[str, object],
+) -> AuditPayload:
+    values = _exact_required(
+        metadata,
+        "source",
+        "from_status",
+        "to_status",
+        "debt_revision_after",
+    )
+    if values["source"] != "payment":
+        raise ValueError("Debt settlement audit source is invalid")
+    if (
+        values["from_status"] != "written_off"
+        or values["to_status"] != "written_off_settled"
+    ):
+        raise ValueError("Debt settlement audit transition is invalid")
+    return {
+        "source": "payment",
+        "from_status": "written_off",
+        "to_status": "written_off_settled",
         "debt_revision_after": _payment_revision(values["debt_revision_after"]),
     }
 
@@ -546,6 +592,8 @@ _PAYLOAD_BUILDERS: Final[
     AuditEventType.DEBT_CLAWBACK_APPLIED: _debt_clawback_applied_payload,
     AuditEventType.PAYMENT_RECORDED: _payment_recorded_payload,
     AuditEventType.DEBT_PAID: _debt_paid_payload,
+    AuditEventType.DEBT_WRITTEN_OFF: _debt_written_off_payload,
+    AuditEventType.DEBT_WRITTEN_OFF_SETTLED: _debt_written_off_settled_payload,
     AuditEventType.DISCLOSURE_RISK_BAND_VIEWED: (_risk_band_disclosure_payload),
 }
 

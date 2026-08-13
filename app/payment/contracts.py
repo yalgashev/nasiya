@@ -9,7 +9,7 @@ from datetime import date, datetime
 from uuid import UUID
 
 from app.debt.business_time import is_effectively_overdue, normalize_payment_created_at
-from app.debt.enums import M15_PERSISTED_STATUSES, DebtBalanceBasis, DebtStatus
+from app.debt.enums import M17_PERSISTED_STATUSES, DebtBalanceBasis, DebtStatus
 from app.debt.values import DebtId, DebtRevision, UserId
 from app.idempotency.contracts import (
     CompletedIdempotencyResult,
@@ -165,18 +165,28 @@ class PaymentReceiptProjection:
         _require_remaining_due(self.current_balance, field_name="Current balance")
         if (
             not isinstance(self.current_debt_status, DebtStatus)
-            or self.current_debt_status not in M15_PERSISTED_STATUSES
+            or self.current_debt_status not in M17_PERSISTED_STATUSES
         ):
-            raise ValueError("Receipt debt status is outside the M15 persisted subset")
+            raise ValueError("Receipt debt status is outside the M17 persisted subset")
         if not isinstance(self.historical_balance_basis, DebtBalanceBasis):
             raise ValueError("Receipt historical balance basis is invalid")
         if not isinstance(self.current_balance_basis, DebtBalanceBasis):
             raise ValueError("Receipt current balance basis is invalid")
         if (
-            self.current_debt_status is DebtStatus.OVERDUE
+            self.current_debt_status
+            in {
+                DebtStatus.OVERDUE,
+                DebtStatus.WRITTEN_OFF,
+                DebtStatus.WRITTEN_OFF_SETTLED,
+            }
             and self.current_balance_basis is not DebtBalanceBasis.ORIGINAL
         ):
-            raise ValueError("Overdue receipt current balance must use original basis")
+            raise ValueError("Recovery receipt current balance must use original basis")
+        if (
+            self.current_debt_status is DebtStatus.WRITTEN_OFF_SETTLED
+            and self.current_balance.value != 0
+        ):
+            raise ValueError("Settled write-off receipt balance must be zero")
         object.__setattr__(
             self,
             "created_at",
@@ -320,6 +330,12 @@ def resolve_current_balance_basis(
         if overdue_revision is None:
             raise IncoherentPaymentHistoryError(
                 "Persisted overdue debt requires overdue revision"
+            )
+        return DebtBalanceBasis.ORIGINAL
+    if status in {DebtStatus.WRITTEN_OFF, DebtStatus.WRITTEN_OFF_SETTLED}:
+        if overdue_revision is None:
+            raise IncoherentPaymentHistoryError(
+                "Written-off debt requires overdue revision"
             )
         return DebtBalanceBasis.ORIGINAL
     if status is DebtStatus.PAID:

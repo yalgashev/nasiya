@@ -26,6 +26,7 @@ class DebtPaymentProgressProjection:
     is_payable: bool
     balance_basis: DebtBalanceBasis = DebtBalanceBasis.DISCOUNTED
     is_effectively_overdue: bool = False
+    written_off_settled_at: str | None = None
 
     def __post_init__(self) -> None:
         for value in (self.posted_total_uzs, self.remaining_due_uzs):
@@ -37,6 +38,20 @@ class DebtPaymentProgressProjection:
             raise ValueError("Payment progress status is invalid")
         if self.paid_at is not None and not isinstance(self.paid_at, str):
             raise ValueError("Payment progress paid timestamp is invalid")
+        if self.written_off_settled_at is not None and not isinstance(
+            self.written_off_settled_at, str
+        ):
+            raise ValueError("Payment progress settlement timestamp is invalid")
+        if self.status is DebtStatus.WRITTEN_OFF_SETTLED:
+            if (
+                self.paid_at is not None
+                or self.written_off_settled_at is None
+                or self.remaining_due_uzs != 0
+                or self.is_payable
+            ):
+                raise ValueError("Settled write-off progress is incoherent")
+        elif self.written_off_settled_at is not None:
+            raise ValueError("Only settled write-off may expose settlement time")
         if not isinstance(self.is_payable, bool):
             raise ValueError("Payment progress payability is invalid")
         if not isinstance(self.balance_basis, DebtBalanceBasis):
@@ -53,6 +68,11 @@ class DebtPaymentProgressProjection:
             or self.balance_basis is not DebtBalanceBasis.ORIGINAL
         ):
             raise ValueError("Persisted overdue payment progress is incoherent")
+        if self.status in {DebtStatus.WRITTEN_OFF, DebtStatus.WRITTEN_OFF_SETTLED} and (
+            self.is_effectively_overdue
+            or self.balance_basis is not DebtBalanceBasis.ORIGINAL
+        ):
+            raise ValueError("Written-off payment progress is incoherent")
 
     def __repr__(self) -> str:
         return "DebtPaymentProgressProjection(<safe>)"

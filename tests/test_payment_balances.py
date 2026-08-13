@@ -227,21 +227,24 @@ def test_balance_values_are_zero_inclusive_decimal_only_and_redacted() -> None:
 
 
 @pytest.mark.parametrize(
-    "future_status",
-    (DebtStatus.WRITTEN_OFF, DebtStatus.WRITTEN_OFF_SETTLED),
+    ("status", "posted"),
+    (
+        (DebtStatus.WRITTEN_OFF, "0"),
+        (DebtStatus.WRITTEN_OFF_SETTLED, "1000"),
+    ),
 )
-def test_future_statuses_cannot_reach_m15_exposure_or_open_count(
-    future_status: DebtStatus,
+def test_written_off_states_are_outside_tt_open_exposure_and_count(
+    status: DebtStatus,
+    posted: str,
 ) -> None:
-    with pytest.raises(ValueError, match="outside the M15 persisted subset"):
-        calculate_payment_exposure(
-            status=future_status,
-            original_amount=OriginalAmountUZS(Decimal("1000")),
-            discounted_amount=DiscountedAmountUZS(Decimal("1000")),
-            posted_total=PostedPaymentTotalUZS(Decimal("0")),
-        )
-    with pytest.raises(ValueError, match="outside the M15 persisted subset"):
-        open_debt_count_contribution(future_status)
+    exposure = calculate_payment_exposure(
+        status=status,
+        original_amount=OriginalAmountUZS(Decimal("1000")),
+        discounted_amount=DiscountedAmountUZS(Decimal("1000")),
+        posted_total=PostedPaymentTotalUZS(Decimal(posted)),
+    )
+    assert exposure.value == Decimal("0")
+    assert open_debt_count_contribution(status) == 0
 
 
 def test_exposure_also_fails_closed_for_an_incoherent_posted_total() -> None:

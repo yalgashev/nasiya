@@ -116,15 +116,21 @@ def test_migration_and_runtime_keep_m16_out_vocabulary_contained() -> None:
     runtime_paths = tuple(
         path
         for path in (PROJECT_ROOT / "app/rating").glob("*.py")
-        if path.name != "__pycache__"
+        if path.name not in {"__pycache__", "enums.py"}
     )
+    written_off_paths = {
+        path.name
+        for path in runtime_paths
+        if "written_off" in path.read_text(encoding="utf-8").casefold()
+    }
+    assert written_off_paths == {"contracts.py", "service.py"}
+
     source = "\n".join(path.read_text(encoding="utf-8") for path in runtime_paths)
     source += _source(
         "alembic/versions/c7d8e9f0a1b2_add_rating_and_disclosure_persistence.py"
     )
     lowered = source.casefold()
     for forbidden in (
-        "written_off",
         "-40",
         "+10",
         "void_payment",

@@ -24,6 +24,8 @@ def test_m16_vocabulary_is_exact_and_closed() -> None:
     assert tuple(RatingEventType) == (
         RatingEventType.ON_TIME_PAID,
         RatingEventType.OVERDUE,
+        RatingEventType.WRITTEN_OFF,
+        RatingEventType.WRITTEN_OFF_SETTLED,
     )
     assert tuple(RatingRecordingSource) == (
         RatingRecordingSource.LIVE,
@@ -60,7 +62,14 @@ def test_m16_vocabulary_parsers_accept_only_canonical_values() -> None:
         (parse_risk_band_disclosure_purpose, "Risk band disclosure purpose"),
     )
     for parser, message in parsers:
-        for malformed in ("", "OVERDUE", " override", "written_off", None, True):
+        for malformed in (
+            "",
+            "OVERDUE",
+            " override",
+            "written-off",
+            None,
+            True,
+        ):
             with pytest.raises(ValueError, match=message):
                 parser(malformed)  # type: ignore[arg-type]
 
@@ -142,16 +151,13 @@ def test_safe_band_projection_contains_only_band_purpose_and_aware_view_time() -
         )
 
 
-def test_rating_contract_sources_exclude_future_persistence_vocabulary() -> None:
+def test_rating_contract_sources_exclude_unrelated_future_vocabulary() -> None:
     source = "\n".join(
         path.read_text(encoding="utf-8").casefold()
         for path in sorted((PROJECT_ROOT / "app/rating").glob("*.py"))
     )
 
     for forbidden in (
-        "written_off",
-        "-40",
-        "+10",
         "override",
         "compensation",
         "notification",

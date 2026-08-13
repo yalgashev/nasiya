@@ -10,8 +10,10 @@ from enum import StrEnum
 from typing import Final
 from uuid import UUID
 
+from app.debt.contracts import WriteOffReason
 from app.debt.values import (
     DebtId,
+    DebtRevision,
     DiscountBasisPoints,
     OriginalAmountUZS,
     ShopCustomerId,
@@ -24,6 +26,7 @@ __all__ = (
     "CompletedIdempotencyResult",
     "CreateDebtRequestHash",
     "CreatePaymentRequestHash",
+    "WriteOffDebtRequestHash",
     "IdempotencyEndpoint",
     "IdempotencyKeyDigest",
     "IdempotencyOutcome",
@@ -31,12 +34,14 @@ __all__ = (
     "IdempotencyResultType",
     "canonical_idempotency_key_digest",
     "create_debt_request_hash",
+    "create_write_off_debt_request_hash_v1",
     "parse_idempotency_key",
     "require_matching_idempotency_keys",
 )
 
 _SHA256_HEX_PATTERN: Final = re.compile(r"[0-9a-f]{64}", flags=re.ASCII)
 _CREATE_DEBT_HASH_DOMAIN: Final = b"nasiya.m13.create-debt.request.v1"
+_WRITE_OFF_DEBT_HASH_DOMAIN_V1: Final = b"nasiya.m17.write-off-debt.request.v1"
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -90,10 +95,22 @@ class CreatePaymentRequestHash:
         return "CreatePaymentRequestHash(<redacted>)"
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class WriteOffDebtRequestHash:
+    value: str
+
+    def __post_init__(self) -> None:
+        _require_sha256_hex(self.value, field_name="Write-off debt request hash")
+
+    def __repr__(self) -> str:
+        return "WriteOffDebtRequestHash(<redacted>)"
+
+
 class IdempotencyEndpoint(StrEnum):
     SHOP_DEBTS_CREATE = "shop.debts.create"
     SHOP_DEBT_PAYMENTS_CREATE = "shop.debt_payments.create"
     SHOP_RISK_BAND_DISCLOSURES_CREATE = "shop.risk_band_disclosures.create"
+    ADMIN_DEBTS_WRITE_OFF = "admin.debts.write_off"
 
 
 class IdempotencyResultType(StrEnum):
@@ -256,6 +273,35 @@ def create_debt_request_hash(
         )
     )
     return CreateDebtRequestHash(hashlib.sha256(encoded).hexdigest())
+
+
+def create_write_off_debt_request_hash_v1(
+    *,
+    actor_user_id: UserId,
+    debt_id: DebtId,
+    expected_revision: DebtRevision,
+    reason: WriteOffReason,
+) -> WriteOffDebtRequestHash:
+    """Bind the complete M17 admin write-off mutation identity."""
+
+    if not isinstance(actor_user_id, UUID):
+        raise ValueError("Write-off request actor is invalid")
+    if not isinstance(debt_id, DebtId):
+        raise ValueError("Write-off request Debt is invalid")
+    if not isinstance(expected_revision, DebtRevision):
+        raise ValueError("Write-off request revision is invalid")
+    if not isinstance(reason, WriteOffReason):
+        raise ValueError("Write-off request reason is invalid")
+    encoded = _length_safe_encode(
+        (
+            _WRITE_OFF_DEBT_HASH_DOMAIN_V1,
+            actor_user_id.bytes,
+            debt_id.as_uuid().bytes,
+            str(expected_revision.value).encode("ascii"),
+            reason.value.encode("ascii"),
+        )
+    )
+    return WriteOffDebtRequestHash(hashlib.sha256(encoded).hexdigest())
 
 
 def _length_safe_encode(parts: tuple[bytes, ...]) -> bytes:

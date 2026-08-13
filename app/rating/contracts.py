@@ -13,6 +13,7 @@ from app.rating.enums import (
     RatingRecordingSource,
     RiskBand,
     RiskBandDisclosurePurpose,
+    rating_event_allowed_recording_sources,
     rating_event_delta,
 )
 from app.rating.values import RatingEventId
@@ -27,6 +28,8 @@ __all__ = (
     "RiskBandDisclosureProjection",
     "create_on_time_paid_rating_event",
     "create_overdue_rating_event",
+    "create_written_off_rating_event",
+    "create_written_off_settled_rating_event",
     "numeric_risk_band",
 )
 
@@ -46,6 +49,10 @@ class RatingEventValue:
             raise ValueError("Rating event type is invalid")
         if not isinstance(self.recording_source, RatingRecordingSource):
             raise ValueError("Rating recording source is invalid")
+        if self.recording_source not in rating_event_allowed_recording_sources(
+            self.event_type
+        ):
+            raise ValueError("Rating recording source is invalid for event type")
         if (
             not isinstance(self.delta, int)
             or isinstance(self.delta, bool)
@@ -256,6 +263,40 @@ def create_overdue_rating_event(
         event_type=RatingEventType.OVERDUE,
         source_occurred_at=overdue_at,
         recording_source=recording_source,
+    )
+
+
+def create_written_off_rating_event(
+    *,
+    event_id: RatingEventId,
+    shop_customer_id: ShopCustomerId,
+    debt_id: DebtId,
+    written_off_at: datetime,
+) -> RatingEvent:
+    return _create_source_event(
+        event_id=event_id,
+        shop_customer_id=shop_customer_id,
+        debt_id=debt_id,
+        event_type=RatingEventType.WRITTEN_OFF,
+        source_occurred_at=written_off_at,
+        recording_source=RatingRecordingSource.LIVE,
+    )
+
+
+def create_written_off_settled_rating_event(
+    *,
+    event_id: RatingEventId,
+    shop_customer_id: ShopCustomerId,
+    debt_id: DebtId,
+    written_off_settled_at: datetime,
+) -> RatingEvent:
+    return _create_source_event(
+        event_id=event_id,
+        shop_customer_id=shop_customer_id,
+        debt_id=debt_id,
+        event_type=RatingEventType.WRITTEN_OFF_SETTLED,
+        source_occurred_at=written_off_settled_at,
+        recording_source=RatingRecordingSource.LIVE,
     )
 
 

@@ -114,6 +114,7 @@ def test_progress_and_receipt_projections_are_identifier_and_privacy_safe() -> N
         "is_payable",
         "balance_basis",
         "is_effectively_overdue",
+        "written_off_settled_at",
     )
     receipt_fields = {field.name for field in fields(PaymentReceiptProjection)}
     assert receipt_fields == {

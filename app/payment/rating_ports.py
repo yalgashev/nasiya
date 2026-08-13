@@ -21,10 +21,13 @@ if TYPE_CHECKING:
 
 __all__ = (
     "LockedPaymentRatingAppendPort",
+    "LockedWrittenOffSettledRatingAppendPort",
     "PaymentRatingAppendOutcome",
     "PaymentRatingEligibility",
     "PaymentRatingEligibilityFacts",
     "PendingOnTimePaidRatingEffect",
+    "PendingWrittenOffSettledRatingEffect",
+    "WrittenOffSettledRatingAppendOutcome",
 )
 
 
@@ -38,6 +41,11 @@ class PaymentRatingEligibility(StrEnum):
     AWARD = "award"
     NO_BONUS = "no_bonus"
     DAILY_CAP_ALREADY_USED = "daily_cap_already_used"
+
+
+class WrittenOffSettledRatingAppendOutcome(StrEnum):
+    APPENDED = "appended"
+    SOURCE_ALREADY_EXISTS = "source_already_exists"
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -89,6 +97,28 @@ class PendingOnTimePaidRatingEffect:
         return "PendingOnTimePaidRatingEffect(<redacted>)"
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class PendingWrittenOffSettledRatingEffect:
+    event_id: UUID = field(repr=False)
+    debt_id: DebtId = field(repr=False)
+    shop_customer_id: ShopCustomerId = field(repr=False)
+    payment_created_at: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.event_id, UUID):
+            raise ValueError("Pending settlement rating identity is invalid")
+        if not isinstance(self.debt_id, DebtId):
+            raise ValueError("Pending settlement rating Debt is invalid")
+        if not isinstance(self.shop_customer_id, ShopCustomerId):
+            raise ValueError("Pending settlement rating ShopCustomer is invalid")
+        occurred_at = _normalize_aware_utc(self.payment_created_at)
+        tashkent_business_date(occurred_at)
+        object.__setattr__(self, "payment_created_at", occurred_at)
+
+    def __repr__(self) -> str:
+        return "PendingWrittenOffSettledRatingEffect(<redacted>)"
+
+
 @runtime_checkable
 class LockedPaymentRatingAppendPort(Protocol):
     def evaluate_on_time_paid(
@@ -110,6 +140,19 @@ class LockedPaymentRatingAppendPort(Protocol):
         locked_debt: LockedTenantPaymentDebt,
         effect: PendingOnTimePaidRatingEffect,
     ) -> PaymentRatingAppendOutcome: ...
+
+
+@runtime_checkable
+class LockedWrittenOffSettledRatingAppendPort(Protocol):
+    """M17-only settlement append surface; it does not widen the M16 port."""
+
+    def append_pending_written_off_settled(
+        self,
+        session: Session,
+        *,
+        locked_debt: LockedTenantPaymentDebt,
+        effect: PendingWrittenOffSettledRatingEffect,
+    ) -> WrittenOffSettledRatingAppendOutcome: ...
 
 
 def _normalize_aware_utc(value: datetime) -> datetime:

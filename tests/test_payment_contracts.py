@@ -122,7 +122,7 @@ def test_payment_receipt_projection_has_only_safe_fact_and_balance_fields() -> N
     assert "Nasiya Shop" not in repr(receipt)
 
 
-def test_payment_receipt_accepts_overdue_basis_and_rejects_future_statuses() -> None:
+def test_payment_receipt_accepts_overdue_and_recovery_original_basis() -> None:
     kwargs = {
         "amount": PaymentAmountUZS(Decimal("250")),
         "method": PaymentMethod.CARD,
@@ -142,11 +142,21 @@ def test_payment_receipt_accepts_overdue_basis_and_rejects_future_statuses() -> 
         )
     )
     assert overdue.current_balance_basis is DebtBalanceBasis.ORIGINAL
-    for future_status in (DebtStatus.WRITTEN_OFF, DebtStatus.WRITTEN_OFF_SETTLED):
-        with pytest.raises(ValueError, match="outside the M15 persisted subset"):
-            PaymentReceiptProjection(
-                **(kwargs | {"current_debt_status": future_status})
+    for recovery_status, current_balance in (
+        (DebtStatus.WRITTEN_OFF, RemainingDueUZS(Decimal("500"))),
+        (DebtStatus.WRITTEN_OFF_SETTLED, RemainingDueUZS(Decimal("0"))),
+    ):
+        recovery = PaymentReceiptProjection(
+            **(
+                kwargs
+                | {
+                    "current_debt_status": recovery_status,
+                    "current_balance": current_balance,
+                    "current_balance_basis": DebtBalanceBasis.ORIGINAL,
+                }
             )
+        )
+        assert recovery.current_balance_basis is DebtBalanceBasis.ORIGINAL
 
 
 def test_payment_receipt_rejects_unsafe_shop_name() -> None:
