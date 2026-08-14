@@ -52,12 +52,42 @@ def test_payment_form_is_labelled_server_idempotent_and_error_associated() -> No
     assert '<button type="submit">' in source
 
 
+def test_void_form_is_semantic_confirmed_and_has_no_client_authority() -> None:
+    source = (PAYMENT_TEMPLATE_DIR / "shop_void.html").read_text(encoding="utf-8")
+    folded = source.casefold()
+
+    assert 'action="/shop/payments/{{ payment_id }}/void"' in source
+    assert 'autocomplete="off"' in source
+    assert 'name="csrf_token"' in source
+    assert 'name="idempotency_key"' in source
+    assert 'name="expected_revision"' in source
+    assert '<label for="payment-void-reason">' in source
+    assert '<select id="payment-void-reason" name="reason"' in source
+    assert "<fieldset>" in source and "<legend>" in source
+    assert 'name="confirmation" value="yes" required' in source
+    assert 'role="alert" aria-live="assertive"' in source
+    assert 'class="button-danger" type="submit"' in source
+    for forbidden in (
+        "<script",
+        "datetime.now",
+        "date.now",
+        "amount_uzs",
+        "current_shop_id",
+        "actor_user_id",
+        "request_hash",
+        "key_digest",
+    ):
+        assert forbidden not in folded
+
+
 def test_payment_mobile_touch_focus_overflow_and_static_asset_budget() -> None:
     css = PAYMENT_CSS.read_text(encoding="utf-8")
 
     assert PAYMENT_CSS.stat().st_size <= 16 * 1024
     assert ".payment-page nav a" in css
     assert ".payment-page li a" in css
+    assert ".destructive-confirmation" in css
+    assert "grid-template-columns: 44px minmax(0, 1fr)" in css
     assert "min-width: 44px" in css
     assert "min-height: 44px" in css
     assert "overflow-wrap: anywhere" in css
@@ -90,3 +120,17 @@ def test_payment_views_have_empty_states_semantic_times_and_safe_navigation() ->
         assert "copy.current_balance" in source
         assert "copy.current_status" in source
         assert "<nav aria-label=" in source
+
+
+def test_shop_history_reason_is_not_available_to_customer_templates() -> None:
+    shop_list = (PAYMENT_TEMPLATE_DIR / "shop_list.html").read_text(encoding="utf-8")
+    customer_sources = "\n".join(
+        (PAYMENT_TEMPLATE_DIR / name).read_text(encoding="utf-8")
+        for name in ("customer_list.html", "customer_receipt.html")
+    )
+
+    assert "void_state.reason_label" in shop_list
+    assert "reason_label" not in customer_sources
+    assert "void_reason" not in customer_sources
+    assert "recorded_by" not in customer_sources
+    assert "actor" not in customer_sources

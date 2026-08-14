@@ -8,7 +8,8 @@
     <dl>
       <dt>{{ target_amount_label }}</dt><dd>{{ debt.original_amount.value if debt.progress.balance_basis.value == "original" else debt.discounted_amount.value }}</dd>
       <dt>{{ copy.posted_total }}</dt><dd>{{ debt.progress.posted_total_uzs }}</dd>
-      <dt>{{ copy.remaining }} ({{ balance_basis_label }})</dt><dd>{{ debt.progress.remaining_due_uzs }}</dd>
+      <dt>{{ copy.current_balance }} — {{ copy.remaining }} ({{ balance_basis_label }})</dt><dd>{{ debt.progress.remaining_due_uzs }}</dd>
+      <dt>{{ copy.current_status }}</dt><dd>{{ status_label }}</dd>
       <dt>{{ copy.payable }}</dt><dd>{{ copy.no }}</dd>
     </dl>
   </article>

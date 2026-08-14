@@ -41,8 +41,10 @@ from app.payment.commands import (
 from app.payment.dependencies import (
     DetachedPaymentActorContext,
     DetachedPaymentReadActorContext,
+    DetachedPaymentVoidFormContext,
     get_detached_current_shop_payment_actor_context,
     get_detached_current_shop_payment_read_actor_context,
+    get_detached_current_shop_payment_void_read_actor_context,
 )
 from app.payment.enums import PaymentMethod, PaymentVoidReason
 from app.payment.presentation import (
@@ -57,7 +59,10 @@ from app.payment.read_service import (
     get_tenant_payment_history_view,
     get_tenant_payment_receipt_view,
 )
-from app.payment.repository import get_tenant_payment
+from app.payment.repository import (
+    get_tenant_payment,
+    latest_non_voided_payment_for_tenant_debt,
+)
 from app.payment.service import (
     PaymentMutationRejected,
     record_debt_payment,
@@ -71,8 +76,9 @@ from app.settings import Settings
 from app.shop.context import CurrentShopContext
 from app.shop.dependencies import ShopSelectionRequired, require_shop_staff
 from app.shop.enums import ShopRole, ShopStatus
-from app.shop.repository import get_shop
-from app.shop.values import ShopId
+from app.shop.repository import get_shop, get_shop_staff_access
+from app.shop.values import ShopId, UserId
+from app.shop_customer.values import ShopCustomerId
 
 router = APIRouter()
 TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates"
@@ -108,6 +114,28 @@ def shop_debt_payment_list(
     progress = view.debt.payment_progress
     assert progress is not None
     can_create = view.shop_status is ShopStatus.ACTIVE and progress.is_payable
+    newest_non_voided = next(
+        (payment for payment in reversed(view.history) if not payment.is_voided),
+        None,
+    )
+    if newest_non_voided is None:
+        voidable_payment_id = None
+    else:
+        with request.app.state.database_session_factory() as db:
+            voidable_payment_id = (
+                newest_non_voided.payment_id.as_uuid()
+                if _can_navigate_to_payment_void(
+                    db,
+                    actor=DetachedPaymentActorContext(
+                        actor_user_id=actor.actor_user_id,
+                        current_shop_id=actor.current_shop_id,
+                        role_hint=actor.role_hint,
+                        language=actor.language,
+                    ),
+                    payment_id=newest_non_voided.payment_id,
+                )
+                else None
+            )
     return _template_response(
         request,
         "payment/shop_list.html",
@@ -141,6 +169,8 @@ def shop_debt_payment_list(
                 payable=progress.is_payable,
             ),
             "method_labels": _method_labels(actor.language),
+            "voidable_payment_id": voidable_payment_id,
+            "void_states": view.void_states,
         },
     )
 
@@ -305,6 +335,16 @@ def shop_payment_receipt(
         and view.debt_id is not None
         and view.void_state is not None
     )
+    void_actor = DetachedPaymentActorContext(
+        actor_user_id=actor.actor_user_id,
+        current_shop_id=actor.current_shop_id,
+        role_hint=actor.role_hint,
+        language=actor.language,
+    )
+    with request.app.state.database_session_factory() as db:
+        can_void = _can_navigate_to_payment_void(
+            db, actor=void_actor, payment_id=parsed_payment_id
+        )
     return _template_response(
         request,
         "payment/shop_receipt.html",
@@ -335,7 +375,7 @@ def shop_payment_receipt(
                 actor.language, view.receipt.current_debt_status
             ),
             "void_state": view.void_state,
-            "can_void": actor.role_hint in {ShopRole.OWNER, ShopRole.MANAGER},
+            "can_void": can_void,
         },
     )
 
@@ -349,44 +389,45 @@ def shop_payment_receipt(
 def shop_payment_void_form(
     payment_id: str,
     request: Request,
-    db: Annotated[DatabaseSession, Depends(get_database_session, scope="function")],
-    settings: Annotated[Settings, Depends(get_settings)],
-    context: Annotated[CurrentSessionContext, Depends(get_current_session_context)],
+    actor: Annotated[
+        DetachedPaymentVoidFormContext,
+        Depends(get_detached_current_shop_payment_void_read_actor_context),
+    ],
     error: str | None = None,
 ) -> Response:
-    resolved = _current_shop_or_response(db, context, settings)
-    if isinstance(resolved, Response):
-        return resolved
-    _user, shop = resolved
     parsed = _parse_payment_path_locator(payment_id)
-    if parsed is None or shop.shop is None or shop.role is None:
+    if parsed is None:
         return _redirect("/shop/customers", error=ErrorCode.PAYMENT_UNAVAILABLE)
-    if shop.status is not ShopStatus.ACTIVE:
-        return _redirect("/shop/customers", error=ErrorCode.SHOP_SUSPENDED)
-    if shop.role not in {ShopRole.OWNER, ShopRole.MANAGER}:
-        return _redirect("/shop/customers", error=ErrorCode.FORBIDDEN)
-    row = get_tenant_payment(db, shop_id=ShopId(shop.shop.id), payment_id=parsed)
-    if row is None or row.voided_at is not None:
+    with request.app.state.database_session_factory() as db:
+        row = (
+            get_tenant_payment(
+                db, shop_id=ShopId(actor.actor.current_shop_id), payment_id=parsed
+            )
+            if _can_navigate_to_payment_void(db, actor=actor.actor, payment_id=parsed)
+            else None
+        )
+        expected_revision = None if row is None else row.debt.revision
+    if row is None:
         return _redirect("/shop/customers", error=ErrorCode.PAYMENT_NOT_VOIDABLE)
-    language = resolve_debt_web_language(request.headers.get("accept-language"))
     response = templates.TemplateResponse(
         request,
         "payment/shop_void.html",
-        with_csrf_context(
-            {
-                "page_language": language.value,
-                "copy": get_payment_web_copy(language),
-                "payment_id": parsed.as_uuid(),
-                "expected_revision": row.debt.revision,
-                "idempotency_key": str(uuid4()),
-                "reasons": tuple(
-                    (reason, get_payment_void_reason_label(language, reason))
-                    for reason in PaymentVoidReason
-                ),
-                "error_message": _payment_error_message(language, error),
-            },
-            context.get_session_row(),
-        ),
+        {
+            "page_language": actor.actor.language.value,
+            "copy": get_payment_web_copy(actor.actor.language),
+            "payment_id": parsed.as_uuid(),
+            "expected_revision": expected_revision,
+            "idempotency_key": str(uuid4()),
+            "csrf_token": actor.csrf_token,
+            "reasons": tuple(
+                (
+                    reason,
+                    get_payment_void_reason_label(actor.actor.language, reason),
+                )
+                for reason in PaymentVoidReason
+            ),
+            "error_message": _payment_error_message(actor.actor.language, error),
+        },
     )
     return mark_auth_response_no_store(response)
 
@@ -439,6 +480,7 @@ def void_shop_payment(
                 actor=authority,
                 command=assembled.command,
                 rating_port=request.app.state.rating_append_port,
+                payment_void_clock=request.app.state.payment_void_clock,
             )
     except PaymentMutationRejected as rejected:
         return _redirect(form_path, error=rejected.error)
@@ -766,6 +808,49 @@ def _customer_user_or_response(
         return require_user(context)
     except LoginRequired:
         return _redirect_login(context, settings)
+
+
+def _can_navigate_to_payment_void(
+    db: DatabaseSession,
+    *,
+    actor: DetachedPaymentActorContext,
+    payment_id: PaymentId,
+) -> bool:
+    """Return only a live, server-authorized latest-void navigation decision."""
+
+    access = get_shop_staff_access(
+        db,
+        shop_id=ShopId(actor.current_shop_id),
+        user_id=UserId(actor.actor_user_id),
+    )
+    if (
+        access is None
+        or access.shop_status is not ShopStatus.ACTIVE
+        or not access.is_live
+        or access.role not in {ShopRole.OWNER, ShopRole.MANAGER}
+    ):
+        return False
+    candidate = discover_tenant_payment_void_target(
+        db, actor=actor, payment_id=payment_id
+    )
+    if candidate is None:
+        return False
+    row = get_tenant_payment(
+        db, shop_id=ShopId(actor.current_shop_id), payment_id=payment_id
+    )
+    if (
+        row is None
+        or row.voided_at is not None
+        or row.debt.id != candidate.debt_id.as_uuid()
+    ):
+        return False
+    latest = latest_non_voided_payment_for_tenant_debt(
+        db,
+        shop_id=ShopId(actor.current_shop_id),
+        shop_customer_id=ShopCustomerId(row.debt.shop_customer_id),
+        debt_id=candidate.debt_id,
+    )
+    return latest is not None and latest.id == payment_id
 
 
 def _redirect(path: str, *, error: ErrorCode | None = None) -> Response:

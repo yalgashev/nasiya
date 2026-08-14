@@ -94,7 +94,12 @@ PAYMENT_WEB_COPY: Final[Mapping[DebtWebLanguage, Mapping[str, str]]] = MappingPr
                 "back_to_history": "To'lovlar tarixiga qaytish",
                 "void_payment": "To'lovni bekor qilish",
                 "void_reason": "Bekor qilish sababi",
+                "void_confirmation": "Qaytarib bo'lmaydigan amalni tasdiqlash",
                 "void_confirm": "To'lovni bekor qilishni tasdiqlayman",
+                "void_warning": (
+                    "Bu amal to'lov yozuvini o'chirmaydi; bekor qilish dalili "
+                    "tarixga qo'shiladi."
+                ),
                 "void_submit": "To'lovni bekor qilish",
                 "voided": "Bekor qilingan",
                 "voided_at": "Bekor qilingan vaqt",
@@ -165,7 +170,11 @@ PAYMENT_WEB_COPY: Final[Mapping[DebtWebLanguage, Mapping[str, str]]] = MappingPr
                 "back_to_history": "Вернуться к истории платежей",
                 "void_payment": "Аннулировать платёж",
                 "void_reason": "Причина аннулирования",
+                "void_confirmation": "Подтверждение необратимого действия",
                 "void_confirm": "Подтверждаю аннулирование платежа",
+                "void_warning": (
+                    "Платёж не удаляется; факт аннулирования добавляется в историю."
+                ),
                 "void_submit": "Аннулировать платёж",
                 "voided": "Аннулирован",
                 "voided_at": "Время аннулирования",

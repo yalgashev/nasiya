@@ -9,6 +9,7 @@ from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
 
+from app.auth.csrf import get_csrf_token
 from app.auth.deps import (
     CurrentSessionStatus,
     get_current_session_context,
@@ -28,8 +29,10 @@ from app.shop.values import UserId
 __all__ = (
     "DetachedPaymentActorContext",
     "DetachedPaymentReadActorContext",
+    "DetachedPaymentVoidFormContext",
     "get_detached_current_shop_payment_actor_context",
     "get_detached_current_shop_payment_read_actor_context",
+    "get_detached_current_shop_payment_void_read_actor_context",
 )
 
 
@@ -81,6 +84,23 @@ class DetachedPaymentReadActorContext:
 
     def __repr__(self) -> str:
         return "DetachedPaymentReadActorContext(<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class DetachedPaymentVoidFormContext:
+    """Detached GET-form facts; CSRF is rendered but never a mutation grant."""
+
+    actor: DetachedPaymentActorContext = field(repr=False)
+    csrf_token: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.actor, DetachedPaymentActorContext):
+            raise ValueError("Payment void form actor is invalid")
+        if not isinstance(self.csrf_token, str) or not self.csrf_token:
+            raise ValueError("Payment void form CSRF token is invalid")
+
+    def __repr__(self) -> str:
+        return "DetachedPaymentVoidFormContext(<redacted>)"
 
 
 class PaymentActorLoginRequired(HTTPException):
@@ -169,6 +189,48 @@ async def get_detached_current_shop_payment_read_actor_context(
                     language=resolve_debt_web_language(
                         request.headers.get("accept-language")
                     ),
+                )
+    if current.status is not CurrentSessionStatus.AUTHENTICATED:
+        raise PaymentActorLoginRequired()
+    if detached is None:
+        raise ShopSelectionRequired()
+    return detached
+
+
+async def get_detached_current_shop_payment_void_read_actor_context(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings)],
+    now: Annotated[datetime, Depends(get_current_time)],
+) -> DetachedPaymentVoidFormContext:
+    """Resolve scalar GET-form context; mutation authority remains POST-only."""
+
+    session_factory = request.app.state.database_session_factory
+    detached: DetachedPaymentVoidFormContext | None = None
+    with session_factory.begin() as session:
+        current = get_current_session_context(request, session, settings, now)
+        if (
+            current.status is CurrentSessionStatus.AUTHENTICATED
+            and current.user_id is not None
+            and current.get_session_row() is not None
+        ):
+            current_shop = resolve_current_shop(
+                session,
+                auth_session=current.get_session_row(),
+                user_id=UserId(current.user_id),
+            )
+            if current_shop.shop is not None and current_shop.role is not None:
+                detached = DetachedPaymentVoidFormContext(
+                    actor=DetachedPaymentActorContext(
+                        actor_user_id=current.user_id,
+                        current_shop_id=current_shop.shop.id,
+                        role_hint=current_shop.role,
+                        language=resolve_debt_web_language(
+                            request.headers.get("accept-language")
+                        ),
+                    ),
+                    csrf_token=get_csrf_token(
+                        current.get_session_row()
+                    ).as_form_value(),
                 )
     if current.status is not CurrentSessionStatus.AUTHENTICATED:
         raise PaymentActorLoginRequired()

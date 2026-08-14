@@ -9,6 +9,7 @@ from app.main import create_app
 from app.payment.dependencies import (
     get_detached_current_shop_payment_actor_context,
     get_detached_current_shop_payment_read_actor_context,
+    get_detached_current_shop_payment_void_read_actor_context,
 )
 from app.payment.presentation import (
     M18_PAYMENT_VOID_ROUTE_CONTRACTS,
@@ -100,6 +101,27 @@ def test_payment_routes_use_read_or_csrf_detached_boundaries() -> None:
     assert get_current_session_context in calls(payment_routes["shop_debt_payment_new"])
     assert get_detached_current_shop_payment_actor_context in calls(
         payment_routes["shop_debt_payment_create"]
+    )
+    assert get_detached_current_shop_payment_void_read_actor_context in calls(
+        payment_routes["shop_payment_void_form"]
+    )
+    assert get_detached_current_shop_payment_actor_context in calls(
+        payment_routes["shop_payment_void"]
+    )
+
+
+def test_void_route_uses_application_composed_clock_and_rating_adapter() -> None:
+    router_source = Path("app/payment/router.py").read_text(encoding="utf-8")
+    main_source = Path("app/main.py").read_text(encoding="utf-8")
+
+    assert "payment_void_clock=request.app.state.payment_void_clock" in router_source
+    assert (
+        "application.state.payment_void_clock = lambda: datetime.now(UTC)"
+        in main_source
+    )
+    assert (
+        "application.state.rating_append_port = SqlAlchemyLockedRatingAppendAdapter()"
+        in (main_source)
     )
 
 

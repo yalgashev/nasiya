@@ -60,7 +60,7 @@ from app.payment.contracts import (
     resolve_historical_balance_basis,
 )
 from app.payment.dependencies import DetachedPaymentReadActorContext
-from app.payment.models import Payment
+from app.payment.models import Payment, PaymentVoid
 from app.payment.presentation import (
     CustomerPaymentVoidPresentation,
     ShopPaymentVoidPresentation,
@@ -137,6 +137,7 @@ class TenantPaymentHistoryView:
     error: ErrorCode | None
     debt: TenantDebtDetailProjection | None = field(default=None, repr=False)
     history: tuple[PaymentHistoryItem, ...] = field(default=(), repr=False)
+    void_states: tuple[ShopPaymentVoidPresentation, ...] = field(default=(), repr=False)
     shop_status: ShopStatus | None = None
 
     def __post_init__(self) -> None:
@@ -145,7 +146,14 @@ class TenantPaymentHistoryView:
                 self.shop_status, ShopStatus
             ):
                 raise ValueError("Tenant payment history view is invalid")
-        elif self.debt is not None or self.history or self.shop_status is not None:
+            if len(self.void_states) != len(self.history):
+                raise ValueError("Tenant payment history void states are invalid")
+        elif (
+            self.debt is not None
+            or self.history
+            or self.void_states
+            or self.shop_status is not None
+        ):
             raise ValueError("Failed tenant payment history view must carry no data")
 
     def __repr__(self) -> str:
@@ -369,6 +377,18 @@ def get_tenant_payment_history_view(
         error=None,
         debt=debt,
         history=_history(rows),
+        void_states=tuple(
+            ShopPaymentVoidPresentation(
+                is_voided=row.voided_at is not None,
+                voided_at=row.voided_at,
+                reason_label=(
+                    None
+                    if row.void_reason is None
+                    else get_payment_void_reason_label(actor.language, row.void_reason)
+                ),
+            )
+            for row in rows
+        ),
         shop_status=authority.shop_status,
     )
 
@@ -580,7 +600,13 @@ def list_payment_progress_for_debts(
                 Payment.debt_id,
                 func.coalesce(func.sum(Payment.amount_uzs), Decimal("0")),
             )
+            .outerjoin(
+                PaymentVoid,
+                (PaymentVoid.payment_id == Payment.id)
+                & (PaymentVoid.debt_id == Payment.debt_id),
+            )
             .where(Payment.debt_id.in_(ids))
+            .where(PaymentVoid.id.is_(None))
             .group_by(Payment.debt_id)
         ).all()
     )

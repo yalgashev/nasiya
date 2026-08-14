@@ -94,6 +94,7 @@ def create_app(
         list_payment_progress_for_debts=list_payment_progress_for_debts,
     )
     application.state.rating_append_port = SqlAlchemyLockedRatingAppendAdapter()
+    application.state.payment_void_clock = lambda: datetime.now(UTC)
     application.state.write_off_clock = lambda: datetime.now(UTC)
     application.state.risk_band_disclosure_clock = lambda: datetime.now(UTC)
     application.state.get_database_session = create_database_session_dependency(

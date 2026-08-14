@@ -408,6 +408,22 @@ dd {
     overflow-wrap: anywhere;
 }
 
+.payment-page fieldset {
+    min-width: 0;
+    margin: 0;
+}
+
+.destructive-confirmation {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr);
+    align-items: center;
+    min-height: 44px;
+}
+
+.destructive-confirmation input {
+    width: 44px;
+}
+
 @media (max-width: 375px) {
     main {
         width: min(100% - 24px, 640px);

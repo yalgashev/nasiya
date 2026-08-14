@@ -8,7 +8,8 @@
     <dl>
       <dt>{{ target_amount_label }}</dt><dd>{{ debt.original_amount.value if debt.payment_progress.balance_basis.value == "original" else debt.discounted_amount_uzs }}</dd>
       <dt>{{ copy.posted_total }}</dt><dd>{{ debt.payment_progress.posted_total_uzs }}</dd>
-      <dt>{{ copy.remaining }} ({{ balance_basis_label }})</dt><dd>{{ debt.payment_progress.remaining_due_uzs }}</dd>
+      <dt>{{ copy.current_balance }} — {{ copy.remaining }} ({{ balance_basis_label }})</dt><dd>{{ debt.payment_progress.remaining_due_uzs }}</dd>
+      <dt>{{ copy.current_status }}</dt><dd>{{ status_label }}</dd>
       <dt>{{ copy.payable }}</dt><dd>{{ copy.yes if debt.payment_progress.is_payable else copy.no }}</dd>
     </dl>
   </article>
@@ -18,12 +19,14 @@
   {% if history %}
   <ol aria-label="{{ copy.history }}">
     {% for payment in history %}
+    {% set void_state = void_states[loop.index0] %}
     <li>
       <span>{{ payment.amount.value }}</span>
       <span>{{ method_labels[payment.method.value] }}</span>
       <time datetime="{{ payment.created_at.isoformat() }}">{{ payment.created_at }}</time>
-      {% if payment.is_voided %}<span>{{ copy.voided }}</span><time datetime="{{ payment.voided_at.isoformat() }}">{{ payment.voided_at }}</time>{% endif %}
+      {% if payment.is_voided %}<span>{{ copy.voided }}: {{ void_state.reason_label }}</span><time datetime="{{ payment.voided_at.isoformat() }}">{{ payment.voided_at }}</time>{% endif %}
       <a href="/shop/payments/{{ payment.payment_id.as_uuid() }}">{{ copy.receipt }}</a>
+      {% if voidable_payment_id == payment.payment_id.as_uuid() %}<a href="/shop/payments/{{ payment.payment_id.as_uuid() }}/void">{{ copy.void_payment }}</a>{% endif %}
     </li>
     {% endfor %}
   </ol>

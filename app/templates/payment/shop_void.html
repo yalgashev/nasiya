@@ -3,17 +3,22 @@
 {% block content %}
 <main class="payment-page">
   <h1>{{ copy.void_payment }}</h1>
-  {% if error_message %}<p role="alert">{{ error_message }}</p>{% endif %}
-  <form method="post" action="/shop/payments/{{ payment_id }}/void">
+  <p id="payment-void-form-error" role="alert" aria-live="assertive">{{ error_message or "" }}</p>
+  <p id="payment-void-warning" role="status">{{ copy.void_warning }}</p>
+  <form method="post" action="/shop/payments/{{ payment_id }}/void" autocomplete="off">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
     <input type="hidden" name="expected_revision" value="{{ expected_revision }}">
-    <label for="reason">{{ copy.void_reason }}</label>
-    <select id="reason" name="reason" required>
+    <label for="payment-void-reason">{{ copy.void_reason }}</label>
+    <select id="payment-void-reason" name="reason" aria-describedby="payment-void-warning payment-void-form-error" aria-invalid="{{ 'true' if error_message else 'false' }}" required>
       {% for reason, label in reasons %}<option value="{{ reason.value }}">{{ label }}</option>{% endfor %}
     </select>
-    <label><input type="checkbox" name="confirmation" value="yes" required> {{ copy.void_confirm }}</label>
-    <button type="submit">{{ copy.void_submit }}</button>
+    <fieldset>
+      <legend>{{ copy.void_confirmation }}</legend>
+      <label class="destructive-confirmation" for="payment-void-confirmation"><input id="payment-void-confirmation" type="checkbox" name="confirmation" value="yes" required><span>{{ copy.void_confirm }}</span></label>
+    </fieldset>
+    <button class="button-danger" type="submit">{{ copy.void_submit }}</button>
   </form>
+  <nav aria-label="{{ copy.navigation }}"><a href="/shop/payments/{{ payment_id }}">{{ copy.receipt }}</a></nav>
 </main>
 {% endblock %}
