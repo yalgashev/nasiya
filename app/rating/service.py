@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import datetime
 from typing import Final
 
 from sqlalchemy import select
@@ -142,7 +143,7 @@ def _validate_debt_cycles(events: list[RatingEvent]) -> None:
     positives: dict[tuple[RatingEventType, DebtRevision], bool] = {}
     overdue_seen = False
     written_off_seen = False
-    open_settlement_revision: DebtRevision | None = None
+    settlement_revisions: dict[DebtRevision, tuple[bool, datetime, bool]] = {}
     for event in events:
         event_type = event.event_type
         revision = event.source_revision
@@ -170,13 +171,44 @@ def _validate_debt_cycles(events: list[RatingEvent]) -> None:
             written_off_seen = True
             continue
         if event_type is RatingEventType.WRITTEN_OFF_SETTLED:
-            if not written_off_seen or open_settlement_revision is not None:
+            if not written_off_seen or revision in settlement_revisions:
                 raise IncoherentRatingHistoryError("Rating history is incoherent")
-            open_settlement_revision = revision
+            open_revisions = tuple(
+                source_revision
+                for source_revision, (
+                    compensated,
+                    _source_at,
+                    _batched,
+                ) in settlement_revisions.items()
+                if not compensated
+            )
+            if open_revisions:
+                if any(
+                    settlement_revisions[source_revision][1] != event.occurred_at
+                    for source_revision in open_revisions
+                ):
+                    raise IncoherentRatingHistoryError("Rating history is incoherent")
+                for source_revision in open_revisions:
+                    compensated, source_at, _batched = settlement_revisions[
+                        source_revision
+                    ]
+                    settlement_revisions[source_revision] = (
+                        compensated,
+                        source_at,
+                        True,
+                    )
+            settlement_revisions[revision] = (
+                False,
+                event.occurred_at,
+                bool(open_revisions),
+            )
             continue
         if event_type is RatingEventType.WRITTEN_OFF_SETTLED_VOIDED:
-            if open_settlement_revision != revision:
+            if revision not in settlement_revisions:
                 raise IncoherentRatingHistoryError("Rating history is incoherent")
-            open_settlement_revision = None
+            compensated, positive_at, batched = settlement_revisions[revision]
+            if compensated or (batched and event.occurred_at != positive_at):
+                raise IncoherentRatingHistoryError("Rating history is incoherent")
+            settlement_revisions[revision] = (True, positive_at, batched)
             continue
         raise IncoherentRatingHistoryError("Rating history is incoherent")

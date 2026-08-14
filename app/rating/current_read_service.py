@@ -118,7 +118,7 @@ def derive_current_rating_state(
 
     score = _INITIAL_SCORE
     previous_key: tuple[datetime, int, str, int] | None = None
-    by_debt: dict[UUID, list[tuple[RatingEventType, int]]] = {}
+    by_debt: dict[UUID, list[tuple[RatingEventType, int, datetime]]] = {}
     for row in received:
         occurred_at, debt_id, event_type, source_revision, delta = (
             _validate_scalar_event_row(row)
@@ -126,7 +126,9 @@ def derive_current_rating_state(
         order_key = (occurred_at, debt_id.int, event_type.value, source_revision)
         if previous_key is not None and order_key <= previous_key:
             raise IncoherentScalarRatingHistoryError("Rating history is incoherent")
-        by_debt.setdefault(debt_id, []).append((event_type, source_revision))
+        by_debt.setdefault(debt_id, []).append(
+            (event_type, source_revision, occurred_at)
+        )
         previous_key = order_key
         score = min(_MAX_SCORE, max(_MIN_SCORE, score + delta))
 
@@ -242,14 +244,13 @@ def _validate_scalar_event_row(
 
 
 def _validate_scalar_debt_cycles(
-    events: list[tuple[RatingEventType, int]],
+    events: list[tuple[RatingEventType, int, datetime]],
 ) -> None:
     positives: dict[int, bool] = {}
     overdue_seen = False
     written_off_seen = False
-    open_settlement_revision: int | None = None
-    settlement_revisions: set[int] = set()
-    for event_type, revision in events:
+    settlement_revisions: dict[int, tuple[bool, datetime, bool]] = {}
+    for event_type, revision, occurred_at in events:
         if event_type is RatingEventType.ON_TIME_PAID:
             if overdue_seen or revision in positives:
                 raise IncoherentScalarRatingHistoryError("Rating history is incoherent")
@@ -269,17 +270,45 @@ def _validate_scalar_debt_cycles(
                 raise IncoherentScalarRatingHistoryError("Rating history is incoherent")
             written_off_seen = True
         elif event_type is RatingEventType.WRITTEN_OFF_SETTLED:
-            if (
-                not written_off_seen
-                or open_settlement_revision is not None
-                or revision in settlement_revisions
-            ):
+            if not written_off_seen or revision in settlement_revisions:
                 raise IncoherentScalarRatingHistoryError("Rating history is incoherent")
-            open_settlement_revision = revision
-            settlement_revisions.add(revision)
+            open_revisions = tuple(
+                source_revision
+                for source_revision, (
+                    compensated,
+                    _source_at,
+                    _batched,
+                ) in settlement_revisions.items()
+                if not compensated
+            )
+            if open_revisions:
+                if any(
+                    settlement_revisions[source_revision][1] != occurred_at
+                    for source_revision in open_revisions
+                ):
+                    raise IncoherentScalarRatingHistoryError(
+                        "Rating history is incoherent"
+                    )
+                for source_revision in open_revisions:
+                    compensated, source_at, _batched = settlement_revisions[
+                        source_revision
+                    ]
+                    settlement_revisions[source_revision] = (
+                        compensated,
+                        source_at,
+                        True,
+                    )
+            settlement_revisions[revision] = (
+                False,
+                occurred_at,
+                bool(open_revisions),
+            )
         elif event_type is RatingEventType.WRITTEN_OFF_SETTLED_VOIDED:
-            if open_settlement_revision != revision:
+            if revision not in settlement_revisions:
                 raise IncoherentScalarRatingHistoryError("Rating history is incoherent")
-            open_settlement_revision = None
+            compensated, positive_at, batched = settlement_revisions[revision]
+            if compensated or (batched and occurred_at != positive_at):
+                raise IncoherentScalarRatingHistoryError("Rating history is incoherent")
+            settlement_revisions[revision] = (True, positive_at, batched)
         else:
             raise IncoherentScalarRatingHistoryError("Rating history is incoherent")

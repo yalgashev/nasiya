@@ -25,6 +25,10 @@ from app.rating.contracts import (
     create_written_off_rating_event,
     create_written_off_settled_rating_event,
 )
+from app.rating.current_read_service import (
+    IncoherentScalarRatingHistoryError,
+    derive_current_rating_state,
+)
 from app.rating.enums import RatingEventType, RatingRecordingSource
 from app.rating.service import IncoherentRatingHistoryError, derive_rating_snapshot
 from app.rating.values import RatingEventId
@@ -196,6 +200,109 @@ def test_lawful_multi_cycle_sequence_and_per_event_clamp() -> None:
 
     assert snapshot.event_count == 9
     assert snapshot.current_score == 15
+
+
+def test_same_instant_settlement_cycles_follow_lexical_type_then_revision_order() -> (
+    None
+):
+    overdue = _positive(RatingEventType.OVERDUE, 2, occurred_at=BASE)
+    written_off = _positive(
+        RatingEventType.WRITTEN_OFF,
+        3,
+        occurred_at=BASE + timedelta(seconds=1),
+    )
+    earned = tuple(
+        replace(
+            _positive(
+                RatingEventType.ON_TIME_PAID,
+                3,
+                occurred_at=BASE + timedelta(seconds=2 + index),
+            ),
+            id=RatingEventId(UUID(int=30_000 + index)),
+            debt_id=DebtId(UUID(int=100 + index)),
+        )
+        for index in range(18)
+    )
+    cycle_at = BASE + timedelta(minutes=1)
+    first = _positive(RatingEventType.WRITTEN_OFF_SETTLED, 5, occurred_at=cycle_at)
+    second = _positive(RatingEventType.WRITTEN_OFF_SETTLED, 7, occurred_at=cycle_at)
+    first_void = _compensate(first, minute=1)
+    second_void = _compensate(second, minute=1)
+    history = (
+        overdue,
+        written_off,
+        *earned,
+        second_void,
+        first_void,
+        second,
+        first,
+    )
+
+    ordered_final = sorted(history, key=lambda event: event.order_key.as_sort_key())[
+        -4:
+    ]
+    assert [
+        (event.event_type.value, event.source_revision.value) for event in ordered_final
+    ] == [
+        ("written_off_settled", 5),
+        ("written_off_settled", 7),
+        ("written_off_settled_voided", 5),
+        ("written_off_settled_voided", 7),
+    ]
+    assert derive_rating_snapshot(history, global_hard_block=False).current_score == 80
+    scalar_rows = tuple(
+        (
+            event.occurred_at,
+            event.debt_id.as_uuid(),
+            event.event_type.value,
+            event.source_revision.value,
+            event.delta,
+        )
+        for event in sorted(history, key=lambda event: event.order_key.as_sort_key())
+    )
+    assert (
+        derive_current_rating_state(scalar_rows, global_hard_block=False).current_score
+        == 80
+    )
+
+    delayed_second = replace(
+        second,
+        occurred_at=cycle_at + timedelta(minutes=1),
+    )
+    delayed_first_void = replace(
+        first_void,
+        occurred_at=cycle_at + timedelta(minutes=2),
+    )
+    delayed_second_void = replace(
+        second_void,
+        occurred_at=cycle_at + timedelta(minutes=3),
+    )
+    delayed_history = (
+        overdue,
+        written_off,
+        first,
+        delayed_second,
+        delayed_first_void,
+        delayed_second_void,
+    )
+    with pytest.raises(IncoherentRatingHistoryError):
+        derive_rating_snapshot(delayed_history, global_hard_block=False)
+
+    delayed_scalar_rows = tuple(
+        (
+            event.occurred_at,
+            event.debt_id.as_uuid(),
+            event.event_type.value,
+            event.source_revision.value,
+            event.delta,
+        )
+        for event in sorted(
+            delayed_history,
+            key=lambda event: event.order_key.as_sort_key(),
+        )
+    )
+    with pytest.raises(IncoherentScalarRatingHistoryError):
+        derive_current_rating_state(delayed_scalar_rows, global_hard_block=False)
 
 
 @pytest.mark.parametrize(
