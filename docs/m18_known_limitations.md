@@ -28,7 +28,12 @@ milestone to change.
 8. Browser surfaces are SSR-only and no-store. They do not store financial
    state in browser storage or implement client money/time/rating decisions.
 9. M18.42–43 Chrome/PostgreSQL evidence is controlled local synthetic evidence
-   only. It is not production-data acceptance, a production deployment claim,
-   or remote CI evidence. Its retained output is sanitized PASS booleans; all
-   temporary profiles, sessions, fixtures, keys, cookies, screenshots, and
-   helper artifacts were removed.
+   only. It is not production-data acceptance or a production deployment
+   claim. Its retained output is sanitized PASS booleans; all temporary
+   profiles, sessions, fixtures, keys, cookies, screenshots, and helper
+   artifacts were removed. Remote CI independently verified the automated
+   suite, not the manual browser checklist.
+10. The successful implementation workflow carried one GitHub-hosted runner
+    annotation that checkout/Python/uv actions targeting Node.js 20 were
+    forced onto Node.js 24. This was external action-runtime deprecation
+    metadata, not a pytest warning; the repository job and every step passed.

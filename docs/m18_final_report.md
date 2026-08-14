@@ -1,6 +1,6 @@
 # Nasiya M18 Final Technical Report
 
-Status: **local final draft; no remote-GREEN claim**.
+Status: **M18 REMOTE GREEN — CLOSED**.
 
 M18 is the bounded **Idempotent Payment Void & Rating Compensation**
 capability. It preserves the immutable original Payment and appends one
@@ -106,8 +106,8 @@ keys, and helper artifacts were removed.
 5. `0c37f893def9441a59bf65032163c3a7c7783472` — void-safe balances/rating
 6. `e0b624e28de8435efd46f7cec06e6f3c49a8c026` — web flows
 7. `1399bb15b6da91d7ffad54c85ef8b755e7ae7772` — security/concurrency hardening
-8. This local closure draft records M18.42–44 evidence and deliberately does
-   not self-reference a future docs checkpoint SHA.
+8. `924f4859a68584c9e882f54142d2724c35c29732` — implementation completion;
+   tree `a3c2f6e5a68409f6afc904d8705feb76d0050d96`
 
 ## M18.44 repeated local validation
 
@@ -124,5 +124,26 @@ back to the sole M18 head.
 | CI-equivalent containment and private-MinIO gate | GREEN; 183 passed in 20.24s |
 | Full real-PostgreSQL pytest | GREEN; 4515 passed in 326.45s (0:05:26); zero failed/skipped/xfailed/xpassed/warnings |
 
-This is repeated local evidence only. This report does not claim remote CI
-status.
+## Exact implementation remote evidence
+
+The eighth implementation checkpoint was pushed normally without force,
+amend, or rebase. GitHub Actions checked out the exact implementation SHA
+`924f4859a68584c9e882f54142d2724c35c29732` and therefore the exact tree
+`a3c2f6e5a68409f6afc904d8705feb76d0050d96`.
+
+| Evidence | Result |
+| --- | --- |
+| Workflow run | GREEN; run `31767812663` |
+| Job | GREEN; `dependency-sync`, job `94667196288`, 311s |
+| Frozen sync / Ruff | GREEN; 48 packages / 695 files |
+| M17 fixture upgrade, current, and sole head | GREEN; `d8e9f0a1b2c3 -> e9f0a1b2c3d4`; `e9f0a1b2c3d4` |
+| Source metadata and preservation matrix | GREEN; deterministic four-type `source_revision` population, ambiguity rejection, and predecessor business-value preservation exercised by the real-PostgreSQL suite |
+| Containment / private MinIO | GREEN; all bounded gates completed successfully |
+| Full real-PostgreSQL pytest | GREEN; 4515 passed in 239.20s (0:03:59); zero failed/skipped/xfailed/xpassed/test warnings |
+
+- Run: <https://github.com/yalgashev/nasiya/actions/runs/31767812663>
+- Job: <https://github.com/yalgashev/nasiya/actions/runs/31767812663/job/94667196288>
+
+GitHub emitted one runner-level Node.js action-runtime deprecation annotation
+for the pinned checkout/Python/uv actions. It was not a pytest warning or a
+repository failure; every workflow step and the job concluded successfully.
